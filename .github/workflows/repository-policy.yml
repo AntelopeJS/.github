@@ -1,0 +1,31 @@
+name: Repository policy
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository name; leave empty to update every active repository
+        required: false
+        type: string
+      npm_package:
+        description: Require the npm package checks profile on this repository
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Apply repository policy
+        run: scripts/apply-repository-policy.sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_ADMINISTRATION }}
+          REPOSITORY: ${{ inputs.repository }}
+          NPM_PACKAGE: ${{ inputs.npm_package || false }}
