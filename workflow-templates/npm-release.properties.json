@@ -1,0 +1,6 @@
+{
+  "name": "AntelopeJS npm release",
+  "description": "Publish stable or prerelease npm packages with provenance",
+  "iconName": "package",
+  "categories": ["Deployment", "JavaScript"]
+}
