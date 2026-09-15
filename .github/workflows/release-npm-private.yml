@@ -11,6 +11,10 @@ on:
         description: Install the AntelopeJS CLI before releasing
         default: true
         type: boolean
+      package-scope:
+        description: npm scope used by the package
+        default: "@antelopejs-private"
+        type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
         description: Token allowed to create the release commit, tag, and GitHub release
@@ -71,15 +75,18 @@ jobs:
         with:
           node-version: 24
           registry-url: https://npm.antelopejs.cloud/
-          scope: "@antelopejs-private"
+          scope: ${{ inputs.package-scope }}
           cache: pnpm
 
       - name: Validate package publication metadata
+        env:
+          PACKAGE_SCOPE: ${{ inputs.package-scope }}
         run: |
           node <<'NODE'
           const pkg = require('./package.json')
           const errors = []
-          if (!pkg.name?.startsWith('@antelopejs-private/')) errors.push('name must use the @antelopejs-private scope')
+          const packageScope = `${process.env.PACKAGE_SCOPE}/`
+          if (!pkg.name?.startsWith(packageScope)) errors.push(`name must use the ${packageScope} scope`)
           if (pkg.private === true) errors.push('private must not be true for a published package')
           if (pkg.license !== 'Apache-2.0') errors.push('license must be Apache-2.0')
           if (pkg.publishConfig?.registry !== 'https://npm.antelopejs.cloud/') {
