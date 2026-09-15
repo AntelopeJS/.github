@@ -1,5 +1,9 @@
-# .github
+# AntelopeJS organization defaults
 
-This repository contains the readme of the Antelope GitHub organization.
+This repository contains the public profile, community health files, issue and
+pull request templates, and reusable GitHub Actions workflows shared by the
+[AntelopeJS organization](https://github.com/AntelopeJS).
 
-It can be found at profile/README.md.
+Repositories can override a community file when they need project-specific
+guidance. Reusable workflows remain centrally maintained and are called from a
+small workflow in each consuming repository.

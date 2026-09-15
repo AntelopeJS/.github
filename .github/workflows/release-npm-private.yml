@@ -1,0 +1,122 @@
+name: Release private npm package
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: npm distribution channel
+        required: true
+        type: string
+      install-core:
+        description: Install the AntelopeJS CLI before releasing
+        default: true
+        type: boolean
+    secrets:
+      RELEASE_GITHUB_TOKEN:
+        description: Token allowed to create the release commit, tag, and GitHub release
+        required: false
+      NPM_ANTELOPE_TOKEN:
+        description: Token allowed to install and publish private packages
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: npm-release-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate release source and channel
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || {
+            echo "Releases must run from the default branch ($DEFAULT_BRANCH)." >&2
+            exit 1
+          }
+          case "$CHANNEL" in
+            latest|next) ;;
+            *) echo "Unsupported npm channel: $CHANNEL" >&2; exit 1 ;;
+          esac
+
+      - name: Validate release credentials
+        env:
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
+        run: |
+          test -n "$RELEASE_GITHUB_TOKEN" || {
+            echo "RELEASE_GITHUB_TOKEN is not configured." >&2
+            exit 1
+          }
+          test -n "$NPM_ANTELOPE_TOKEN" || {
+            echo "NPM_ANTELOPE_TOKEN is not configured." >&2
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          registry-url: https://npm.antelopejs.cloud/
+          scope: "@antelopejs-private"
+          cache: pnpm
+
+      - name: Validate package publication metadata
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const errors = []
+          if (!pkg.name?.startsWith('@antelopejs-private/')) errors.push('name must use the @antelopejs-private scope')
+          if (pkg.private === true) errors.push('private must not be true for a published package')
+          if (pkg.license !== 'Apache-2.0') errors.push('license must be Apache-2.0')
+          if (pkg.publishConfig?.registry !== 'https://npm.antelopejs.cloud/') {
+            errors.push('publishConfig.registry must be https://npm.antelopejs.cloud/')
+          }
+          if (errors.length) {
+            console.error(errors.join('\n'))
+            process.exit(1)
+          }
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
+
+      - name: Install AntelopeJS CLI
+        if: inputs.install-core
+        run: pnpm add --global @antelopejs/core
+
+      - name: Configure release identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish release
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
+
+          if [ "$CHANNEL" = latest ]; then
+            pnpm release --ci
+          else
+            pnpm release --ci --preRelease=next
+          fi
