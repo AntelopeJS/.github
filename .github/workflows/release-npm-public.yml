@@ -1,0 +1,100 @@
+name: Release public npm package
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: npm distribution channel
+        required: true
+        type: string
+      install-core:
+        description: Install the AntelopeJS CLI before releasing
+        default: false
+        type: boolean
+    secrets:
+      RELEASE_GITHUB_TOKEN:
+        description: Token allowed to create the release commit, tag, and GitHub release
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: write
+      id-token: write
+    concurrency:
+      group: npm-release-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate release source and channel
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" || {
+            echo "Releases must run from the default branch ($DEFAULT_BRANCH)." >&2
+            exit 1
+          }
+          case "$CHANNEL" in
+            latest|next) ;;
+            *) echo "Unsupported npm channel: $CHANNEL" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Validate package publication metadata
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const errors = []
+          if (!pkg.name?.startsWith('@antelopejs/')) errors.push('name must use the @antelopejs scope')
+          if (pkg.private === true) errors.push('private must not be true')
+          if (pkg.license !== 'Apache-2.0') errors.push('license must be Apache-2.0')
+          if (pkg.publishConfig?.access !== 'public') errors.push('publishConfig.access must be public')
+          if (pkg.publishConfig?.provenance !== true) errors.push('publishConfig.provenance must be true')
+          if (errors.length) {
+            console.error(errors.join('\n'))
+            process.exit(1)
+          }
+          NODE
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install AntelopeJS CLI
+        if: inputs.install-core
+        run: pnpm add --global @antelopejs/core
+
+      - name: Configure release identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish release
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
+
+          if [ "$CHANNEL" = latest ]; then
+            pnpm release --ci
+          else
+            pnpm release --ci --preRelease=next
+          fi
