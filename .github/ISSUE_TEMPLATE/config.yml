@@ -7,5 +7,5 @@ contact_links:
     url: https://github.com/AntelopeJS/antelopejs/discussions
     about: Ask for help or discuss an idea with the community.
   - name: Security vulnerability
-    url: https://github.com/AntelopeJS/antelopejs/security/policy
-    about: Report vulnerabilities privately. Do not open a public issue.
+    url: https://github.com/AntelopeJS/.github/blob/main/SECURITY.md
+    about: Read the private reporting instructions. Do not open a public issue.
