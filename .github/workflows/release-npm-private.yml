@@ -11,6 +11,10 @@ on:
         description: Install the AntelopeJS CLI before releasing
         default: true
         type: boolean
+      package-directory:
+        description: Relative path to the package directory to release
+        default: .
+        type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
         description: Token allowed to create the release commit, tag, and GitHub release
@@ -65,6 +69,53 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Validate package directory
+        env:
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          const workspace = fs.realpathSync(process.env.GITHUB_WORKSPACE)
+          const input = process.env.PACKAGE_DIRECTORY
+          if (!input || path.isAbsolute(input)) {
+            console.error('package-directory must be a relative directory inside the repository')
+            process.exit(1)
+          }
+
+          const directory = path.resolve(workspace, input)
+          const relativeDirectory = path.relative(workspace, directory)
+          if (relativeDirectory === '..' || relativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDirectory)) {
+            console.error('package-directory must stay inside the repository')
+            process.exit(1)
+          }
+
+          let realDirectory
+          try {
+            realDirectory = fs.realpathSync(directory)
+          } catch {
+            console.error(`package-directory does not exist: ${input}`)
+            process.exit(1)
+          }
+          const realRelativeDirectory = path.relative(workspace, realDirectory)
+          if (realRelativeDirectory === '..' || realRelativeDirectory.startsWith(`..${path.sep}`) || path.isAbsolute(realRelativeDirectory)) {
+            console.error('package-directory must resolve inside the repository')
+            process.exit(1)
+          }
+          if (!fs.statSync(realDirectory).isDirectory()) {
+            console.error(`package-directory is not a directory: ${input}`)
+            process.exit(1)
+          }
+
+          const packageJson = path.join(realDirectory, 'package.json')
+          if (!fs.statSync(packageJson, { throwIfNoEntry: false })?.isFile()) {
+            console.error(`package.json was not found in package-directory: ${input}`)
+            process.exit(1)
+          }
+          NODE
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -73,8 +124,10 @@ jobs:
           registry-url: https://npm.antelopejs.cloud/
           scope: "@antelopejs-private"
           cache: pnpm
+          cache-dependency-path: ${{ inputs.package-directory }}/pnpm-lock.yaml
 
       - name: Validate package publication metadata
+        working-directory: ${{ inputs.package-directory }}
         run: |
           node <<'NODE'
           const pkg = require('./package.json')
@@ -92,6 +145,7 @@ jobs:
           NODE
 
       - name: Install dependencies
+        working-directory: ${{ inputs.package-directory }}
         run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
@@ -120,3 +174,4 @@ jobs:
           else
             pnpm release --ci --preRelease=next
           fi
+        working-directory: ${{ inputs.package-directory }}
