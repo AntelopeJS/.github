@@ -11,6 +11,11 @@ on:
         options:
           - latest
           - next
+      package-directory:
+        description: Relative path to the package directory to release
+        required: true
+        default: .
+        type: string
 
 permissions:
   contents: write
@@ -22,5 +27,6 @@ jobs:
     with:
       channel: ${{ inputs.channel }}
       install-core: true
+      package-directory: ${{ inputs.package-directory }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}

@@ -35,3 +35,32 @@ The workflow validates that the directory is inside the checked-out repository
 and contains a `package.json`, then uses it for metadata validation, dependency
 installation, and the `release-it` command. Git history, tags, and GitHub
 release operations continue to use the checked-out repository.
+
+## Public npm releases
+
+The public npm release workflow keeps existing root-package callers unchanged.
+It accepts these inputs:
+
+- `channel` (required): `latest` or `next`.
+- `install-core` (optional, default `false`): install the AntelopeJS CLI before
+  releasing.
+- `package-directory` (optional, default `.`): a relative directory below the
+  repository root containing the package to release.
+
+To publish only a nested package, pass its directory to the reusable workflow:
+
+```yaml
+jobs:
+  release:
+    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
+    with:
+      channel: ${{ inputs.channel }}
+      package-directory: packages/interface-dms-automation
+    secrets: inherit
+```
+
+The workflow validates that the directory resolves inside the checked-out
+repository and contains a `package.json`. It uses that directory for pnpm
+caching, metadata validation, dependency installation, and the release command,
+so unrelated root-level runtime packages are not installed. Public packages
+continue to use npmjs with public access and provenance.
