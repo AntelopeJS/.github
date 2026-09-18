@@ -1,5 +1,7 @@
+# Synced from https://github.com/AntelopeJS/.github - edit it there, not in this repository.
 name: Feature request
 description: Propose an improvement to an AntelopeJS project
+labels: ["enhancement"]
 title: "feat: "
 body:
   - type: input

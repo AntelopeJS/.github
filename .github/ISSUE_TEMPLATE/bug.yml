@@ -1,5 +1,7 @@
+# Synced from https://github.com/AntelopeJS/.github - edit it there, not in this repository.
 name: Bug report
 description: Report a reproducible problem in an AntelopeJS project
+labels: ["bug"]
 title: "bug: "
 body:
   - type: markdown

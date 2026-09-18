@@ -1,3 +1,4 @@
+# Synced from https://github.com/AntelopeJS/.github - edit it there, not in this repository.
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
@@ -6,6 +7,3 @@ contact_links:
   - name: Questions and ideas
     url: https://github.com/AntelopeJS/antelopejs/discussions
     about: Ask for help or discuss an idea with the community.
-  - name: Security vulnerability
-    url: https://github.com/AntelopeJS/.github/blob/main/SECURITY.md
-    about: Read the private reporting instructions. Do not open a public issue.

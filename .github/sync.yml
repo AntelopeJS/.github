@@ -1,0 +1,64 @@
+# Targets of the sync-community-files workflow. Every repository listed here
+# receives a pull request whenever one of the synced files changes on main.
+community:
+  repos: |
+    AntelopeJS/antelopejs
+    AntelopeJS/api
+    AntelopeJS/auth-jwt
+    AntelopeJS/dms
+    AntelopeJS/dms-ai
+    AntelopeJS/dms-api
+    AntelopeJS/dms-automation
+    AntelopeJS/dms-builder
+    AntelopeJS/dms-database
+    AntelopeJS/dms-frontend
+    AntelopeJS/dms-lang
+    AntelopeJS/dms-media
+    AntelopeJS/dms-saas
+    AntelopeJS/file-storage-local
+    AntelopeJS/file-storage-s3
+    AntelopeJS/interface-api
+    AntelopeJS/interface-api-util
+    AntelopeJS/interface-auth
+    AntelopeJS/interface-core
+    AntelopeJS/interface-data-api
+    AntelopeJS/interface-database
+    AntelopeJS/interface-database-decorators
+    AntelopeJS/interface-email
+    AntelopeJS/interface-file-storage
+    AntelopeJS/interface-mongodb
+    AntelopeJS/interface-redis
+    AntelopeJS/interface-redis-scheduler
+    AntelopeJS/interface-rethinkdb
+    AntelopeJS/interface-stripe
+    AntelopeJS/interfaces
+    AntelopeJS/mongodb
+    AntelopeJS/nodemailer
+    AntelopeJS/redis
+    AntelopeJS/rethinkdb
+    AntelopeJS/stripe
+    AntelopeJS/template-blank-typescript
+    AntelopeJS/template-dms-adonis
+    AntelopeJS/template-dms-demo
+    AntelopeJS/template-module-typescript
+    AntelopeJS/template-todo-typescript
+    AntelopeJS/tooling-configs
+    AntelopeJS/cloud
+    AntelopeJS/dms-cicd
+    AntelopeJS/dms-mailing
+    AntelopeJS/dms-marketing
+    AntelopeJS/antelope-web
+    AntelopeJS/brevo
+    AntelopeJS/brevo-private
+    AntelopeJS/cdn
+    AntelopeJS/mailchimp
+    AntelopeJS/mqtt
+    AntelopeJS/postgres
+  files:
+    - source: .github/ISSUE_TEMPLATE/
+      dest: .github/ISSUE_TEMPLATE/
+      deleteOrphaned: true
+    - source: .github/PULL_REQUEST_TEMPLATE.md
+      dest: .github/PULL_REQUEST_TEMPLATE.md
+    - source: CONTRIBUTING.md
+      dest: CONTRIBUTING.md

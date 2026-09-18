@@ -4,8 +4,12 @@ This repository contains the public profile, community health files, issue and
 pull request templates, and reusable GitHub Actions workflows shared by the
 [AntelopeJS organization](https://github.com/AntelopeJS).
 
-Repositories can override a community file when they need project-specific
-guidance. Reusable workflows remain centrally maintained and are called from a
+The issue forms, the pull request template and `CONTRIBUTING.md` are also
+copied into every AntelopeJS repository by the `sync-community-files`
+workflow (`.github/sync.yml` lists the targets), so tools and agents that read
+the repository see them too. Edit them here only; the workflow opens a pull
+request on each target repository. Repositories can override any other
+community file when they need project-specific guidance. Reusable workflows remain centrally maintained and are called from a
 small workflow in each consuming repository.
 
 ## Private npm releases

@@ -1,3 +1,4 @@
+<!-- Synced from https://github.com/AntelopeJS/.github - edit it there, not in this repository. -->
 # Contributing to AntelopeJS
 
 Thank you for helping improve AntelopeJS.
@@ -36,6 +37,15 @@ Pull requests should:
 - call out breaking changes and migration steps;
 - include evidence that the change was tested;
 - remain small enough to review safely.
+
+## Pull requests opened by tools and agents
+
+GitHub only applies `.github/PULL_REQUEST_TEMPLATE.md` when a person opens the
+pull request from the web interface. A pull request created through the API,
+`gh pr create` with a body, or an AI agent must reproduce the template's
+sections itself: Summary, Related issue, Verification and the Checklist, with
+the boxes ticked for what was actually done. The same goes for issues: use the
+fields of the forms in `.github/ISSUE_TEMPLATE/`.
 
 Maintainers may ask for changes before merging. AntelopeJS repositories
 normally squash pull requests, so the pull request title becomes the commit on

@@ -1,0 +1,35 @@
+name: Sync community files
+
+# Copies the issue forms, the pull request template and CONTRIBUTING.md into
+# every repository listed in .github/sync.yml, through one pull request per
+# repository. GitHub already applies these files as organization defaults on
+# the web interface; the copies make them visible to tools and agents that read
+# the repository itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/ISSUE_TEMPLATE/**
+      - .github/PULL_REQUEST_TEMPLATE.md
+      - CONTRIBUTING.md
+      - .github/sync.yml
+      - .github/workflows/sync-community-files.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: BetaHuhn/repo-file-sync-action@v1
+        with:
+          GH_PAT: ${{ secrets.SYNC_GITHUB_TOKEN }}
+          CONFIG_PATH: .github/sync.yml
+          BRANCH_PREFIX: chore/sync-community-files
+          COMMIT_PREFIX: "chore(community): "
+          PR_LABELS: false
+          COMMIT_BODY: "Synced from AntelopeJS/.github by the sync-community-files workflow."

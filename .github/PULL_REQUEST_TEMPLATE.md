@@ -1,3 +1,4 @@
+<!-- Synced from https://github.com/AntelopeJS/.github - edit it there, not in this repository. -->
 ## Summary
 
 <!-- Explain the problem and the solution. -->
