@@ -56,6 +56,32 @@ from `main`, and `next` only releases from `next`.
 
 Anything merged into `main` must be releasable as stable at any time.
 
+### Reusable release workflows
+
+Repositories call the reusable workflows of this repository,
+`release-npm-public.yml` or `release-npm-private.yml`, through the `v1` tag:
+
+```yaml
+jobs:
+  release:
+    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v1
+```
+
+`v1` is a moving tag. After each merge that changes these workflows, it is
+re-pointed to the latest `main` commit, so every repository picks up the change
+without editing its own workflow. Changes released under `v1` must therefore be
+backward compatible. A breaking change, such as a new required input or a
+removed input, needs a new `v2` tag, and repositories move to it explicitly.
+
+When the tests run by `pnpm release` need service containers, such as a
+database or a storage emulator, describe them in a docker compose file and pass
+its path, relative to the repository root, as `services-compose-file`. The
+workflow runs `docker compose -f <file> up -d --wait` before publishing, so
+give each service a healthcheck when readiness matters, and always runs
+`docker compose -f <file> down -v` at the end of the job. The file must be a
+regular file inside the repository. Release secrets are not passed to the
+compose commands.
+
 ### Work that is not ready to ship
 
 Keep the feature branch open, as a draft pull request against `main`, until the
@@ -67,6 +93,12 @@ If consumers need a published build to test it, open a prerelease cycle:
 2. Open the pull request against `next` instead of `main`.
 3. After merging, run the Release workflow on `next` with the `next` channel.
 4. Consumers install `@antelopejs/<package>@next`.
+
+Prerelease commits are named `release: v1.9.0-next.0` instead of
+`chore(release): v1.9.0-next.0`. `release` is not a changelog type, so these
+commits never show up in a changelog, in particular not in the stable changelog
+that later covers the whole cycle. Stable releases keep
+`chore(release): v1.9.0`.
 
 ### Stable fixes during a prerelease cycle
 

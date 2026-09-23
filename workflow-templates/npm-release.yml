@@ -23,10 +23,13 @@ permissions:
 
 jobs:
   release:
-    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
+    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v1
     with:
       channel: ${{ inputs.channel }}
       install-core: true
       package-directory: ${{ inputs.package-directory }}
+      # Uncomment when the release tests need service containers (databases,
+      # storage emulators, ...) described in a docker compose file.
+      # services-compose-file: docker-compose.release.yml
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
