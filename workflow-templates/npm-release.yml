@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: npm distribution channel
+        description: npm distribution channel (latest from the default branch, next from the next branch)
         required: true
         default: latest
         type: choice
