@@ -15,6 +15,10 @@ on:
         description: Relative path to the package directory to release
         default: .
         type: string
+      services-compose-file:
+        description: Relative path to a docker compose file whose services must run during the release
+        default: ""
+        type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
         description: Token allowed to create the release commit, tag, and GitHub release
@@ -117,6 +121,50 @@ jobs:
           }
           NODE
 
+      - name: Validate services compose file
+        id: services
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          const workspace = fs.realpathSync(process.env.GITHUB_WORKSPACE)
+          const input = process.env.SERVICES_COMPOSE_FILE
+          if (path.isAbsolute(input)) {
+            console.error('services-compose-file must be a relative file path inside the repository')
+            process.exit(1)
+          }
+
+          const file = path.resolve(workspace, input)
+          const relativeFile = path.relative(workspace, file)
+          if (relativeFile === '..' || relativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFile)) {
+            console.error('services-compose-file must stay inside the repository')
+            process.exit(1)
+          }
+
+          let realFile
+          try {
+            realFile = fs.realpathSync(file)
+          } catch {
+            console.error(`services-compose-file does not exist: ${input}`)
+            process.exit(1)
+          }
+          const realRelativeFile = path.relative(workspace, realFile)
+          if (realRelativeFile === '..' || realRelativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(realRelativeFile)) {
+            console.error('services-compose-file must resolve inside the repository')
+            process.exit(1)
+          }
+          if (!fs.statSync(realFile).isFile()) {
+            console.error(`services-compose-file is not a regular file: ${input}`)
+            process.exit(1)
+          }
+
+          NODE
+
       - name: Resolve pnpm lockfile
         id: lockfile
         env:
@@ -191,6 +239,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Start services
+        if: steps.services.outcome == 'success'
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$SERVICES_COMPOSE_FILE" up -d --wait
+
       - name: Publish release
         env:
           CHANNEL: ${{ inputs.channel }}
@@ -224,7 +278,16 @@ jobs:
               *-*) args+=("--increment=${version%%-*}") ;;
             esac
           else
-            args+=(--preRelease=next)
+            # Prerelease commits use a type that changelogen ignores, so they
+            # stay out of the next stable changelog.
+            # shellcheck disable=SC2016 # ${version} is expanded by release-it.
+            args+=(--preRelease=next '--git.commitMessage=release: v${version}')
           fi
           pnpm release "${args[@]}"
         working-directory: ${{ inputs.package-directory }}
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$SERVICES_COMPOSE_FILE" down -v
