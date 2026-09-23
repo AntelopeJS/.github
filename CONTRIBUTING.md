@@ -40,3 +40,59 @@ Pull requests should:
 Maintainers may ask for changes before merging. AntelopeJS repositories
 normally squash pull requests, so the pull request title becomes the commit on
 the default branch.
+
+## Release channels
+
+npm packages are published from two branches, each bound to one npm
+distribution tag:
+
+| Branch | npm dist-tag | Versions             |
+| ------ | ------------ | -------------------- |
+| `main` | `latest`     | `1.9.0`              |
+| `next` | `next`       | `1.9.0-next.0`, etc. |
+
+The Release workflow refuses any other combination: `latest` only releases
+from `main`, and `next` only releases from `next`.
+
+Anything merged into `main` must be releasable as stable at any time.
+
+### Work that is not ready to ship
+
+Keep the feature branch open, as a draft pull request against `main`, until the
+change is ready to release.
+
+If consumers need a published build to test it, open a prerelease cycle:
+
+1. Create `next` from `main` if it does not exist yet.
+2. Open the pull request against `next` instead of `main`.
+3. After merging, run the Release workflow on `next` with the `next` channel.
+4. Consumers install `@antelopejs/<package>@next`.
+
+### Stable fixes during a prerelease cycle
+
+1. Open the fix against `main` and release it on the `latest` channel.
+2. Rebase `next` onto `main` so the cycle includes the fix:
+
+   ```sh
+   git switch next
+   git fetch origin
+   git rebase origin/main
+   git push --force-with-lease
+   ```
+
+   On conflicts in the `package.json` version or at the top of `CHANGELOG.md`,
+   keep the `next` side.
+
+### Promoting `next` to stable
+
+1. Open a pull request from `next` to `main` and merge it with **Rebase and
+   merge**, so the cycle's commits land on `main` individually.
+2. Run the Release workflow on `main` with the `latest` channel.
+3. Delete the `next` branch.
+
+Stable releases ignore prerelease tags. The stable changelog therefore covers
+every commit since the previous stable release, not just those since the last
+`-next` tag. When `package.json` holds a prerelease such as `1.9.0-next.4`, the
+stable release is pinned to its base version, `1.9.0`, even if the cycle
+contains breaking commits. Choose the right major or minor version when
+opening the cycle.
