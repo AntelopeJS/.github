@@ -13,8 +13,9 @@ small workflow in each consuming repository.
 The private npm release workflow accepts these inputs:
 
 - `channel` (required): `latest` or `next`.
-- `install-core` (optional, default `true`): install the AntelopeJS CLI before
-  releasing.
+- `install-core` (optional, default `true`): make the AntelopeJS CLI available
+  before releasing. A package that lists `@antelopejs/core` in its dependencies
+  uses its own `ajs`; otherwise the CLI is installed globally.
 - `package-directory` (optional, default `.`): a relative directory below the
   repository root containing the package to release.
 
@@ -44,8 +45,9 @@ The public npm release workflow keeps existing root-package callers unchanged.
 It accepts these inputs:
 
 - `channel` (required): `latest` or `next`.
-- `install-core` (optional, default `false`): install the AntelopeJS CLI before
-  releasing.
+- `install-core` (optional, default `false`): make the AntelopeJS CLI available
+  before releasing. A package that lists `@antelopejs/core` in its dependencies
+  uses its own `ajs`; otherwise the CLI is installed globally.
 - `package-directory` (optional, default `.`): a relative directory below the
   repository root containing the package to release.
 

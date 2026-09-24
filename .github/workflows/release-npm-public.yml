@@ -221,7 +221,15 @@ jobs:
 
       - name: Install AntelopeJS CLI
         if: inputs.install-core
-        run: pnpm add --global @antelopejs/core
+        working-directory: ${{ inputs.package-directory }}
+        run: |
+          # Package scripts resolve node_modules/.bin first, so a repo-local
+          # @antelopejs/core takes precedence over a global install.
+          if [ -x node_modules/.bin/ajs ]; then
+            echo "Using the repo-local AntelopeJS CLI"
+          else
+            pnpm add --global @antelopejs/core
+          fi
 
       - name: Configure release identity
         run: |
