@@ -16,8 +16,6 @@ Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https
 | **[DMS](https://dms.antelopejs.com)**             | Code-first Dashboard Management System. Declare pages, forms and tables in TypeScript and get auth, roles, permissions and a full admin UI.         | Open source · Preview    |
 | **[Cloud](https://cloud.antelopejs.com)**         | Managed deployment for any Docker container on EU-hosted dedicated hardware. Reads your `antelope.config.ts` to provision what the app needs.        | Closed beta              |
 
-[![AntelopeJS DMS: table editing in the dashboard](https://raw.githubusercontent.com/AntelopeJS/.github/main/res/images/dms-dashboard.png)](https://dms.antelopejs.com)
-
 ## Repositories
 
 ### Core
