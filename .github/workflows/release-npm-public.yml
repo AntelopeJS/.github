@@ -7,6 +7,10 @@ on:
         description: npm distribution channel
         required: true
         type: string
+      release-version:
+        description: Exact stable version; empty uses the automatic increment
+        default: ""
+        type: string
       install-core:
         description: Install the AntelopeJS CLI before releasing
         default: false
@@ -41,8 +45,15 @@ jobs:
       - name: Validate release source and channel
         env:
           CHANNEL: ${{ inputs.channel }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          if [ -n "$RELEASE_VERSION" ]; then
+            test "$CHANNEL" = latest && [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo "release-version must be a stable version on the latest channel." >&2
+              exit 1
+            }
+          fi
           case "$CHANNEL" in
             latest) release_branch=$DEFAULT_BRANCH ;;
             next) release_branch=next ;;
@@ -237,6 +248,7 @@ jobs:
       - name: Publish release
         env:
           CHANNEL: ${{ inputs.channel }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         run: |
           auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
@@ -262,9 +274,13 @@ jobs:
             fi
             # Promoting a prerelease ships its base version (1.9.0-next.4 -> 1.9.0).
             version=$(node -p "require('./package.json').version")
-            case "$version" in
-              *-*) args+=("--increment=${version%%-*}") ;;
-            esac
+            if [ -n "$RELEASE_VERSION" ]; then
+              args+=("--increment=$RELEASE_VERSION")
+            else
+              case "$version" in
+                *-*) args+=("--increment=${version%%-*}") ;;
+              esac
+            fi
           else
             # Prerelease commits use a type that changelogen ignores, so they
             # stay out of the next stable changelog.
