@@ -26,53 +26,55 @@ changes unless the repository explicitly requires them.
 
 ### The `pnpm run checks` contract
 
-Every repository defines a `checks` script that runs its whole gate: typecheck,
-lint, format check, unused-code check, tests, and package tests, whichever apply.
-The script must not modify files. Do not use `--fix` or `--write`, and exit with
-a non-zero status when a check fails.
+Every repository defines a `checks` script that runs its whole gate:
+`typecheck`, `lint`, `format:check`, `knip`, `test`, `size`, `ratchet` and
+`sync:check`. `size` enforces the file size limit, `ratchet` fails when recorded
+debt grows, and `sync:check` fails when the files written by the
+[guardrail pack](https://github.com/AntelopeJS/tooling-configs#guardrail-pack)
+drift. The script must not modify files, and it exits with a non-zero status
+when a check fails.
 
 CI runs `pnpm install --frozen-lockfile` then `pnpm run checks`, plus optional
 documentation checks, services, and extra commands. A green local `checks`
-predicts green CI when those optional checks also pass. Node.js comes from a
-`.nvmrc` containing `24`; pnpm comes from the `packageManager` field in
-`package.json`.
+predicts green CI when those optional checks also pass. Node.js comes from
+`.nvmrc` (`24`); pnpm comes from the `packageManager` field in `package.json`.
 
-### Git hooks with lefthook
+### Guardrail pack
 
-Use lefthook to run `oxlint --fix` and `oxfmt` on staged files before committing,
-with `stage_fixed: true` to stage the fixes. Run the full checks before pushing.
-For example, `lefthook.yml` can contain:
+`@antelopejs/tooling-configs` owns the lint and format presets, the git hooks,
+the `checks` scripts, `.nvmrc` and `guardrails.ratchet.json`. Run
+`pnpm exec antelopejs-sync` to write them, then `pnpm install`. Do not edit
+these files by hand. `sync:check` reports any difference.
 
-```yaml
-pre-commit:
-  commands:
-    lint:
-      glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
-      run: pnpm exec oxlint --fix {staged_files}
-      stage_fixed: true
-    format:
-      glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,md,yml,yaml}"
-      run: pnpm exec oxfmt {staged_files}
-      stage_fixed: true
-pre-push:
-  commands:
-    checks:
-      run: pnpm run checks
-```
+### Git hooks
 
-Hooks are a convenience; CI is the gate.
+Do not hand-write a `lefthook.yml`; `antelopejs-sync` writes it.
+
+- pre-commit runs `oxfmt`, `oxlint` and the size check on staged files.
+- pre-push runs `typecheck`.
+
+Tests run in CI only, through `pnpm run checks`.
 
 ### Comments
 
-Comments explain a non-obvious why: a constraint, a decision, or a workaround
-with a link. Do not restate what the code does. Document public contracts with
-TSDoc. Do not leave commented-out code. Every TODO links an issue.
+Write no comments except TSDoc (`/** */`) on public contracts and a
+`SAFETY: <reason>` comment on a type assertion. Encode any other constraint in a
+type, a lint rule, or a test. The `antelopejs/no-comments` lint rule enforces
+this. It also accepts tool directives such as `oxlint-disable` and
+`@ts-expect-error <reason>`.
 
 ### File size limit
 
-Keep each source file at 500 lines or fewer, matching the `max-lines` rule in
-`@antelopejs/tooling-configs`. Split files by responsibility instead of raising
-the limit.
+An authored file may hold at most 20,000 bytes (about 5,000 tokens), tests
+included, and at most 500 lines (`max-lines`). Generated code, fixtures,
+lockfiles, `CHANGELOG.md` and Markdown are excluded. Split an oversize file by
+responsibility.
+
+Files that were already over a limit when a repository adopted the pack are
+listed under `oversizeFiles` in `guardrails.ratchet.json`. This allowlist only
+shrinks: a listed file may not grow past its recorded size, and no file is added
+to it. `pnpm exec antelopejs-ratchet --update` lowers the recorded sizes after a
+file shrinks.
 
 ## Commits and pull requests
 
