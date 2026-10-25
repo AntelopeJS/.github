@@ -72,15 +72,20 @@ continue to use npmjs with public access and provenance.
 ## Node CI
 
 The reusable `ci-node.yml` workflow installs dependencies with the frozen
-lockfile and runs `pnpm run checks`. It reads Node.js from `.nvmrc` and pnpm
-from `packageManager` in `package.json`. It accepts these optional inputs:
+lockfile and runs `pnpm run checks`. By default, it reads Node.js from `.nvmrc`.
+Callers can pass `node-versions` to check several versions. It reads pnpm from
+`packageManager` in `package.json`. It accepts these optional inputs:
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
+| `node-versions` | `""` | JSON array of Node.js versions; each runs checks in its own job. Empty uses `.nvmrc`. |
 | `docs-files` | `""` | Newline-separated files passed to the docs action as `files`; empty skips the step. |
 | `docs-typescript-project` | `""` | TypeScript project passed to the docs action as `typescript-project`. |
 | `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
+
+The `checks` job stays the single required result. It succeeds only when every
+Node.js job succeeds.
 
 Services start with `docker compose up -d --wait`. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
