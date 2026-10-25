@@ -3,6 +3,10 @@ name: Node CI
 on:
   workflow_call:
     inputs:
+      node-versions:
+        description: JSON array of Node.js versions; empty uses .nvmrc
+        default: ""
+        type: string
       docs-files:
         description: Newline-separated documentation files to check
         default: ""
@@ -24,12 +28,17 @@ permissions:
   contents: read
 
 jobs:
-  checks:
+  node:
+    name: Node ${{ matrix.node-version || '.nvmrc' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Check pull request title
@@ -51,7 +60,8 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node-version }}
+          node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
           cache: pnpm
 
       - name: Install dependencies
@@ -92,3 +102,13 @@ jobs:
         env:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
+
+  checks:
+    if: always()
+    needs: [node]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - if: needs.node.result != 'success'
+        run: exit 1

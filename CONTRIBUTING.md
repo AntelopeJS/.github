@@ -37,7 +37,8 @@ when a check fails.
 CI runs `pnpm install --frozen-lockfile` then `pnpm run checks`, plus optional
 documentation checks, services, and extra commands. A green local `checks`
 predicts green CI when those optional checks also pass. Node.js comes from
-`.nvmrc` (`24`); pnpm comes from the `packageManager` field in `package.json`.
+`.nvmrc` (`24`) unless the caller passes `node-versions`. pnpm comes from the
+`packageManager` field in `package.json`.
 
 ### Guardrail pack
 
@@ -113,6 +114,20 @@ jobs:
   checks:
     uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
 ```
+
+Libraries (published npm packages) pass `node-versions` listing every major
+Node.js version their `package.json` `engines.node` range allows. For example,
+use `node-versions: '[22, 24]'` for `engines.node: ">=22"`:
+
+```yaml
+jobs:
+  checks:
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    with:
+      node-versions: '[22, 24]'
+```
+
+Applications keep the `.nvmrc` default.
 
 Optional inputs enable documentation checks, compose services, and commands
 after `checks`. See the [workflow inputs](README.md#node-ci).
