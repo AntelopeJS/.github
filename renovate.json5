@@ -1,0 +1,22 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  description: 'Shared dependency update policy for AntelopeJS repositories',
+  extends: [
+    'config:recommended',
+    'helpers:pinGitHubActionDigests',
+    'schedule:weekly',
+  ],
+  timezone: 'Europe/Brussels',
+  packageRules: [
+    {
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
+      groupName: 'GitHub Actions',
+    },
+    {
+      // The npm package and docs action share a release tag; keep them together.
+      matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs'],
+      groupName: 'AntelopeJS tooling configs',
+    },
+  ],
+}

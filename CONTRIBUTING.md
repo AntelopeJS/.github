@@ -16,18 +16,70 @@ AntelopeJS JavaScript projects use Node.js and pnpm.
 
 1. Fork or clone the repository.
 2. Create a focused branch from the default branch.
-3. Install dependencies with the lockfile intact.
+3. Install dependencies with `pnpm install --frozen-lockfile`.
 4. Make the smallest change that solves the problem.
-5. Run the repository's formatting, linting, type-checking, and test commands.
+5. Run `pnpm run checks`, the repository's complete, read-only validation gate.
 6. Add or update documentation and tests when behavior changes.
 
 Do not commit generated artifacts, credentials, or unrelated formatting
 changes unless the repository explicitly requires them.
 
+### The `pnpm run checks` contract
+
+Every repository defines a `checks` script that runs its whole gate: typecheck,
+lint, format check, unused-code check, tests, and package tests, whichever apply.
+The script must not modify files. Do not use `--fix` or `--write`, and exit with
+a non-zero status when a check fails.
+
+CI runs `pnpm install --frozen-lockfile` then `pnpm run checks`, plus optional
+documentation checks, services, and extra commands. A green local `checks`
+predicts green CI when those optional checks also pass. Node.js comes from a
+`.nvmrc` containing `24`; pnpm comes from the `packageManager` field in
+`package.json`.
+
+### Git hooks with lefthook
+
+Use lefthook to run `oxlint --fix` and `oxfmt` on staged files before committing,
+with `stage_fixed: true` to stage the fixes. Run the full checks before pushing.
+For example, `lefthook.yml` can contain:
+
+```yaml
+pre-commit:
+  commands:
+    lint:
+      glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
+      run: pnpm exec oxlint --fix {staged_files}
+      stage_fixed: true
+    format:
+      glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,md,yml,yaml}"
+      run: pnpm exec oxfmt {staged_files}
+      stage_fixed: true
+pre-push:
+  commands:
+    checks:
+      run: pnpm run checks
+```
+
+Hooks are a convenience; CI is the gate.
+
+### Comments
+
+Comments explain a non-obvious why: a constraint, a decision, or a workaround
+with a link. Do not restate what the code does. Document public contracts with
+TSDoc. Do not leave commented-out code. Every TODO links an issue.
+
+### File size limit
+
+Keep each source file at 500 lines or fewer, matching the `max-lines` rule in
+`@antelopejs/tooling-configs`. Split files by responsibility instead of raising
+the limit.
+
 ## Commits and pull requests
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for commit and
 pull request titles, for example `fix(api): handle an empty response`.
+CI accepts the types `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`,
+`ci`, and `chore`, with an optional scope and `!` for breaking changes.
 
 Pull requests should:
 
@@ -40,6 +92,53 @@ Pull requests should:
 Maintainers may ask for changes before merging. AntelopeJS repositories
 normally squash pull requests, so the pull request title becomes the commit on
 the default branch.
+
+## Shared CI and maintenance workflows
+
+Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
+tag as the [release workflows](#reusable-release-workflows), so the same
+backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`:
+
+```yaml
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checks:
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+```
+
+Optional inputs enable documentation checks, compose services, and commands
+after `checks`. See the [workflow inputs](README.md#node-ci).
+
+Call `stale.yml` once a day. The actions permission lets the stale action store
+its state in the actions cache:
+
+```yaml
+name: Stale issues
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  stale:
+    permissions:
+      actions: write
+      issues: write
+      pull-requests: write
+    uses: AntelopeJS/.github/.github/workflows/stale.yml@v1
+```
+
+Use the shared Renovate preset in `renovate.json5`:
+
+```json
+{ "extends": ["github>AntelopeJS/.github:renovate.json5"] }
+```
 
 ## Release channels
 
