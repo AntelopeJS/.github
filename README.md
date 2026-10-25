@@ -82,6 +82,8 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `docs-files` | `""` | Newline-separated files passed to the docs action as `files`; empty skips the step. |
 | `docs-typescript-project` | `""` | TypeScript project passed to the docs action as `typescript-project`. |
 | `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. |
+| `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. |
+| `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 
 The `checks` job stays the single required result. It succeeds only when every
