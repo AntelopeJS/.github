@@ -19,6 +19,14 @@ on:
         description: Path to a docker compose file whose services must run during checks
         default: ""
         type: string
+      cache-paths:
+        description: Newline-separated paths to cache between runs; empty skips the cache step
+        default: ""
+        type: string
+      cache-key-files:
+        description: Newline-separated globs hashed into the cache key
+        default: pnpm-lock.yaml
+        type: string
       extra-commands:
         description: Multiline shell commands to run after checks
         default: ""
@@ -66,6 +74,15 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Restore cache
+        if: inputs.cache-paths != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Check documentation
         if: inputs.docs-files != ''
