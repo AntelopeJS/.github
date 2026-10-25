@@ -1,0 +1,94 @@
+name: Node CI
+
+on:
+  workflow_call:
+    inputs:
+      docs-files:
+        description: Newline-separated documentation files to check
+        default: ""
+        type: string
+      docs-typescript-project:
+        description: TypeScript project used by the documentation check
+        default: ""
+        type: string
+      services-compose-file:
+        description: Path to a docker compose file whose services must run during checks
+        default: ""
+        type: string
+      extra-commands:
+        description: Multiline shell commands to run after checks
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Check pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|refactor|perf|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check documentation
+        if: inputs.docs-files != ''
+        uses: AntelopeJS/tooling-configs/actions/docs@3163630a769f3cd3bd506d194cc5fbf4a276d803 # v0.0.9
+        with:
+          files: ${{ inputs.docs-files }}
+          typescript-project: ${{ inputs.docs-typescript-project }}
+
+      - name: Start services
+        id: services
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          docker compose -f "$FILE" up -d --wait
+
+      - name: Run checks
+        run: pnpm run checks
+
+      - name: Run extra commands
+        if: inputs.extra-commands != ''
+        env:
+          EXTRA_COMMANDS: ${{ inputs.extra-commands }}
+        run: bash -euo pipefail -c "$EXTRA_COMMANDS"
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$FILE" down -v
