@@ -69,6 +69,33 @@ that governs the package, which is not always the one next to its
 `package.json`: see [pnpm workspaces](#pnpm-workspaces). Public packages
 continue to use npmjs with public access and provenance.
 
+## Node CI
+
+The reusable `ci-node.yml` workflow installs dependencies with the frozen
+lockfile and runs `pnpm run checks`. It reads Node.js from `.nvmrc` and pnpm
+from `packageManager` in `package.json`. It accepts these optional inputs:
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `docs-files` | `""` | Newline-separated files passed to the docs action as `files`; empty skips the step. |
+| `docs-typescript-project` | `""` | TypeScript project passed to the docs action as `typescript-project`. |
+| `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. |
+| `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
+
+Services start with `docker compose up -d --wait`. After a successful start,
+cleanup runs with `docker compose down -v` even if checks or extra commands
+fail. Pull request titles must use Conventional Commits. See the [checks
+contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
+examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
+## Stale issues
+
+The reusable `stale.yml` workflow takes no inputs. Call it once a day with job
+permissions `actions: write`, `issues: write`, and `pull-requests: write`.
+Issues become stale after 60 inactive days and close after 30 more; the
+`pending` label exempts issues. Pull requests never become stale. See the [daily
+caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
 ## pnpm workspaces
 
 Before configuring the pnpm cache, both workflows resolve the lockfile that
