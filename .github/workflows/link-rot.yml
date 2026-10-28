@@ -1,0 +1,91 @@
+name: Link rot
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: link-rot
+  cancel-in-progress: false
+
+jobs:
+  link-rot:
+    name: Link rot
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ORG: ${{ github.repository_owner }}
+    steps:
+      - name: Fetch README.md and docs of the in-scope repositories
+        run: |
+          mkdir repos
+          gh repo list "$ORG" --visibility public --no-archived --limit 1000 --json name --jq '.[].name' | while read -r repo; do
+            pack=$(gh api "repos/${ORG}/${repo}/properties/values" --jq '.[] | select(.property_name == "pack") | .value')
+            if [ "$pack" = "none" ]; then
+              continue
+            fi
+            git clone -q --depth 1 --filter=blob:none --sparse "https://github.com/${ORG}/${repo}.git" "repos/${repo}"
+            git -C "repos/${repo}" sparse-checkout set --no-cone /README.md /docs/
+            rm -rf "repos/${repo}/.git"
+          done
+
+      - name: Check external links
+        id: lychee
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          lycheeVersion: v0.24.2
+          fail: false
+          jobSummary: false
+          output: lychee.json
+          format: json
+          args: >-
+            --no-progress
+            --scheme http
+            --scheme https
+            --exclude-all-private
+            --exclude '^https://(www\.)?npmjs\.com/'
+            --accept 200..=299,429
+            --max-concurrency 8
+            --max-retries 2
+            --timeout 30
+            'repos/*/README.md'
+            'repos/*/docs/**'
+
+      - name: Build the report
+        env:
+          LYCHEE_EXIT_CODE: ${{ steps.lychee.outputs.exit_code }}
+        run: |
+          if [ "$LYCHEE_EXIT_CODE" != "0" ] && [ "$LYCHEE_EXIT_CODE" != "2" ]; then
+            echo "::error::lychee crashed with exit code ${LYCHEE_EXIT_CODE}."
+            exit 1
+          fi
+          mkdir -p report
+          jq -n --slurpfile lychee lychee.json --arg generatedAt "$(date -u +%FT%TZ)" --argjson repos "$(ls repos | jq -R . | jq -s .)" '
+            def parts: sub("^(\\./)?repos/"; "") | capture("^(?<repo>[^/]+)/(?<file>.+)$");
+            {
+              generatedAt: $generatedAt,
+              checkedLinks: $lychee[0].total,
+              repos: (
+                reduce ($lychee[0].error_map // {} | to_entries[]) as $source (
+                  reduce $repos[] as $repo ({}; .[$repo] = {});
+                  ($source.key | parts) as $p
+                  | .[$p.repo][$p.file] = [$source.value[] | {url: .url, status: (.status.text // .status.details // "dead")}]
+                )
+              )
+            }' > report/link-rot.json
+
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: link-rot
+          path: report/link-rot.json
+          if-no-files-found: error
+          retention-days: 30

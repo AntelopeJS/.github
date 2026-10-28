@@ -95,6 +95,84 @@ fail. Pull request titles must use Conventional Commits. See the [checks
 contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
 examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
+### Renovate sync
+
+On a pull request from a `renovate/*` branch of the same repository whose diff
+changes `@antelopejs/tooling-configs`, the `renovate-sync` job installs,
+runs `antelopejs-sync` (with `--profile template` when the repository's `pack`
+custom property is `template`) and commits the output to the branch as
+`github-actions[bot]`, so the bump pull request becomes conformant on its own.
+A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
+dispatches the caller workflow on the branch (`gh workflow run`), which runs
+`checks` on the new head. When the sync output touches `.github/workflows/**`
+or `.github/actions/**`, nothing is pushed and the job fails with that reason in
+its summary: the pull request stays One-tap.
+
+The caller must therefore declare the `workflow_dispatch` trigger and grant
+`contents: write` and `actions: write` to the job that calls `ci-node.yml`. The
+job inherits the token permissions of its caller, so a caller that grants less
+keeps working: only a bump whose sync output must be pushed fails, with the
+missing permission named in the log.
+
+```yaml
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  ci:
+    permissions:
+      contents: write
+      actions: write
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+```
+
+The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
+when the caller job id is `ci`.
+
+## Mutation testing
+
+The reusable `mutation.yml` workflow runs incremental Stryker mutation testing
+of the calling repository. The caller schedules it weekly:
+
+```yaml
+name: Mutation
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  mutation:
+    permissions:
+      contents: read
+    uses: AntelopeJS/.github/.github/workflows/mutation.yml@v1
+```
+
+It reads the repository's `tier` custom property and exits successfully without
+running unless it is `N1` or `N2`. The repository provides Stryker and its
+configuration. The workflow keeps the incremental file in the actions cache and
+uploads the Stryker JSON report as the `mutation-report` artifact. It accepts
+these optional inputs:
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `stryker-command` | `pnpm exec stryker run` | Command that runs Stryker; the workflow appends the incremental and JSON reporter options. |
+| `report-file` | `reports/mutation/mutation.json` | Path of the JSON report to upload. |
+| `incremental-file` | `reports/stryker-incremental.json` | Path of the incremental file kept in the actions cache. |
+| `timeout-minutes` | `180` | Time limit of the Stryker job. |
+
+## Link rot
+
+`link-rot.yml` runs weekly in this repository, and on demand by
+`workflow_dispatch`. It checks the external links of `README.md` and `docs/**`
+of every public, non-archived repository of the organization whose `pack`
+custom property is not `none`, with lychee. Dead links never fail the run; only
+a crash does. Links to npmjs.com are skipped because it rejects automated
+requests. The run uploads one JSON artifact, `link-rot`, keyed by repository
+and file.
+
 ## Stale issues
 
 The reusable `stale.yml` workflow takes no inputs. Call it once a day with job
