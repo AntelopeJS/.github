@@ -100,19 +100,40 @@ the default branch.
 
 Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
 tag as the [release workflows](#reusable-release-workflows), so the same
-backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`:
+backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`,
+with the [Renovate sync](README.md#renovate-sync) in its own job so that only
+that job, and only on Renovate pull requests, holds a write token:
 
 ```yaml
-name: CI
+name: ci
+
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - next
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
-  checks:
+  ci:
+    permissions:
+      contents: read
     uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    with:
+      renovate-sync: false
+  renovate-sync:
+    if: >-
+      github.event_name == 'pull_request'
+      && startsWith(github.head_ref, 'renovate/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      actions: write
+    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v1
 ```
 
 Libraries (published npm packages) pass `node-versions` listing every major
@@ -121,9 +142,12 @@ use `node-versions: '[22, 24]'` for `engines.node: ">=22"`:
 
 ```yaml
 jobs:
-  checks:
+  ci:
+    permissions:
+      contents: read
     uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
     with:
+      renovate-sync: false
       node-versions: '[22, 24]'
 ```
 
