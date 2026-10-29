@@ -1,0 +1,117 @@
+name: Renovate sync
+
+on:
+  workflow_call:
+
+jobs:
+  renovate-sync:
+    name: Renovate sync
+    if: >-
+      github.event_name == 'pull_request'
+      && startsWith(github.head_ref, 'renovate/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: ci-renovate-sync-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      GH_REPO: ${{ github.repository }}
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_REF: ${{ github.head_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect a tooling-configs bump
+        id: bump
+        run: |
+          if git diff -U0 "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' ':(glob)**/pnpm-lock.yaml' | grep -qE '^[+-].*@antelopejs/tooling-configs'; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the pack property
+        id: pack
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pack=$(gh api "repos/${GH_REPO}/properties/values" --jq '.[] | select(.property_name == "pack") | .value')
+          echo "pack=${pack}" >> "$GITHUB_OUTPUT"
+
+      - if: steps.bump.outputs.bumped == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - if: steps.bump.outputs.bumped == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.bump.outputs.bumped == 'true'
+        run: pnpm install --frozen-lockfile --reporter=silent
+
+      - name: Run antelopejs-sync
+        id: sync
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          PACK: ${{ steps.pack.outputs.pack }}
+        run: |
+          args=()
+          if [ "$PACK" = "template" ]; then
+            args+=(--profile template)
+          fi
+          if ! out=$(pnpm exec antelopejs-sync "${args[@]}" 2>&1); then
+            echo "$out"
+            exit 1
+          fi
+          if git status --porcelain --untracked-files=all -- .github/workflows .github/actions | grep -q .; then
+            {
+              echo "### Renovate sync: One-tap"
+              echo
+              echo "\`antelopejs-sync\` changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: a pull request touching workflow paths needs a human tap."
+              echo
+              echo "Changed paths:"
+              echo
+              git status --porcelain --untracked-files=all -- .github/workflows .github/actions | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::antelopejs-sync changes workflow paths; nothing pushed, this pull request stays One-tap."
+            exit 1
+          fi
+          if ! git diff --quiet -- package.json; then
+            pnpm install --lockfile-only --reporter=silent
+          fi
+          if git status --porcelain --untracked-files=all | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit the sync output and start checks
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit --no-verify -q -m "chore(deps): apply antelopejs-sync output"
+          if ! git push --no-verify -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${HEAD_REF}"; then
+            echo "::error::The sync commit could not be pushed. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant contents: write."
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          caller="${GITHUB_WORKFLOW_REF#"${GH_REPO}/"}"
+          caller="${caller%%@*}"
+          for _ in $(seq 1 12); do
+            if [ "$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${sha}&event=pull_request" --jq '.total_count')" != "0" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if ! gh workflow run "$caller" --ref "$HEAD_REF" > /dev/null; then
+            echo "::error::The sync commit is pushed, but ${caller} could not be dispatched. The caller workflow must declare workflow_dispatch and the job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant actions: write."
+            exit 1
+          fi

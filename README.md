@@ -85,9 +85,11 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. |
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
+| `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
 
 The `checks` job stays the single required result. It succeeds only when every
-Node.js job succeeds.
+Node.js job succeeds and the Renovate sync run by this workflow, if any, did not
+fail or get cancelled.
 
 Services start with `docker compose up -d --wait`. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
@@ -97,36 +99,68 @@ examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ### Renovate sync
 
-On a pull request from a `renovate/*` branch of the same repository whose diff
-changes `@antelopejs/tooling-configs`, the `renovate-sync` job installs,
-runs `antelopejs-sync` (with `--profile template` when the repository's `pack`
+The reusable `ci-renovate-sync.yml` workflow takes no inputs. On a pull request
+from a `renovate/*` branch of the same repository whose diff changes
+`@antelopejs/tooling-configs`, its `renovate-sync` job installs, runs
+`antelopejs-sync` (with `--profile template` when the repository's `pack`
 custom property is `template`) and commits the output to the branch as
 `github-actions[bot]`, so the bump pull request becomes conformant on its own.
 A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
 `checks` on the new head. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
-its summary: the pull request stays One-tap.
+its summary: the pull request stays One-tap. On any other event the job is
+skipped.
 
-The caller must therefore declare the `workflow_dispatch` trigger and grant
-`contents: write` and `actions: write` to the job that calls `ci-node.yml`. The
-job inherits the token permissions of its caller, so a caller that grants less
-keeps working: only a bump whose sync output must be pushed fails, with the
-missing permission named in the log.
+The workflow declares no permissions: it inherits the token permissions of the
+job that calls it, so a caller that grants less keeps working and only a bump
+whose sync output must be pushed fails, with the missing permission named in the
+log. Call it from its own job, next to `ci-node.yml` with
+`renovate-sync: false`, so that only that job holds `contents: write` and
+`actions: write`, and only on Renovate pull requests. The caller must declare
+the `workflow_dispatch` trigger:
 
 ```yaml
+name: ci
+
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - next
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   ci:
     permissions:
+      contents: read
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    with:
+      renovate-sync: false
+  renovate-sync:
+    if: >-
+      github.event_name == 'pull_request'
+      && startsWith(github.head_ref, 'renovate/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
       contents: write
       actions: write
-    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v1
 ```
+
+A sync failure then shows on `renovate-sync / Renovate sync` rather than on
+`ci / checks`. The bump stays gated: `pnpm run checks` runs `sync:check`, so a
+head whose sync output was not applied fails `ci / checks`, and a head pushed
+without a successful dispatch has no `ci / checks` at all.
+
+Callers still on a single `ci` job that grants `contents: write` and
+`actions: write` and calls `ci-node.yml` without inputs keep working unchanged:
+`ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
+its failure or cancellation still fails `ci / checks`.
 
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
