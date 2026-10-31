@@ -1,20 +1,22 @@
-[![AntelopeJS: Framework, DMS and Cloud](https://raw.githubusercontent.com/AntelopeJS/.github/main/res/images/banner.png)](https://antelopejs.com)
+# AntelopeJS
 
-**An open-source TypeScript ecosystem for Node.js backends.** A framework that extends hexagonal architecture to the modules you install, and a code-first admin dashboard built on top of it.
+Open-source TypeScript tools for Node.js backends. Plug a database into AntelopeJS DMS and get a back office and an analytics dashboard as TypeScript in your repository.
 
-[Documentation](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/kxzZMWqdFU)
+![Screen recording of the AntelopeJS DMS Builder. A postgres:// connection URL is pasted into the Connect form, the Builder reads the tables, and the DMS shows the generated table pages and an analytics dashboard.](./media/hero-connect.gif)
+
+[DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/sjK28QHrA7)
 
 Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https://x.com/Antelopejs) · [Facebook](https://www.facebook.com/people/Antelopejs/100095449986721/)
 
 ---
 
-## Three products, one foundation
+## Products
 
-|                                                   | What it is                                                                                                                                          | Status                   |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| **[Framework](https://framework.antelopejs.com)** | TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, the application chooses which one to load. | Open source · Apache 2.0 |
-| **[DMS](https://dms.antelopejs.com)**             | Code-first Dashboard Management System. Declare pages, forms and tables in TypeScript and get auth, roles, permissions and a full admin UI.         | Open source · Preview    |
-| **[Cloud](https://cloud.antelopejs.com)**         | Managed deployment for any Docker container on EU-hosted dedicated hardware. Reads your `antelope.config.ts` to provision what the app needs.        | Closed beta              |
+- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)** (Open source, Preview). Connect your PostgreSQL or MongoDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. [Docs](https://dms.antelopejs.com/docs)
+- **[AntelopeJS Cloud](https://cloud.antelopejs.com)** (Waitlist). Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS. [Join the waitlist](https://cloud.antelopejs.com)
+- **[AntelopeJS framework](https://github.com/AntelopeJS/antelopejs)** (Open source). The TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, and the application chooses which one to load. [Docs](https://framework.antelopejs.com/docs)
+
+Statuses: Open source means the code is public under Apache-2.0. Preview means the version is below 1.0 and its interfaces can still change. Waitlist means you can sign up but cannot use it yet.
 
 ## Repositories
 
@@ -93,15 +95,13 @@ Dashboard core and modules.
 
 ## Get involved
 
-- **Questions and feedback**: [Discord](https://discord.gg/kxzZMWqdFU)
+- **Questions and feedback**: [Discord](https://discord.gg/sjK28QHrA7)
 - **Bugs**: open an issue in the relevant repository
 - **What's next**: [public roadmap](https://github.com/orgs/AntelopeJS/projects)
 - **News and releases**: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https://x.com/Antelopejs) · [Facebook](https://www.facebook.com/people/Antelopejs/100095449986721/)
 - **Contributing**: read the [contribution guidelines](../CONTRIBUTING.md) before opening a pull request
 - **Security**: report vulnerabilities privately through our [security policy](../SECURITY.md)
 
-If the approach makes sense to you, [star the framework](https://github.com/AntelopeJS/antelopejs) or [star the DMS](https://github.com/AntelopeJS/dms). It is the simplest way to help other developers find it.
-
 ---
 
-AntelopeJS is built and maintained by [Antelope SRL](https://antelopejs.com), Belgium. The Framework and DMS are released under the Apache License 2.0; check each repository for its definitive license. Cloud is our managed, commercial offering.
+AntelopeJS is built and maintained by [Antelope SRL](https://antelopejs.com), Belgium. The framework and the DMS are released under the Apache License 2.0. Check each repository for its definitive license. AntelopeJS Cloud is our managed, paid offering.
