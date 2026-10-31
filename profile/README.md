@@ -2,7 +2,7 @@
 
 Open-source TypeScript tools for Node.js backends. Plug a database into AntelopeJS DMS and get a back office and an analytics dashboard as TypeScript in your repository.
 
-![Screen recording of the AntelopeJS DMS Builder. A postgres:// connection URL is pasted into the Connect form, the Builder reads the tables, and the DMS shows the generated table pages and an analytics dashboard.](./media/hero-connect.gif)
+![Screen recording of the AntelopeJS DMS Builder. A postgres:// connection string is entered and filled into the Connect form, the Builder reads 11 tables, and a Music Overview dashboard with four count cards appears, captioned with the first-pass time, 10:50.](./media/hero-connect.gif)
 
 [DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/sjK28QHrA7)
 
