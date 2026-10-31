@@ -1,8 +1,8 @@
 # AntelopeJS
 
-Open-source TypeScript tools for Node.js backends. Plug a database into AntelopeJS DMS and get a back office and an analytics dashboard as TypeScript in your repository.
+Open-source TypeScript tools for Node.js backends. Plug a PostgreSQL, MongoDB or RethinkDB database into AntelopeJS DMS and get a back office and an analytics dashboard as TypeScript in your repository.
 
-![Screen recording of the AntelopeJS DMS Builder. A postgres:// connection string is entered and filled into the Connect form, the Builder reads 11 tables, and a Music Overview dashboard with four count cards appears, captioned with the first-pass time, 10:50.](./media/hero-connect.gif)
+![Screen recording of the AntelopeJS DMS Builder. The Connect form is filled from a postgres:// URL under the caption Paste the URL. Press Connect. Four steps run, the Builder reports 11 tables detected, then a Music Overview dashboard with four count cards appears under the caption First pass done in 10:50.](./media/hero-connect.gif)
 
 [DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/sjK28QHrA7)
 
@@ -12,7 +12,7 @@ Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https
 
 ## Products
 
-- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)** (Open source, Preview). Connect your PostgreSQL database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only by default. The connection can write whatever its database account can, so connect with a `SELECT`-only account. [Docs](https://dms.antelopejs.com/docs)
+- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)** (Open source, Preview). Connect your PostgreSQL, MongoDB or RethinkDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only by default. The connection can write whatever its database account can, so connect with an account that can only read. [Docs](https://dms.antelopejs.com/docs)
 - **[AntelopeJS Cloud](https://cloud.antelopejs.com)** (Waitlist). Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS. [Join the waitlist](https://cloud.antelopejs.com)
 - **[AntelopeJS framework](https://github.com/AntelopeJS/antelopejs)** (Open source). The TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, and the application chooses which one to load. [Docs](https://framework.antelopejs.com/docs)
 
