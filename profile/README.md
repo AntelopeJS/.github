@@ -12,7 +12,7 @@ Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https
 
 ## Products
 
-- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)** (Open source, Preview). Connect your PostgreSQL, MongoDB or RethinkDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only by default. The connection can write whatever its database account can, so connect with an account that can only read. [Docs](https://dms.antelopejs.com/docs)
+- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)** (Open source, Preview). Connect your PostgreSQL, MongoDB or RethinkDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only by default. [Docs](https://dms.antelopejs.com/docs)
 - **[AntelopeJS Cloud](https://cloud.antelopejs.com)** (Waitlist). Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS. [Join the waitlist](https://cloud.antelopejs.com)
 - **[AntelopeJS framework](https://github.com/AntelopeJS/antelopejs)** (Open source). The TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, and the application chooses which one to load. [Docs](https://framework.antelopejs.com/docs)
 
