@@ -4,7 +4,7 @@ Open-source TypeScript tools for Node.js backends. Plug a PostgreSQL, MongoDB or
 
 ![Screen recording of the AntelopeJS DMS Builder. The Connect form is filled from a postgres:// URL under the caption Paste the URL. Press Connect. Four steps run, the Builder reports 11 tables detected, then a Music Overview dashboard with four count cards appears under the caption First pass done in 10:50.](./media/hero-connect.gif)
 
-[DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/sjK28QHrA7)
+[DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/kxzZMWqdFU)
 
 Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https://x.com/Antelopejs) · [Facebook](https://www.facebook.com/people/Antelopejs/100095449986721/)
 
@@ -95,7 +95,7 @@ Dashboard core and modules.
 
 ## Get involved
 
-- **Questions and feedback**: [Discord](https://discord.gg/sjK28QHrA7)
+- **Questions and feedback**: [Discord](https://discord.gg/kxzZMWqdFU)
 - **Bugs**: open an issue in the relevant repository
 - **What's next**: [public roadmap](https://github.com/orgs/AntelopeJS/projects)
 - **News and releases**: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https://x.com/Antelopejs) · [Facebook](https://www.facebook.com/people/Antelopejs/100095449986721/)
