@@ -85,13 +85,15 @@ Dashboard core and modules.
 
 ### Templates
 
-| Repository                                                                             | Use it to                                |
-| -------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [template-dms-demo](https://github.com/AntelopeJS/template-dms-demo)                   | Run a complete DMS with seeded demo data |
-| [template-dms-adonis](https://github.com/AntelopeJS/template-dms-adonis)               | Use DMS with an AdonisJS backend         |
-| [template-module-typescript](https://github.com/AntelopeJS/template-module-typescript) | Create an interface or implement one     |
-| [template-blank-typescript](https://github.com/AntelopeJS/template-blank-typescript)   | Start an empty module                    |
-| [template-todo-typescript](https://github.com/AntelopeJS/template-todo-typescript)     | Read a small working example             |
+| Repository                                                                             | Use it to                                                                    |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [template-dms](https://github.com/AntelopeJS/template-dms)                             | Start your own project with the DMS, the Builder, and the AI assistant       |
+| [template-dms-connect-demo](https://github.com/AntelopeJS/template-dms-connect-demo)   | Try the Connect flow on a sample database: PostgreSQL, MongoDB, or RethinkDB |
+| [template-dms-demo](https://github.com/AntelopeJS/template-dms-demo)                   | Run a complete DMS with seeded demo data                                     |
+| [template-dms-adonis](https://github.com/AntelopeJS/template-dms-adonis)               | Use DMS with an AdonisJS backend                                             |
+| [template-module-typescript](https://github.com/AntelopeJS/template-module-typescript) | Create an interface or implement one                                         |
+| [template-blank-typescript](https://github.com/AntelopeJS/template-blank-typescript)   | Start an empty module                                                        |
+| [template-todo-typescript](https://github.com/AntelopeJS/template-todo-typescript)     | Read a small working example                                                 |
 
 ## Get involved
 
