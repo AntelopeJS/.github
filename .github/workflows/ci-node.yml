@@ -161,6 +161,46 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+  docs-only:
+    name: Docs only
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs-only: ${{ steps.scope.outputs.docs-only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Fetch pull request base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
+          echo "::add-mask::${credentials}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
+            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Report whether the pull request touches only documentation
+        id: scope
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          docs_only=true
+          while IFS= read -r file; do
+            case "$file" in
+              README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
+              *) docs_only=false ;;
+            esac
+          done < <(git diff --name-only "origin/${BASE_REF}" HEAD)
+          echo "docs-only=${docs_only}" >> "$GITHUB_OUTPUT"
+          echo "docs-only: ${docs_only}" >> "$GITHUB_STEP_SUMMARY"
+
   renovate-sync:
     if: inputs.renovate-sync
     uses: ./.github/workflows/ci-renovate-sync.yml
