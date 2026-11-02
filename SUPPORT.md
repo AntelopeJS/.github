@@ -4,10 +4,8 @@ Use the channel that best matches your request:
 
 - Read the [AntelopeJS documentation](https://antelopejs.com/) for setup and API
   guidance.
-- Ask usage questions in
-  [GitHub Discussions](https://github.com/AntelopeJS/antelopejs/discussions).
-- Join the [Discord community](https://discord.gg/g4pFt6eXqu) for
-  community help.
+- Ask usage questions and share ideas in #support on the
+  [AntelopeJS Discord](https://discord.gg/g4pFt6eXqu).
 - Open an issue in the affected repository for a reproducible bug or a focused
   feature request.
 
