@@ -18,19 +18,19 @@ Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https
 
 Connect your PostgreSQL, MongoDB or RethinkDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only until you switch editing on. [Docs](https://dms.antelopejs.com/docs)
 
-VIDEO:antelope-dms-180s
+https://github.com/user-attachments/assets/ba552792-f0d4-4fcf-8b0e-81029a5a2582
 
 ### [AntelopeJS Cloud](https://cloud.antelopejs.com) (Waitlist)
 
 Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS. [Join the waitlist](https://cloud.antelopejs.com)
 
-VIDEO:antelope-cloud-180s
+https://github.com/user-attachments/assets/d189468b-5148-4d6f-a04d-40da7cadeed5
 
 ### [AntelopeJS framework](https://github.com/AntelopeJS/antelopejs) (Open source)
 
 The TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, and the application chooses which one to load. [Docs](https://framework.antelopejs.com/docs)
 
-VIDEO:antelope-framework-180s
+https://github.com/user-attachments/assets/c632616c-e48d-4c7e-9306-22ad0f4a6351
 
 Statuses: Open source means the code is public under Apache-2.0. Preview means the version is below 1.0 and its interfaces can still change. Waitlist means you can sign up but cannot use it yet.
 
