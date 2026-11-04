@@ -107,7 +107,7 @@ jobs:
 
       - name: Check documentation
         if: inputs.docs-files != ''
-        uses: AntelopeJS/tooling-configs/actions/docs@dab0aea28840981138795aca32381e7fa8ac8d1b # v0.2.17 (campaign/integration)
+        uses: AntelopeJS/tooling-configs/actions/docs@61363eb6dc74d9c7a21da1d674569d114c8c90b9 # v0.2.18
         with:
           files: ${{ inputs.docs-files }}
           typescript-project: ${{ inputs.docs-typescript-project }}
