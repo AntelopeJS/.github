@@ -200,6 +200,31 @@ jobs:
           echo "Using lockfile $lockfile"
           echo "path=$lockfile" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve pnpm workspace root
+        id: workspace
+        env:
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+        run: |
+          set -euo pipefail
+          root=$(pwd -P)
+          current=$(cd "$PACKAGE_DIRECTORY" && pwd -P)
+          directory=$PACKAGE_DIRECTORY
+          while :; do
+            if [ -f "$current/pnpm-workspace.yaml" ]; then
+              if [ "$current" = "$root" ]; then
+                directory=.
+              else
+                directory=${current#"$root"/}
+              fi
+              break
+            fi
+            if [ "$current" = "$root" ]; then
+              break
+            fi
+            current=$(dirname "$current")
+          done
+          echo "install-directory=$directory" >> "$GITHUB_OUTPUT"
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -227,7 +252,7 @@ jobs:
           NODE
 
       - name: Install dependencies
-        working-directory: ${{ inputs.package-directory }}
+        working-directory: ${{ steps.workspace.outputs.install-directory }}
         run: pnpm install --frozen-lockfile
 
       - name: Install AntelopeJS CLI
