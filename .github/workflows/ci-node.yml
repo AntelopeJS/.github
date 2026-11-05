@@ -43,6 +43,10 @@ on:
         description: Run the Renovate sync inside this workflow; callers that call ci-renovate-sync.yml from their own job pass false
         default: true
         type: boolean
+      test-job:
+        description: Run the test step in its own job, in parallel with the other checks
+        default: false
+        type: boolean
 
 jobs:
   node:
@@ -127,6 +131,8 @@ jobs:
           docker compose -f "$FILE" up -d --wait
 
       - name: Run checks
+        env:
+          ANTELOPEJS_CHECKS_SKIP: ${{ inputs.test-job && 'test' || '' }}
         run: pnpm run checks
 
       - name: Skill eval, offline
@@ -154,6 +160,81 @@ jobs:
         env:
           EXTRA_COMMANDS: ${{ inputs.extra-commands }}
         run: bash -euo pipefail -c "$EXTRA_COMMANDS"
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$FILE" down -v
+
+  test:
+    name: Test ${{ matrix.node-version || '.nvmrc' }}
+    if: inputs.test-job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    concurrency:
+      group: ci-node-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Fetch pull request base
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
+          echo "::add-mask::${credentials}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
+            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore cache
+        if: inputs.cache-paths != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
+
+      - name: Start services
+        id: services
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          docker compose -f "$FILE" up -d --wait
+
+      - name: Run tests
+        env:
+          CI: "1"
+        run: pnpm run test
 
       - name: Stop services
         if: always() && steps.services.outcome == 'success'
@@ -207,10 +288,10 @@ jobs:
 
   checks:
     if: always()
-    needs: [node, renovate-sync]
+    needs: [node, test, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - if: needs.node.result != 'success' || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
+      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
         run: exit 1
