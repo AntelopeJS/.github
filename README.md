@@ -86,9 +86,10 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
+| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 
 The `checks` job stays the single required result. It succeeds only when every
-Node.js job succeeds and the Renovate sync run by this workflow, if any, did not
+Node.js job and every test job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
 fail or get cancelled.
 
 Services start with `docker compose up -d --wait`. After a successful start,
