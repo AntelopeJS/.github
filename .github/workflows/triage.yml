@@ -19,11 +19,14 @@ jobs:
     steps:
       - name: Create missing triage labels
         run: |
-          has_label() {
-            gh label list --limit 1000 --json name --jq '.[].name' | grep -Fxq "$1"
+          list_labels() {
+            gh label list --limit 1000 --json name --jq '.[].name'
           }
+          existing=$(list_labels)
           while IFS='|' read -r name color description; do
-            has_label "$name" || gh label create "$name" --color "$color" --description "$description" > /dev/null || has_label "$name"
+            grep -Fxqi "$name" <<< "$existing" \
+              || gh label create "$name" --color "$color" --description "$description" > /dev/null \
+              || grep -Fxqi "$name" <<< "$(list_labels)"
           done <<'LABELS'
           bug|d73a4a|Something isn't working
           feature|a2eeef|New feature or request
