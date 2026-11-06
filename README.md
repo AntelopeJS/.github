@@ -166,38 +166,6 @@ its failure or cancellation still fails `ci / checks`.
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
-## Mutation testing
-
-The reusable `mutation.yml` workflow runs incremental Stryker mutation testing
-of the calling repository. The caller schedules it weekly:
-
-```yaml
-name: Mutation
-on:
-  schedule:
-    - cron: "0 3 * * 0"
-  workflow_dispatch:
-permissions: {}
-jobs:
-  mutation:
-    permissions:
-      contents: read
-    uses: AntelopeJS/.github/.github/workflows/mutation.yml@v1
-```
-
-It reads the repository's `tier` custom property and exits successfully without
-running unless it is `N1` or `N2`. The repository provides Stryker and its
-configuration. The workflow keeps the incremental file in the actions cache and
-uploads the Stryker JSON report as the `mutation-report` artifact. It accepts
-these optional inputs:
-
-| Input | Default | Description |
-| ----- | ------- | ----------- |
-| `stryker-command` | `pnpm exec stryker run` | Command that runs Stryker; the workflow appends the incremental and JSON reporter options. |
-| `report-file` | `reports/mutation/mutation.json` | Path of the JSON report to upload. |
-| `incremental-file` | `reports/stryker-incremental.json` | Path of the incremental file kept in the actions cache. |
-| `timeout-minutes` | `180` | Time limit of the Stryker job. |
-
 ## Link rot
 
 `link-rot.yml` runs weekly in this repository, and on demand by
