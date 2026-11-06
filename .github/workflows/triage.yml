@@ -1,0 +1,36 @@
+name: Label new issues
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  label:
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+    steps:
+      - name: Create missing triage labels
+        run: |
+          list_labels() {
+            gh label list --limit 1000 --json name --jq '.[].name'
+          }
+          existing=$(list_labels)
+          while IFS='|' read -r name color description; do
+            grep -Fxqi "$name" <<< "$existing" \
+              || gh label create "$name" --color "$color" --description "$description" > /dev/null \
+              || grep -Fxqi "$name" <<< "$(list_labels)"
+          done <<'LABELS'
+          bug|d73a4a|Something isn't working
+          feature|a2eeef|New feature or request
+          needs-triage|fbca04|Waiting for a maintainer to triage
+          LABELS
+      - name: Mark the issue for triage
+        run: gh issue edit "$ISSUE" --add-label needs-triage > /dev/null

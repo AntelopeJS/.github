@@ -216,6 +216,17 @@ Issues become stale after 60 inactive days and close after 30 more; the
 `pending` label exempts issues. Pull requests never become stale. See the [daily
 caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
+## Issue triage labels
+
+The bug and feature issue forms apply `bug` or `feature`, plus `needs-triage`.
+The reusable `triage.yml` workflow takes no inputs. Call it on `issues: opened`
+with the job permission `issues: write`. It creates `bug`, `feature`, and
+`needs-triage` in the repository when they are missing, then adds
+`needs-triage` to the new issue, so issues opened without a form, through the
+API or the CLI, are labelled too. GitHub drops a form label that does not exist
+yet, so the first form issue in a repository may miss `bug` or `feature`. See
+the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
 ## pnpm workspaces
 
 Before configuring the pnpm cache, both workflows resolve the lockfile that

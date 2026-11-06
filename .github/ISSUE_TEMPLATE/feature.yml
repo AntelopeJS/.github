@@ -1,6 +1,9 @@
 name: Feature request
 description: Propose an improvement to an AntelopeJS project
 title: "feat: "
+labels:
+  - feature
+  - needs-triage
 body:
   - type: input
     id: repository

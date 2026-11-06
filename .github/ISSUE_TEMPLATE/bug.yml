@@ -1,6 +1,9 @@
 name: Bug report
 description: Report a reproducible problem in an AntelopeJS project
 title: "bug: "
+labels:
+  - bug
+  - needs-triage
 body:
   - type: markdown
     attributes:
