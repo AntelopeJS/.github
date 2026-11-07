@@ -89,6 +89,20 @@ jobs:
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
             fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
+      - name: Start services in the background
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
+            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
+
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -119,16 +133,10 @@ jobs:
       - name: Start services
         id: services
         if: inputs.services-compose-file != ''
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
-          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
-          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
-          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
-            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
-            exit 1
-          fi
-          docker compose -f "$FILE" up -d --wait
+          until [ -s "$RUNNER_TEMP/services.status" ]; do sleep 0.2; done
+          cat "$RUNNER_TEMP/services.log"
+          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
 
       - name: Run checks
         env:
@@ -197,6 +205,20 @@ jobs:
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
             fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
+      - name: Start services in the background
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
+            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
+
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -220,16 +242,10 @@ jobs:
       - name: Start services
         id: services
         if: inputs.services-compose-file != ''
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
-          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
-          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
-          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
-            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
-            exit 1
-          fi
-          docker compose -f "$FILE" up -d --wait
+          until [ -s "$RUNNER_TEMP/services.status" ]; do sleep 0.2; done
+          cat "$RUNNER_TEMP/services.log"
+          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
 
       - name: Run tests
         env:
