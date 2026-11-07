@@ -16,7 +16,8 @@
     },
     {
       // The npm package and docs action share a release tag; keep them together.
-      matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs'],
+      // The pack pins oxfmt and oxlint as peers and runs on @oxlint/plugins, so they move with it.
+      matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs', 'oxfmt', 'oxlint', '@oxlint/plugins'],
       groupName: 'AntelopeJS tooling configs',
     },
   ],
