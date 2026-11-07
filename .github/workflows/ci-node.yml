@@ -136,7 +136,15 @@ jobs:
         id: services
         if: env.START_SERVICES == 'true'
         run: |
-          until [ -s "$RUNNER_TEMP/services.status" ]; do sleep 0.2; done
+          deadline=$((SECONDS + 900))
+          until [ -s "$RUNNER_TEMP/services.status" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              cat "$RUNNER_TEMP/services.log"
+              echo "::error::Services did not start within 15 minutes."
+              exit 1
+            fi
+            sleep 0.2
+          done
           cat "$RUNNER_TEMP/services.log"
           [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
 
@@ -245,7 +253,15 @@ jobs:
         id: services
         if: inputs.services-compose-file != ''
         run: |
-          until [ -s "$RUNNER_TEMP/services.status" ]; do sleep 0.2; done
+          deadline=$((SECONDS + 900))
+          until [ -s "$RUNNER_TEMP/services.status" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              cat "$RUNNER_TEMP/services.log"
+              echo "::error::Services did not start within 15 minutes."
+              exit 1
+            fi
+            sleep 0.2
+          done
           cat "$RUNNER_TEMP/services.log"
           [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
 
