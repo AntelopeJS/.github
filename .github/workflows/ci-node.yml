@@ -61,6 +61,8 @@ jobs:
     concurrency:
       group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      START_SERVICES: ${{ inputs.services-compose-file != '' && (!inputs.test-job || inputs.extra-commands != '') }}
     steps:
       - name: Check pull request title
         if: github.event_name == 'pull_request'
@@ -90,7 +92,7 @@ jobs:
             fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       - name: Start services in the background
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         env:
           SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
@@ -132,7 +134,7 @@ jobs:
 
       - name: Start services
         id: services
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         run: |
           until [ -s "$RUNNER_TEMP/services.status" ]; do sleep 0.2; done
           cat "$RUNNER_TEMP/services.log"

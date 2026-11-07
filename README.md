@@ -92,7 +92,7 @@ The `checks` job stays the single required result. It succeeds only when every
 Node.js job and every test job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
 fail or get cancelled.
 
-Services start with `docker compose up -d --wait`. After a successful start,
+Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands`, only the test job starts them. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
 fail. Pull request titles must use Conventional Commits. See the [checks
 contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
