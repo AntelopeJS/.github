@@ -47,6 +47,10 @@ on:
         description: Run the test step in its own job, in parallel with the other checks
         default: false
         type: boolean
+      extra-commands-job:
+        description: Run extra-commands in their own job, in parallel with the other checks
+        default: false
+        type: boolean
 
 jobs:
   node:
@@ -62,7 +66,7 @@ jobs:
       group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
-      START_SERVICES: ${{ inputs.services-compose-file != '' && (!inputs.test-job || inputs.extra-commands != '') }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' && (!inputs.test-job || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
     steps:
       - name: Check pull request title
         if: github.event_name == 'pull_request'
@@ -174,7 +178,7 @@ jobs:
           npx -y "$cli" evals --published "${args[@]}" --min-recall 0.5 --min-precision 0.5
 
       - name: Run extra commands
-        if: inputs.extra-commands != ''
+        if: inputs.extra-commands != '' && !inputs.extra-commands-job
         env:
           EXTRA_COMMANDS: ${{ inputs.extra-commands }}
         run: bash -euo pipefail -c "$EXTRA_COMMANDS"
@@ -276,6 +280,88 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+  extra:
+    name: Extra ${{ matrix.node-version || '.nvmrc' }}
+    if: inputs.extra-commands-job && inputs.extra-commands != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    concurrency:
+      group: ci-node-extra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Fetch pull request base
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
+          echo "::add-mask::${credentials}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
+            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+
+      - name: Start services in the background
+        if: inputs.services-compose-file != ''
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
+            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start services
+        id: services
+        if: inputs.services-compose-file != ''
+        run: |
+          deadline=$((SECONDS + 900))
+          until [ -s "$RUNNER_TEMP/services.status" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              cat "$RUNNER_TEMP/services.log"
+              echo "::error::Services did not start within 15 minutes."
+              exit 1
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/services.log"
+          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
+
+      - name: Run extra commands
+        env:
+          EXTRA_COMMANDS: ${{ inputs.extra-commands }}
+        run: bash -euo pipefail -c "$EXTRA_COMMANDS"
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$FILE" down -v
+
   docs-only:
     name: Docs only
     if: github.event_name == 'pull_request'
@@ -322,10 +408,10 @@ jobs:
 
   checks:
     if: always()
-    needs: [node, test, renovate-sync]
+    needs: [node, test, extra, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
+      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || (needs.extra.result != 'success' && needs.extra.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
         run: exit 1
