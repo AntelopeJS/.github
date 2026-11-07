@@ -87,12 +87,13 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
+| `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 
 The `checks` job stays the single required result. It succeeds only when every
-Node.js job and every test job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
+Node.js job, every test job and every extra-commands job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
 fail or get cancelled.
 
-Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands`, only the test job starts them. After a successful start,
+Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands` in the Node.js job, the Node.js job does not start them. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
 fail. Pull request titles must use Conventional Commits. See the [checks
 contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
