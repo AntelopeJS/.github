@@ -128,7 +128,7 @@ jobs:
             const add = (name, version) => (packages[name] ??= []).push(version);
             let name;
             for (const line of content.split("\n")) {
-              const resolution = /^ {2}resolution: "?((?:@[^@/]+\/)?[^@]+)@npm:([^"]+)"?$/.exec(line);
+              const resolution = /^ {2}resolution: "?((?:@[^@/]+\/)?[^@]+)@npm:([^":]+)(?:::[^"]*)?"?$/.exec(line);
               const version = /^ {2}version "([^"]+)"$/.exec(line);
               if (resolution) {
                 add(resolution[1], resolution[2]);
