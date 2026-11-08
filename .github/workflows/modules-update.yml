@@ -61,12 +61,13 @@ jobs:
             "pnpm-lock.yaml": parsePnpmLock,
             "package-lock.json": parseNpmLock,
             "npm-shrinkwrap.json": parseNpmLock,
-            "yarn.lock": () => ({ packages: {}, direct: {} }),
+            "yarn.lock": parseYarnLock,
           };
 
-          function parseVersion(version) {
-            const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(version.trim());
-            return match ? { parts: match.slice(1, 4).map(Number), pre: match[4] } : undefined;
+          function parseVersion(version, partial = false) {
+            const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/.exec(version.trim());
+            if (!match || (!partial && match[3] === undefined)) return undefined;
+            return { parts: match.slice(1, 4).map((part) => Number(part ?? 0)), pre: match[4] };
           }
 
           function compareVersions(a, b) {
@@ -103,7 +104,7 @@ jobs:
                 .filter((token) => token !== "" && token !== "*")
                 .every((token) => {
                   const match = /^(<=|>=|<|>|=)?\s*(.+)$/.exec(token);
-                  const bound = match && parseVersion(match[2]);
+                  const bound = match && parseVersion(match[2], true);
                   return bound ? COMPARATORS[match[1] ?? "="](compareVersions(parsed, bound)) : true;
                 }),
             );
@@ -150,6 +151,21 @@ jobs:
               }
             }
             return { packages, direct };
+          }
+
+          function parseYarnLock(content) {
+            const packages = {};
+            let name;
+            for (const line of content.split("\n")) {
+              if (/^\S.*:$/.test(line) && !line.startsWith("#")) {
+                const spec = unquote(line.slice(0, -1).split(",")[0]);
+                name = spec.slice(0, spec.indexOf("@", 1));
+              } else if (name && /^ {2}version:? /.test(line)) {
+                (packages[name] ??= []).push(unquote(line.replace(/^ {2}version:? /, "")));
+                name = undefined;
+              }
+            }
+            return { packages, direct: {} };
           }
 
           function parseNpmLock(content) {
@@ -258,7 +274,8 @@ jobs:
 
           function counterpart(snap, record) {
             const same = snap.modules.filter((module) => module.package === record.package);
-            return same.find((module) => module.version === record.version) ?? same.at(-1);
+            const older = same.filter((module) => byVersion(module.version, record.version) <= 0);
+            return older.at(-1) ?? same[0];
           }
 
           function moduleRows(before, after) {
@@ -360,8 +377,8 @@ jobs:
         if: steps.scan.outputs.scanned == 'true'
         with:
           path: ${{ runner.temp }}/advisories-seen.json
-          key: modules-update-advisories-${{ github.run_id }}
-          restore-keys: modules-update-advisories-
+          key: modules-update-advisories-${{ inputs.base || github.ref_name }}-${{ github.run_id }}
+          restore-keys: modules-update-advisories-${{ inputs.base || github.ref_name }}-
 
       - name: Decide whether to refresh
         id: decide
@@ -421,12 +438,14 @@ jobs:
             exit 1
           fi
           git add -A -- antelope-lock
-          git add -u
+          if git ls-files --error-unmatch antelope.config.ts > /dev/null 2>&1; then
+            git add -- antelope.config.ts
+          fi
+          if [ "$REFRESH_FAILED" = "true" ] && git diff --cached --quiet -- antelope-lock; then
+            echo "::error::The refresh command failed and changed no lock. Nothing was pushed."
+            exit 1
+          fi
           if git diff --cached --quiet; then
-            if [ "$REFRESH_FAILED" = "true" ]; then
-              echo "::error::The refresh command failed and changed no lock. Nothing was pushed."
-              exit 1
-            fi
             echo "Every module lock is current." >> "$GITHUB_STEP_SUMMARY"
             number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
             if [ -n "$number" ]; then
@@ -460,7 +479,7 @@ jobs:
           if git fetch -q "$remote" "refs/heads/${BRANCH}" 2> /dev/null && git diff --quiet FETCH_HEAD HEAD; then
             pushed=false
           elif ! git push --no-verify -q --force "$remote" "HEAD:refs/heads/${BRANCH}"; then
-            echo "::error::The branch ${BRANCH} could not be pushed. The job that calls modules-update.yml must grant contents: write."
+            echo "::error::The branch ${BRANCH} could not be pushed: see the git error above. The job that calls modules-update.yml needs contents: write."
             exit 1
           fi
           number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
@@ -478,7 +497,7 @@ jobs:
           fi
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: success() && steps.scan.outputs.scanned == 'true'
+        if: success() && steps.scan.outputs.scanned == 'true' && steps.refresh.outputs.failed != 'true'
         with:
           path: ${{ runner.temp }}/advisories-seen.json
-          key: modules-update-advisories-${{ github.run_id }}
+          key: modules-update-advisories-${{ inputs.base || github.ref_name }}-${{ github.run_id }}
