@@ -1,42 +1,45 @@
-# AntelopeJS
+<a href="https://github.com/AntelopeJS/dms"><img data-illustration src="./media/hero.svg" width="100%" alt="PostgreSQL, MongoDB and RethinkDB databases connect into one back office, where pages for Dashboard, Customers, Orders, Products and Invoices appear. Caption: Your database. Your back office."></a>
 
-Open-source TypeScript tools for Node.js backends. Plug a PostgreSQL, MongoDB or RethinkDB database into AntelopeJS DMS and get a back office and an analytics dashboard as TypeScript in your repository.
+<div align="center">
 
-![Screen recording from the Meet AntelopeJS DMS film. A PostgreSQL connection string is pasted into the Connect a database form and Connect is pressed. Three databases, two PostgreSQL and one MongoDB, appear in one list under the caption Three databases, one back office, then an Overview dashboard with revenue, open deals and orders from all three appears under the caption One dashboard. Everything in one place.](./media/hero-connect.gif)
+**AntelopeJS DMS is the open-source back office for your product.**<br>
+Connect your PostgreSQL, MongoDB or RethinkDB database. Your coding agent builds the admin pages and a dashboard, as TypeScript in your repo.
 
-[DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Interfaces](https://interfaces.antelopejs.com) · [Modules](https://interfaces.antelopejs.com/modules) · [Roadmap](https://github.com/orgs/AntelopeJS/projects) · [Discord](https://discord.gg/g4pFt6eXqu)
+<a href="https://github.com/AntelopeJS/dms"><img data-illustration alt="Star AntelopeJS DMS" src="https://img.shields.io/github/stars/AntelopeJS/dms?label=Star%20AntelopeJS%20DMS&style=for-the-badge&labelColor=000000&color=000000&logo=github"></a> <a href="https://discord.gg/g4pFt6eXqu"><img data-illustration alt="Discord" src="https://img.shields.io/badge/Discord-18181B?logo=discord&style=for-the-badge&color=000000"></a>
 
-If AntelopeJS saves you work, a ⭐ on [AntelopeJS DMS](https://github.com/AntelopeJS/dms) helps other developers find it.
+[Live demo](https://dms-demo.antelopejs.com) · [DMS docs](https://dms.antelopejs.com/docs) · [Framework docs](https://framework.antelopejs.com/docs) · [Roadmap](https://github.com/orgs/AntelopeJS/projects)
 
-Follow us: [LinkedIn](https://www.linkedin.com/company/antelope-js) · [X](https://x.com/Antelopejs) · [Facebook](https://www.facebook.com/people/Antelopejs/100095449986721/)
-
----
+</div>
 
 ## Products
 
-### [AntelopeJS DMS](https://github.com/AntelopeJS/dms) (Open source, Preview)
+<img data-illustration src="./media/org.svg" width="100%" alt="AntelopeJS: open-source tools for TypeScript backends. Three cards appear: AntelopeJS DMS, the back office for your product, open source, marked star it; the AntelopeJS framework, hexagonal architecture beyond your code, open source; AntelopeJS Cloud, managed hosting, waitlist.">
 
-Connect your PostgreSQL, MongoDB or RethinkDB database and your coding agent writes the back office and an analytics dashboard as typed TypeScript. Generated pages are read-only until you switch editing on. [Docs](https://dms.antelopejs.com/docs)
+- **[AntelopeJS DMS](https://github.com/AntelopeJS/dms)**, open source. Connect your database, get the back office and a dashboard as TypeScript in your repo. [Docs](https://dms.antelopejs.com/docs)
+- **[AntelopeJS framework](https://github.com/AntelopeJS/antelopejs)**, open source. The TypeScript runtime and `ajs` CLI: modules depend on contracts, and you choose which provider runs. [Docs](https://framework.antelopejs.com/docs)
+- **[AntelopeJS Cloud](https://cloud.antelopejs.com)**, waitlist. Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS.
+
+<details>
+<summary><b>Watch the films</b></summary>
+
+**A tour of AntelopeJS DMS.**
 
 https://github.com/user-attachments/assets/ba552792-f0d4-4fcf-8b0e-81029a5a2582
 
-### [AntelopeJS Cloud](https://cloud.antelopejs.com) (Waitlist)
-
-Managed hosting for AntelopeJS applications, and the only paid part of AntelopeJS. [Join the waitlist](https://cloud.antelopejs.com)
+**AntelopeJS Cloud.**
 
 https://github.com/user-attachments/assets/d189468b-5148-4d6f-a04d-40da7cadeed5
 
-### [AntelopeJS framework](https://github.com/AntelopeJS/antelopejs) (Open source)
-
-The TypeScript runtime and `ajs` CLI. Business modules depend on contracts, provider modules implement them, and the application chooses which one to load. [Docs](https://framework.antelopejs.com/docs)
+**The AntelopeJS framework.**
 
 https://github.com/user-attachments/assets/c632616c-e48d-4c7e-9306-22ad0f4a6351
 
-Statuses: Open source means the code is public under Apache-2.0. Preview means the version is below 1.0 and its interfaces can still change. Waitlist means you can sign up but cannot use it yet.
+</details>
 
 ## Repositories
 
-### Core
+<details>
+<summary><b>Core</b></summary>
 
 | Repository                                                       | Description                                                             |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -44,7 +47,10 @@ Statuses: Open source means the code is public under Apache-2.0. Preview means t
 | [interface-core](https://github.com/AntelopeJS/interface-core)   | Interface primitives: proxies, decorators, interface functions, logging |
 | [tooling-configs](https://github.com/AntelopeJS/tooling-configs) | Shared oxlint and Knip presets for AntelopeJS projects                  |
 
-### Interfaces
+</details>
+
+<details>
+<summary><b>Interfaces</b></summary>
 
 The contracts. Full docs on [interfaces.antelopejs.com](https://interfaces.antelopejs.com).
 
@@ -64,7 +70,10 @@ The contracts. Full docs on [interfaces.antelopejs.com](https://interfaces.antel
 | [interface-rethinkdb](https://github.com/AntelopeJS/interface-rethinkdb)                     | Direct RethinkDB access                              |
 | [interface-stripe](https://github.com/AntelopeJS/interface-stripe)                           | Payments and webhooks                                |
 
-### Providers
+</details>
+
+<details>
+<summary><b>Providers</b></summary>
 
 Implementations you can swap.
 
@@ -80,7 +89,10 @@ Implementations you can swap.
 | [file-storage-s3](https://github.com/AntelopeJS/file-storage-s3)       | File storage on S3                               |
 | [file-storage-local](https://github.com/AntelopeJS/file-storage-local) | File storage on the local disk                   |
 
-### DMS
+</details>
+
+<details>
+<summary><b>DMS</b></summary>
 
 Dashboard core and modules.
 
@@ -99,7 +111,10 @@ Dashboard core and modules.
 | [dms-mailing](https://github.com/AntelopeJS/dms-mailing)       | Mail templates, sends and delivery tracking      |
 | [dms-marketing](https://github.com/AntelopeJS/dms-marketing)   | Pages, campaigns, funnels and analytics          |
 
-### Templates
+</details>
+
+<details>
+<summary><b>Templates</b></summary>
 
 | Repository                                                                             | Use it to                                                                    |
 | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -110,6 +125,8 @@ Dashboard core and modules.
 | [template-module-typescript](https://github.com/AntelopeJS/template-module-typescript) | Create an interface or implement one                                         |
 | [template-blank-typescript](https://github.com/AntelopeJS/template-blank-typescript)   | Start an empty module                                                        |
 | [template-todo-typescript](https://github.com/AntelopeJS/template-todo-typescript)     | Read a small working example                                                 |
+
+</details>
 
 ## Get involved
 
@@ -123,3 +140,7 @@ Dashboard core and modules.
 ---
 
 AntelopeJS is built and maintained by [Antelope SRL](https://antelopejs.com), Belgium. The framework and the DMS are released under the Apache License 2.0. Check each repository for its definitive license. AntelopeJS Cloud is our managed, paid offering.
+
+---
+
+AntelopeJS is built and maintained by [Antelope SRL](https://antelopejs.com), Belgium. The framework and the DMS are released under the Apache License 2.0. Check each repository for its definitive license.
