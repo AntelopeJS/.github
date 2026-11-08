@@ -174,7 +174,8 @@ recorded lock, so a module and its dependencies move only when the locks are
 recorded again. Renovate cannot do that: it does not read `antelope-lock/`, and
 the hosted Renovate app runs no `ajs` command. The reusable
 `modules-update.yml` workflow records the locks again and opens or updates one
-pull request from the `antelopejs/modules-update` branch.
+pull request per base branch, from the `antelopejs/modules-update/<base>`
+branch.
 
 It accepts these inputs and one secret:
 
@@ -195,14 +196,16 @@ then resolves to its latest version.
 Every run first reads every package version in `antelope-lock/` and asks the
 npm advisory API for the advisories that affect them. A manual run and a
 scheduled run on `weekday` refresh the locks. A scheduled run on any other day
-refreshes them only when an advisory appeared since the last run, so call the
-workflow once a day. When nothing changed, the run ends, and it closes the open
-pull request if the base branch already holds the same locks. Otherwise the
+refreshes them only when an advisory appeared since the last successful run, so
+call the workflow once a day. A failed run leaves the advisory new, so the next
+day retries it. When nothing changed, the run ends, and it closes the open pull
+request if the base branch already holds the same locks. Otherwise the
 pull request body lists the modules that moved and from which version to which,
 the direct dependencies of each module that moved, and the advisories the
-change fixes or leaves. When the refresh command fails after recording a lock
-for every module, the pull request still opens with a warning, so its checks
-show the failure. When it fails before that, nothing is pushed.
+change fixes or leaves. When the refresh command fails after recording as many
+locks for every module as the base holds, the pull request still opens with a
+warning, so its checks show the failure. When it records fewer, or changes no
+lock, the run fails, pushes nothing and leaves the open pull request alone.
 
 A push made with `GITHUB_TOKEN` starts no workflow run. So after it pushes, the
 workflow dispatches `ci-workflow` on the branch, which runs `checks` on the new
