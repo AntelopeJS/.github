@@ -167,6 +167,52 @@ its failure or cancellation still fails `ci / checks`.
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
+## Module locks update
+
+A repository that commits `antelope-lock/` installs each npm module from its
+recorded lock, so a module and its dependencies move only when the locks are
+recorded again. Renovate cannot do that: it does not read `antelope-lock/`, and
+the hosted Renovate app runs no `ajs` command. The reusable
+`modules-update.yml` workflow records the locks again and opens or updates one
+pull request from the `antelopejs/modules-update` branch.
+
+It accepts these inputs and one secret:
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `refresh-command` | `pnpm exec ajs project modules update` | Shell command, run with `bash -euo pipefail` after `pnpm install --frozen-lockfile`, that records every lock again. |
+| `base` | `""` | Branch whose locks are refreshed and that the pull request targets. Empty uses the branch the run started on. |
+| `weekday` | `1` | Day of the week, 1 for Monday to 7 for Sunday in UTC, on which a scheduled run refreshes the locks. |
+| `ci-workflow` | `ci.yml` | Workflow file dispatched on the branch after a push made with the default token. |
+| `token` (secret) | `GITHUB_TOKEN` | Token that pushes the branch and opens the pull request. |
+
+A project passes no input: `ajs project modules update` moves each npm module
+to its latest version in `antelope.config.ts`, then records every lock again.
+A module records its locks while its tests install the modules of its test
+configuration, so it passes `rm -rf antelope-lock && pnpm run test`: each range
+then resolves to its latest version.
+
+Every run first reads every package version in `antelope-lock/` and asks the
+npm advisory API for the advisories that affect them. A manual run and a
+scheduled run on `weekday` refresh the locks. A scheduled run on any other day
+refreshes them only when an advisory appeared since the last run, so call the
+workflow once a day. When nothing changed, the run ends, and it closes the open
+pull request if the base branch already holds the same locks. Otherwise the
+pull request body lists the modules that moved and from which version to which,
+the direct dependencies of each module that moved, and the advisories the
+change fixes or leaves. When the refresh command fails after recording a lock
+for every module, the pull request still opens with a warning, so its checks
+show the failure. When it fails before that, nothing is pushed.
+
+A push made with `GITHUB_TOKEN` starts no workflow run. So after it pushes, the
+workflow dispatches `ci-workflow` on the branch, which runs `checks` on the new
+head. With a `token` secret, the push starts the pull request checks itself and
+nothing is dispatched. GitHub Actions can open a pull request with
+`GITHUB_TOKEN` only when the repository allows GitHub Actions to create pull
+requests. Otherwise pass a `token` that may open them. When neither works, the
+branch is pushed and the run fails with a link to open the pull request by hand.
+See the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
 ## Link rot
 
 `link-rot.yml` runs weekly in this repository, and on demand by

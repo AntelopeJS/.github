@@ -191,6 +191,29 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/triage.yml@v1
 ```
 
+A repository that commits `antelope-lock/` calls `modules-update.yml` once a
+day, and on demand. A module passes the command that records its locks, as
+described in the [module locks update](README.md#module-locks-update); a project
+omits `with`:
+
+```yaml
+name: Modules update
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  modules-update:
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: AntelopeJS/.github/.github/workflows/modules-update.yml@v1
+    with:
+      refresh-command: rm -rf antelope-lock && pnpm run test
+```
+
 Use the shared Renovate preset in `renovate.json5`:
 
 ```json
