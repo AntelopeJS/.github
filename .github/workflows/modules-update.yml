@@ -50,9 +50,12 @@ jobs:
 
       - name: Write the lock tool
         run: |
-          cat > "${RUNNER_TEMP}/module-locks.mjs" <<'NODE'
+          mkdir -p "${RUNNER_TEMP}/lock-tool"
+          npm install --prefix "${RUNNER_TEMP}/lock-tool" --no-save --no-audit --no-fund --silent semver@7.8.6
+          cat > "${RUNNER_TEMP}/lock-tool/module-locks.mjs" <<'NODE'
           import { existsSync, readdirSync, readFileSync } from "node:fs";
           import path from "node:path";
+          import semver from "semver";
 
           const LOCK_FOLDER = "antelope-lock";
           const ADVISORY_URL = "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk";
@@ -64,50 +67,15 @@ jobs:
             "yarn.lock": parseYarnLock,
           };
 
-          function parseVersion(version, partial = false) {
-            const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/.exec(version.trim());
-            if (!match || (!partial && match[3] === undefined)) return undefined;
-            return { parts: match.slice(1, 4).map((part) => Number(part ?? 0)), pre: match[4] };
-          }
-
-          function compareVersions(a, b) {
-            for (let index = 0; index < 3; index += 1) {
-              if (a.parts[index] !== b.parts[index]) return a.parts[index] - b.parts[index];
-            }
-            if (a.pre === b.pre) return 0;
-            if (a.pre === undefined) return 1;
-            if (b.pre === undefined) return -1;
-            return a.pre.localeCompare(b.pre, undefined, { numeric: true });
-          }
+          const SEMVER_OPTIONS = { loose: true, includePrerelease: true };
 
           function byVersion(a, b) {
-            const left = parseVersion(a);
-            const right = parseVersion(b);
-            return left && right ? compareVersions(left, right) : a.localeCompare(b, undefined, { numeric: true });
+            const valid = semver.valid(a, SEMVER_OPTIONS) && semver.valid(b, SEMVER_OPTIONS);
+            return valid ? semver.compare(a, b, SEMVER_OPTIONS) : a.localeCompare(b, undefined, { numeric: true });
           }
 
-          const COMPARATORS = {
-            "<": (order) => order < 0,
-            "<=": (order) => order <= 0,
-            ">": (order) => order > 0,
-            ">=": (order) => order >= 0,
-            "=": (order) => order === 0,
-          };
-
           function satisfies(version, range) {
-            const parsed = parseVersion(version);
-            if (!parsed) return true;
-            return range.split("||").some((set) =>
-              set
-                .trim()
-                .split(/\s+/)
-                .filter((token) => token !== "" && token !== "*")
-                .every((token) => {
-                  const match = /^(<=|>=|<|>|=)?\s*(.+)$/.exec(token);
-                  const bound = match && parseVersion(match[2], true);
-                  return bound ? COMPARATORS[match[1] ?? "="](compareVersions(parsed, bound)) : true;
-                }),
-            );
+            return semver.valid(version, SEMVER_OPTIONS) !== null && semver.satisfies(version, range, SEMVER_OPTIONS);
           }
 
           function stripPeers(version) {
@@ -153,15 +121,23 @@ jobs:
             return { packages, direct };
           }
 
+          const NPM_ALIAS = /^(?:@[^@/]+\/)?[^@]+@npm:/;
+
           function parseYarnLock(content) {
             const packages = {};
+            const add = (name, version) => (packages[name] ??= []).push(version);
             let name;
             for (const line of content.split("\n")) {
-              if (/^\S.*:$/.test(line) && !line.startsWith("#")) {
-                const spec = unquote(line.slice(0, -1).split(",")[0]);
+              const resolution = /^ {2}resolution: "?((?:@[^@/]+\/)?[^@]+)@npm:([^"]+)"?$/.exec(line);
+              const version = /^ {2}version "([^"]+)"$/.exec(line);
+              if (resolution) {
+                add(resolution[1], resolution[2]);
+                name = undefined;
+              } else if (/^\S.*:$/.test(line) && !line.startsWith("#")) {
+                const spec = unquote(line.slice(0, -1).split(",")[0]).replace(NPM_ALIAS, "");
                 name = spec.slice(0, spec.indexOf("@", 1));
-              } else if (name && /^ {2}version:? /.test(line)) {
-                (packages[name] ??= []).push(unquote(line.replace(/^ {2}version:? /, "")));
+              } else if (name && version) {
+                add(name, version[1]);
                 name = undefined;
               }
             }
@@ -275,7 +251,7 @@ jobs:
           function counterpart(snap, record) {
             const same = snap.modules.filter((module) => module.package === record.package);
             const older = same.filter((module) => byVersion(module.version, record.version) <= 0);
-            return older.at(-1) ?? same[0];
+            return older.at(-1);
           }
 
           function moduleRows(before, after) {
@@ -365,8 +341,8 @@ jobs:
       - name: Scan the locks for advisories
         id: scan
         run: |
-          node "${RUNNER_TEMP}/module-locks.mjs" snapshot . > "${RUNNER_TEMP}/before.json"
-          if node "${RUNNER_TEMP}/module-locks.mjs" advisories "${RUNNER_TEMP}/before.json" > "${RUNNER_TEMP}/advisories-before.json"; then
+          node "${RUNNER_TEMP}/lock-tool/module-locks.mjs" snapshot . > "${RUNNER_TEMP}/before.json"
+          if node "${RUNNER_TEMP}/lock-tool/module-locks.mjs" advisories "${RUNNER_TEMP}/before.json" > "${RUNNER_TEMP}/advisories-before.json"; then
             echo "scanned=true" >> "$GITHUB_OUTPUT"
           else
             rm -f "${RUNNER_TEMP}/advisories-before.json"
@@ -377,8 +353,8 @@ jobs:
         if: steps.scan.outputs.scanned == 'true'
         with:
           path: ${{ runner.temp }}/advisories-seen.json
-          key: modules-update-advisories-${{ inputs.base || github.ref_name }}-${{ github.run_id }}
-          restore-keys: modules-update-advisories-${{ inputs.base || github.ref_name }}-
+          key: "modules-update-advisories:${{ inputs.base || github.ref_name }}:${{ github.run_id }}"
+          restore-keys: "modules-update-advisories:${{ inputs.base || github.ref_name }}:"
 
       - name: Decide whether to refresh
         id: decide
@@ -430,7 +406,7 @@ jobs:
           REFRESH_FAILED: ${{ steps.refresh.outputs.failed == 'true' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          tool="${RUNNER_TEMP}/module-locks.mjs"
+          tool="${RUNNER_TEMP}/lock-tool/module-locks.mjs"
           node "$tool" snapshot . > "${RUNNER_TEMP}/after.json"
           lost=$(node "$tool" lost "${RUNNER_TEMP}/before.json" "${RUNNER_TEMP}/after.json")
           if [ "$REFRESH_FAILED" = "true" ] && [ -n "$lost" ]; then
@@ -500,4 +476,4 @@ jobs:
         if: success() && steps.scan.outputs.scanned == 'true' && steps.refresh.outputs.failed != 'true'
         with:
           path: ${{ runner.temp }}/advisories-seen.json
-          key: modules-update-advisories-${{ inputs.base || github.ref_name }}-${{ github.run_id }}
+          key: "modules-update-advisories:${{ inputs.base || github.ref_name }}:${{ github.run_id }}"
