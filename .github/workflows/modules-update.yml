@@ -1,0 +1,479 @@
+name: Modules update
+
+on:
+  workflow_call:
+    inputs:
+      refresh-command:
+        description: Shell command, run with bash -euo pipefail after the install, that records every module lock in antelope-lock/ again
+        default: pnpm exec ajs project modules update
+        type: string
+      base:
+        description: Branch whose locks are refreshed and that the pull request targets; empty uses the branch the run started on
+        default: ""
+        type: string
+      weekday:
+        description: Day of the week (1 is Monday, 7 is Sunday, UTC) on which a scheduled run refreshes the locks; on other days it refreshes only for a new advisory
+        default: 1
+        type: number
+      ci-workflow:
+        description: Workflow file dispatched on the pull request branch after a push made with the default token
+        default: ci.yml
+        type: string
+    secrets:
+      token:
+        description: Token that pushes the branch and opens the pull request; its push starts the pull request checks, so no workflow is dispatched
+        required: false
+
+jobs:
+  modules-update:
+    name: Modules update
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: modules-update-${{ github.repository }}-${{ inputs.base || github.ref_name }}
+      cancel-in-progress: false
+    env:
+      BASE: ${{ inputs.base || github.ref_name }}
+      BRANCH: antelopejs/modules-update/${{ inputs.base || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.token || github.token }}
+      CUSTOM_TOKEN: ${{ secrets.token != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.base || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Write the lock tool
+        run: |
+          mkdir -p "${RUNNER_TEMP}/lock-tool"
+          npm install --prefix "${RUNNER_TEMP}/lock-tool" --no-save --no-audit --no-fund --silent semver@7.8.6
+          cat > "${RUNNER_TEMP}/lock-tool/module-locks.mjs" <<'NODE'
+          import { existsSync, readdirSync, readFileSync } from "node:fs";
+          import path from "node:path";
+          import semver from "semver";
+
+          const LOCK_FOLDER = "antelope-lock";
+          const ADVISORY_URL = "https://registry.npmjs.org/-/npm/v1/security/advisories/bulk";
+          const ADVISORY_CHUNK = 400;
+          const LOCKFILE_PARSERS = {
+            "pnpm-lock.yaml": parsePnpmLock,
+            "package-lock.json": parseNpmLock,
+            "npm-shrinkwrap.json": parseNpmLock,
+            "yarn.lock": parseYarnLock,
+          };
+
+          const SEMVER_OPTIONS = { loose: true, includePrerelease: true };
+
+          function byVersion(a, b) {
+            const valid = semver.valid(a, SEMVER_OPTIONS) && semver.valid(b, SEMVER_OPTIONS);
+            return valid ? semver.compare(a, b, SEMVER_OPTIONS) : a.localeCompare(b, undefined, { numeric: true });
+          }
+
+          function satisfies(version, range) {
+            return semver.valid(version, SEMVER_OPTIONS) !== null && semver.satisfies(version, range, SEMVER_OPTIONS);
+          }
+
+          function stripPeers(version) {
+            return version.replace(/\(.*$/, "").trim();
+          }
+
+          function unquote(text) {
+            return text.trim().replace(/^['"]|['"]$/g, "");
+          }
+
+          function splitKey(key) {
+            const at = key.lastIndexOf("@");
+            return at > 0 ? [key.slice(0, at), key.slice(at + 1)] : undefined;
+          }
+
+          function parsePnpmLock(content) {
+            const packages = {};
+            const direct = {};
+            let section = "";
+            let inRoot = false;
+            let depGroup = false;
+            let depName = "";
+            for (const line of content.split("\n")) {
+              const indent = line.length - line.trimStart().length;
+              const text = line.trim();
+              if (text === "") continue;
+              if (indent === 0) {
+                section = text.replace(/:$/, "");
+                continue;
+              }
+              if (section === "importers") {
+                if (indent === 2) inRoot = unquote(text.replace(/:$/, "")) === ".";
+                else if (inRoot && indent === 4) depGroup = /^(dependencies|optionalDependencies):$/.test(text);
+                else if (inRoot && depGroup && indent === 6) depName = unquote(text.replace(/:$/, ""));
+                else if (inRoot && depGroup && indent === 8 && text.startsWith("version:")) {
+                  direct[depName] = stripPeers(unquote(text.slice("version:".length)));
+                }
+              } else if (section === "packages" && indent === 2 && text.endsWith(":")) {
+                const split = splitKey(unquote(text.slice(0, -1)).replace(/^\//, ""));
+                if (split) (packages[split[0]] ??= []).push(stripPeers(split[1]));
+              }
+            }
+            return { packages, direct };
+          }
+
+          const NPM_ALIAS = /^(?:@[^@/]+\/)?[^@]+@npm:/;
+
+          function parseYarnLock(content) {
+            const packages = {};
+            const add = (name, version) => (packages[name] ??= []).push(version);
+            let name;
+            for (const line of content.split("\n")) {
+              const resolution = /^ {2}resolution: "?((?:@[^@/]+\/)?[^@]+)@npm:([^":]+)(?:::[^"]*)?"?$/.exec(line);
+              const version = /^ {2}version "([^"]+)"$/.exec(line);
+              if (resolution) {
+                add(resolution[1], resolution[2]);
+                name = undefined;
+              } else if (/^\S.*:$/.test(line) && !line.startsWith("#")) {
+                const spec = unquote(line.slice(0, -1).split(",")[0]).replace(NPM_ALIAS, "");
+                name = spec.slice(0, spec.indexOf("@", 1));
+              } else if (name && version) {
+                add(name, version[1]);
+                name = undefined;
+              }
+            }
+            return { packages, direct: {} };
+          }
+
+          function parseNpmLock(content) {
+            const lock = JSON.parse(content);
+            const entries = lock.packages ?? {};
+            const packages = {};
+            for (const [key, entry] of Object.entries(entries)) {
+              if (key === "" || !entry.version) continue;
+              const name = key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+              (packages[name] ??= []).push(entry.version);
+            }
+            const root = entries[""] ?? {};
+            const direct = {};
+            for (const name of Object.keys({ ...root.dependencies, ...root.optionalDependencies })) {
+              const version = entries[`node_modules/${name}`]?.version;
+              if (version) direct[name] = version;
+            }
+            return { packages, direct };
+          }
+
+          function readRecord(folder, name) {
+            const split = splitKey(name);
+            if (!split) return undefined;
+            const files = readdirSync(folder);
+            const lockfile = Object.keys(LOCKFILE_PARSERS).find((file) => files.includes(file));
+            if (!lockfile) return undefined;
+            const parsed = LOCKFILE_PARSERS[lockfile](readFileSync(path.join(folder, lockfile), "utf8"));
+            return { package: split[0], version: split[1], lockfile, ...parsed };
+          }
+
+          function snapshot(project) {
+            const root = path.join(project, LOCK_FOLDER);
+            if (!existsSync(root)) return { modules: [] };
+            const modules = [];
+            for (const entry of readdirSync(root, { withFileTypes: true })) {
+              if (!entry.isDirectory()) continue;
+              const folders = entry.name.startsWith("@")
+                ? readdirSync(path.join(root, entry.name), { withFileTypes: true })
+                    .filter((child) => child.isDirectory())
+                    .map((child) => path.join(entry.name, child.name))
+                : [entry.name];
+              for (const folder of folders) {
+                const record = readRecord(path.join(root, folder), folder.split(path.sep).join("/"));
+                if (record) modules.push(record);
+              }
+            }
+            modules.sort((a, b) => a.package.localeCompare(b.package) || byVersion(a.version, b.version));
+            return { modules };
+          }
+
+          function lockedVersions(snap) {
+            const versions = new Map();
+            const add = (name, version) => {
+              if (!versions.has(name)) versions.set(name, new Set());
+              versions.get(name).add(version);
+            };
+            for (const module of snap.modules) {
+              add(module.package, module.version);
+              for (const [name, list] of Object.entries(module.packages)) list.forEach((version) => add(name, version));
+            }
+            return versions;
+          }
+
+          async function advisories(snap) {
+            const names = [...lockedVersions(snap)];
+            const found = [];
+            for (let start = 0; start < names.length; start += ADVISORY_CHUNK) {
+              const body = Object.fromEntries(names.slice(start, start + ADVISORY_CHUNK).map(([name, set]) => [name, [...set]]));
+              const response = await fetch(ADVISORY_URL, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              if (!response.ok) throw new Error(`npm advisory API answered ${response.status}`);
+              for (const [name, list] of Object.entries(await response.json())) {
+                for (const advisory of list) {
+                  const affected = body[name].filter((version) => satisfies(version, advisory.vulnerable_versions));
+                  if (affected.length === 0) continue;
+                  found.push({
+                    package: name,
+                    versions: affected.sort(byVersion),
+                    id: advisory.id,
+                    url: advisory.url,
+                    title: advisory.title,
+                    severity: advisory.severity,
+                    vulnerableVersions: advisory.vulnerable_versions,
+                  });
+                }
+              }
+            }
+            return found.sort((a, b) => `${a.package}${a.id}`.localeCompare(`${b.package}${b.id}`));
+          }
+
+          function versionsByPackage(snap) {
+            const map = new Map();
+            for (const module of snap.modules) {
+              if (!map.has(module.package)) map.set(module.package, []);
+              map.get(module.package).push(module.version);
+            }
+            return map;
+          }
+
+          function list(versions) {
+            return versions?.length ? versions.map((version) => `\`${version}\``).join(", ") : "none";
+          }
+
+          function counterpart(snap, record) {
+            const same = snap.modules.filter((module) => module.package === record.package);
+            const older = same.filter((module) => byVersion(module.version, record.version) <= 0);
+            return older.at(-1);
+          }
+
+          function moduleRows(before, after) {
+            const was = versionsByPackage(before);
+            const now = versionsByPackage(after);
+            const names = [...new Set([...was.keys(), ...now.keys()])].sort();
+            return names
+              .filter((name) => list(was.get(name)) !== list(now.get(name)))
+              .map((name) => `| \`${name}\` | ${list(was.get(name))} | ${list(now.get(name))} |`);
+          }
+
+          function directRows(before, after) {
+            const rows = [];
+            for (const record of after.modules) {
+              const was = counterpart(before, record)?.direct ?? {};
+              const now = record.direct;
+              for (const dep of [...new Set([...Object.keys(was), ...Object.keys(now)])].sort()) {
+                if (was[dep] !== now[dep]) {
+                  rows.push(`| \`${record.package}@${record.version}\` | \`${dep}\` | ${list(was[dep] && [was[dep]])} | ${list(now[dep] && [now[dep]])} |`);
+                }
+              }
+            }
+            return rows;
+          }
+
+          function changedLockedPackages(before, after) {
+            const key = (snap) => new Set([...lockedVersions(snap)].flatMap(([name, set]) => [...set].map((v) => `${name}@${v}`)));
+            const was = key(before);
+            const now = key(after);
+            return [...now].filter((entry) => !was.has(entry)).length + [...was].filter((entry) => !now.has(entry)).length;
+          }
+
+          function advisoryLine(advisory) {
+            return `- **${advisory.severity}** \`${advisory.package}\` ${list(advisory.versions)}: [${advisory.title}](${advisory.url}) (vulnerable: \`${advisory.vulnerableVersions}\`)`;
+          }
+
+          function body(before, after, advisoriesBefore, advisoriesAfter, refreshFailed) {
+            const lines = ["Ran the modules update and recorded every module lock in `antelope-lock/` again.", ""];
+            if (refreshFailed) {
+              lines.push("> [!WARNING]", "> The refresh command failed. The locks it recorded are committed; read the workflow run log before you merge.", "");
+            }
+            const modules = moduleRows(before, after);
+            lines.push("### Modules", "");
+            if (modules.length) lines.push("| Module | From | To |", "| --- | --- | --- |", ...modules);
+            else lines.push("No module moved. Their locks were resolved again.");
+            const direct = directRows(before, after);
+            lines.push("", "### Dependencies of the modules", "");
+            if (direct.length) lines.push("| Module | Dependency | From | To |", "| --- | --- | --- | --- |", ...direct);
+            else lines.push("No direct dependency of a module moved.");
+            lines.push("", `${changedLockedPackages(before, after)} locked package versions were added or removed across all locks.`);
+            if (advisoriesBefore || advisoriesAfter) {
+              const ids = new Set((advisoriesAfter ?? []).map((advisory) => `${advisory.package}#${advisory.id}`));
+              const fixed = (advisoriesBefore ?? []).filter((advisory) => !ids.has(`${advisory.package}#${advisory.id}`));
+              lines.push("", "### Security advisories", "");
+              if (fixed.length) lines.push("Fixed by this pull request:", "", ...fixed.map(advisoryLine), "");
+              if (advisoriesAfter?.length) {
+                lines.push("<details><summary>" + advisoriesAfter.length + " advisories still affect a locked package</summary>", "", ...advisoriesAfter.map(advisoryLine), "", "</details>");
+              }
+              else if (advisoriesAfter) lines.push("No known advisory affects a locked package.");
+            }
+            return `${lines.join("\n")}\n`;
+          }
+
+          function lost(before, after) {
+            const was = versionsByPackage(before);
+            const now = versionsByPackage(after);
+            return [...was].filter(([name, versions]) => (now.get(name)?.length ?? 0) < versions.length).map(([name]) => name);
+          }
+
+          const readJson = (file) => (file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined);
+          const [command, ...args] = process.argv.slice(2);
+          if (command === "snapshot") {
+            process.stdout.write(JSON.stringify(snapshot(args[0] ?? ".")));
+          } else if (command === "advisories") {
+            process.stdout.write(JSON.stringify(await advisories(readJson(args[0]))));
+          } else if (command === "lost") {
+            process.stdout.write(lost(readJson(args[0]), readJson(args[1])).map((name) => `${name}\n`).join(""));
+          } else if (command === "body") {
+            const [before, after, advisoriesBefore, advisoriesAfter] = args.map(readJson);
+            process.stdout.write(body(before, after, advisoriesBefore, advisoriesAfter, process.env.REFRESH_FAILED === "true"));
+          } else {
+            process.stderr.write("usage: module-locks.mjs snapshot <project> | advisories <snapshot.json> | lost <before> <after> | body <before> <after> [<advisories before> <advisories after>]\n");
+            process.exit(2);
+          }
+          NODE
+
+      - name: Scan the locks for advisories
+        id: scan
+        run: |
+          node "${RUNNER_TEMP}/lock-tool/module-locks.mjs" snapshot . > "${RUNNER_TEMP}/before.json"
+          if node "${RUNNER_TEMP}/lock-tool/module-locks.mjs" advisories "${RUNNER_TEMP}/before.json" > "${RUNNER_TEMP}/advisories-before.json"; then
+            echo "scanned=true" >> "$GITHUB_OUTPUT"
+          else
+            rm -f "${RUNNER_TEMP}/advisories-before.json"
+            echo "::warning::The npm advisory API could not be read; this run does not report advisories."
+          fi
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.scan.outputs.scanned == 'true'
+        with:
+          path: ${{ runner.temp }}/advisories-seen.json
+          key: "modules-update-advisories:${{ inputs.base || github.ref_name }}:${{ github.run_id }}"
+          restore-keys: "modules-update-advisories:${{ inputs.base || github.ref_name }}:"
+
+      - name: Decide whether to refresh
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          WEEKDAY: ${{ inputs.weekday }}
+          SCANNED: ${{ steps.scan.outputs.scanned }}
+        run: |
+          current="${RUNNER_TEMP}/advisories-before.json"
+          SEEN="${RUNNER_TEMP}/advisories-seen.json"
+          fresh=""
+          if [ "$SCANNED" = "true" ]; then
+            [ -f "$SEEN" ] || echo '[]' > "$SEEN"
+            fresh=$(jq -r --slurpfile seen "$SEEN" '[.[] | "\(.package)#\(.id)"] - $seen[0] | .[]' "$current")
+            jq '[.[] | "\(.package)#\(.id)"] | unique' "$current" > "${SEEN}.next"
+            mv "${SEEN}.next" "$SEEN"
+          fi
+          if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "$WEEKDAY" ]; then
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$fresh" ]; then
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+            echo "New advisories on locked packages: $(echo "$fresh" | paste -sd ' ')" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No new advisory on a locked package; the locks are refreshed on day ${WEEKDAY} of the week." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - if: steps.decide.outputs.refresh == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Install dependencies
+        if: steps.decide.outputs.refresh == 'true'
+        run: pnpm install --frozen-lockfile --reporter=silent
+
+      - name: Refresh the module locks
+        id: refresh
+        if: steps.decide.outputs.refresh == 'true'
+        env:
+          REFRESH_COMMAND: ${{ inputs.refresh-command }}
+        run: |
+          if ! bash -euo pipefail -c "$REFRESH_COMMAND"; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::The refresh command failed; the pull request carries the locks it recorded."
+          fi
+
+      - name: Compare the locks
+        id: compare
+        if: steps.decide.outputs.refresh == 'true'
+        env:
+          REFRESH_FAILED: ${{ steps.refresh.outputs.failed == 'true' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tool="${RUNNER_TEMP}/lock-tool/module-locks.mjs"
+          node "$tool" snapshot . > "${RUNNER_TEMP}/after.json"
+          lost=$(node "$tool" lost "${RUNNER_TEMP}/before.json" "${RUNNER_TEMP}/after.json")
+          if [ "$REFRESH_FAILED" = "true" ] && [ -n "$lost" ]; then
+            echo "::error::The refresh command failed and recorded fewer locks for: $(echo "$lost" | paste -sd ' '). Nothing was pushed."
+            exit 1
+          fi
+          git add -A -- antelope-lock
+          if git ls-files --error-unmatch antelope.config.ts > /dev/null 2>&1; then
+            git add -- antelope.config.ts
+          fi
+          if [ "$REFRESH_FAILED" = "true" ] && git diff --cached --quiet -- antelope-lock; then
+            echo "::error::The refresh command failed and changed no lock. Nothing was pushed."
+            exit 1
+          fi
+          if git diff --cached --quiet; then
+            echo "Every module lock is current." >> "$GITHUB_STEP_SUMMARY"
+            number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+            if [ -n "$number" ]; then
+              gh pr close "$number" --delete-branch --comment "Every module lock is already current on \`${BASE}\`." > /dev/null
+            fi
+            exit 0
+          fi
+          scans=()
+          if [ -f "${RUNNER_TEMP}/advisories-before.json" ] && node "$tool" advisories "${RUNNER_TEMP}/after.json" > "${RUNNER_TEMP}/advisories-after.json"; then
+            scans=("${RUNNER_TEMP}/advisories-before.json" "${RUNNER_TEMP}/advisories-after.json")
+          fi
+          {
+            node "$tool" body "${RUNNER_TEMP}/before.json" "${RUNNER_TEMP}/after.json" "${scans[@]}"
+            echo
+            echo "Opened by the [modules update workflow](${RUN_URL})."
+          } > "${RUNNER_TEMP}/body.md"
+          cat "${RUNNER_TEMP}/body.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the pull request
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        run: |
+          title="build(deps): update the AntelopeJS module locks"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --no-verify -q -m "$title"
+          pushed=true
+          if git fetch -q "$remote" "refs/heads/${BRANCH}" 2> /dev/null && git diff --quiet FETCH_HEAD HEAD; then
+            pushed=false
+          elif ! git push --no-verify -q --force "$remote" "HEAD:refs/heads/${BRANCH}"; then
+            echo "::error::The branch ${BRANCH} could not be pushed: see the git error above. The job that calls modules-update.yml needs contents: write."
+            exit 1
+          fi
+          number=$(gh pr list --head "$BRANCH" --base "$BASE" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --body-file "${RUNNER_TEMP}/body.md" > /dev/null
+          elif ! gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "${RUNNER_TEMP}/body.md" > /dev/null; then
+            echo "::error::The pull request could not be opened: pass a token secret that may open pull requests, or allow GitHub Actions to create pull requests in the repository settings. Branch: ${GITHUB_SERVER_URL}/${GH_REPO}/compare/${BASE}...${BRANCH}?expand=1"
+            exit 1
+          fi
+          if [ "$pushed" = "true" ] && [ "$CUSTOM_TOKEN" != "true" ]; then
+            if ! gh workflow run "$CI_WORKFLOW" --ref "$BRANCH" > /dev/null; then
+              echo "::error::The branch is pushed, but ${CI_WORKFLOW} could not be dispatched. It must declare workflow_dispatch and the calling job must grant actions: write."
+              exit 1
+            fi
+          fi
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: success() && steps.scan.outputs.scanned == 'true' && steps.refresh.outputs.failed != 'true'
+        with:
+          path: ${{ runner.temp }}/advisories-seen.json
+          key: "modules-update-advisories:${{ inputs.base || github.ref_name }}:${{ github.run_id }}"
