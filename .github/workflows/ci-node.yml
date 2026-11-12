@@ -52,7 +52,7 @@ on:
         default: false
         type: boolean
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false, and the docker compose services are skipped, so tests that need them must not run on Windows
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false, and the docker compose services, pull request title check, documentation check and skill evals are skipped, so tests that need the services must not run on Windows
         default: false
         type: boolean
 
@@ -77,7 +77,7 @@ jobs:
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (!inputs.test-job || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
     steps:
       - name: Check pull request title
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -144,7 +144,7 @@ jobs:
             ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Check documentation
-        if: inputs.docs-files != ''
+        if: inputs.docs-files != '' && runner.os != 'Windows'
         uses: AntelopeJS/tooling-configs/actions/docs@61363eb6dc74d9c7a21da1d674569d114c8c90b9 # v0.2.18
         with:
           files: ${{ inputs.docs-files }}
@@ -172,7 +172,7 @@ jobs:
         run: pnpm run checks
 
       - name: Skill eval, offline
-        if: inputs.skill-eval-offline
+        if: inputs.skill-eval-offline && runner.os != 'Windows'
         env:
           SKILL_EVAL_REF: ${{ inputs.skill-eval-ref }}
         run: |
