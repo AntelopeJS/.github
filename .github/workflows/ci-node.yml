@@ -52,7 +52,7 @@ on:
         default: false
         type: boolean
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false, and the docker compose services, pull request title check, documentation check and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check and skill evals are skipped, so tests that need the services must not run on Windows
         default: false
         type: boolean
 
@@ -87,10 +87,11 @@ jobs:
             exit 1
           fi
 
-      - name: Use LF line endings and Git Bash for package scripts
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
         run: |
           git config --global core.autocrlf false
+          git config --global core.symlinks true
           echo "npm_config_script_shell=$(cygpath -w /usr/bin/bash)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -223,10 +224,11 @@ jobs:
     env:
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
-      - name: Use LF line endings and Git Bash for package scripts
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
         run: |
           git config --global core.autocrlf false
+          git config --global core.symlinks true
           echo "npm_config_script_shell=$(cygpath -w /usr/bin/bash)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -326,10 +328,11 @@ jobs:
     env:
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
-      - name: Use LF line endings and Git Bash for package scripts
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
         run: |
           git config --global core.autocrlf false
+          git config --global core.symlinks true
           echo "npm_config_script_shell=$(cygpath -w /usr/bin/bash)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
