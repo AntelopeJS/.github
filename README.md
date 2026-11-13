@@ -84,6 +84,7 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. |
 | `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. With `test-job`, only the test job uses the cache. |
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
+| `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
