@@ -51,25 +51,33 @@ on:
         description: Run extra-commands in their own job, in parallel with the other checks
         default: false
         type: boolean
+      windows:
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check, sync:check and skill evals are skipped, so tests that need the services must not run on Windows
+        default: false
+        type: boolean
 
 jobs:
   node:
-    name: Node ${{ matrix.node-version || '.nvmrc' }}
-    runs-on: ubuntu-latest
+    name: Node ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    defaults:
+      run:
+        shell: bash
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
-      START_SERVICES: ${{ inputs.services-compose-file != '' && (!inputs.test-job || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (!inputs.test-job || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
     steps:
       - name: Check pull request title
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -78,6 +86,15 @@ jobs:
             echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore."
             exit 1
           fi
+
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.symlinks true
+          bash_path=$(cygpath -w /usr/bin/bash)
+          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,7 +147,7 @@ jobs:
             ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Check documentation
-        if: inputs.docs-files != ''
+        if: inputs.docs-files != '' && runner.os != 'Windows'
         uses: AntelopeJS/tooling-configs/actions/docs@61363eb6dc74d9c7a21da1d674569d114c8c90b9 # v0.2.18
         with:
           files: ${{ inputs.docs-files }}
@@ -154,19 +171,19 @@ jobs:
 
       - name: Run checks
         env:
-          ANTELOPEJS_CHECKS_SKIP: ${{ inputs.test-job && 'test' || '' }}
+          ANTELOPEJS_CHECKS_SKIP: ${{ runner.os == 'Windows' && (inputs.test-job && 'test,sync:check' || 'sync:check') || (inputs.test-job && 'test' || '') }}
         run: pnpm run checks
 
       - name: Skill eval, offline
-        if: inputs.skill-eval-offline
+        if: inputs.skill-eval-offline && runner.os != 'Windows'
         env:
           SKILL_EVAL_REF: ${{ inputs.skill-eval-ref }}
         run: |
-          mapfile -t dirs < <(git ls-files ':(glob)package.json' ':(glob)**/package.json' | node -e 'const fs = require("fs"); const path = require("path"); for (const file of fs.readFileSync(0, "utf8").split("\n").filter(Boolean)) { const skills = JSON.parse(fs.readFileSync(file, "utf8")).antelopeJs?.skills; for (const dir of Array.isArray(skills) ? skills : []) console.log(path.join(path.dirname(file), dir)); }')
+          mapfile -t dirs < <(git ls-files ':(glob)package.json' ':(glob)**/package.json' | node -e 'const fs = require("fs"); const path = require("path"); for (const file of fs.readFileSync(0, "utf8").split("\n").filter(Boolean)) { const skills = JSON.parse(fs.readFileSync(file, "utf8")).antelopeJs?.skills; for (const dir of Array.isArray(skills) ? skills : []) console.log(path.posix.join(path.posix.dirname(file), dir)); }')
           if [ "${#dirs[@]}" -eq 0 ]; then
             exit 0
           fi
-          if ! git diff --name-only HEAD^1 HEAD -- "${dirs[@]}" | grep -q .; then
+          if [ -z "$(git diff --name-only HEAD^1 HEAD -- "${dirs[@]}")" ]; then
             exit 0
           fi
           args=()
@@ -190,19 +207,34 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   test:
-    name: Test ${{ matrix.node-version || '.nvmrc' }}
+    name: Test ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     if: inputs.test-job
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    defaults:
+      run:
+        shell: bash
     concurrency:
-      group: ci-node-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
+      group: ci-node-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.symlinks true
+          bash_path=$(cygpath -w /usr/bin/bash)
+          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -220,7 +252,7 @@ jobs:
             fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       - name: Start services in the background
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         env:
           SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
@@ -255,7 +287,7 @@ jobs:
 
       - name: Start services
         id: services
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         run: |
           deadline=$((SECONDS + 900))
           until [ -s "$RUNNER_TEMP/services.status" ]; do
@@ -281,19 +313,34 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   extra:
-    name: Extra ${{ matrix.node-version || '.nvmrc' }}
+    name: Extra ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     if: inputs.extra-commands-job && inputs.extra-commands != ''
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    defaults:
+      run:
+        shell: bash
     concurrency:
-      group: ci-node-extra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}
+      group: ci-node-extra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.symlinks true
+          bash_path=$(cygpath -w /usr/bin/bash)
+          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -311,7 +358,7 @@ jobs:
             fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
       - name: Start services in the background
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         env:
           SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
@@ -337,7 +384,7 @@ jobs:
 
       - name: Start services
         id: services
-        if: inputs.services-compose-file != ''
+        if: env.START_SERVICES == 'true'
         run: |
           deadline=$((SECONDS + 900))
           until [ -s "$RUNNER_TEMP/services.status" ]; do
