@@ -56,8 +56,8 @@ on:
         default: false
         type: boolean
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check, sync:check and skill evals are skipped, so tests that need the services must not run on Windows
-        default: false
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check, sync:check and skill evals are skipped, so tests that need the services must not run on Windows
+        default: true
         type: boolean
 
 jobs:

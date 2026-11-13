@@ -89,6 +89,7 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
+| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services, the pull request title check, the documentation check, `sync:check` and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 
 The `checks` job stays the single required result. It succeeds only when every
 Node.js job, every test job and every extra-commands job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
