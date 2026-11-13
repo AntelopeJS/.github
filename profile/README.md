@@ -96,19 +96,19 @@ Implementations you can swap.
 
 Dashboard core and modules.
 
-| Repository                                                     | Description                                      |
-| -------------------------------------------------------------- | ------------------------------------------------ |
-| [dms](https://github.com/AntelopeJS/dms)                       | Runtime module and public interface package      |
-| [dms-frontend](https://github.com/AntelopeJS/dms-frontend)     | Frontend loader and `ajs dms` CLI plugin (Vue 3) |
-| [dms-assistant](https://github.com/AntelopeJS/dms-assistant)   | A development assistant inside the AntelopeJS DMS dashboard, and the builder that writes its page changes as TypeScript |
-| [dms-database](https://github.com/AntelopeJS/dms-database)     | Row explorer, schema diagram, AQL playground     |
-| [dms-api](https://github.com/AntelopeJS/dms-api)               | Endpoint tree, docs and request statistics       |
-| [dms-saas](https://github.com/AntelopeJS/dms-saas)             | Tenants, plans, subscriptions and invoicing      |
-| [dms-lang](https://github.com/AntelopeJS/dms-lang)             | Locales and translation keys                     |
-| [dms-media](https://github.com/AntelopeJS/dms-media)           | Media library                                    |
-| [dms-automation](https://github.com/AntelopeJS/dms-automation) | Workflow automation                              |
-| [dms-mailing](https://github.com/AntelopeJS/dms-mailing)       | Mail templates, sends and delivery tracking      |
-| [dms-marketing](https://github.com/AntelopeJS/dms-marketing)   | Pages, campaigns, funnels and analytics          |
+| Repository                                                     | Description                                                             |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [dms](https://github.com/AntelopeJS/dms)                       | Runtime module, public interface package, builder engine and MCP server |
+| [dms-frontend](https://github.com/AntelopeJS/dms-frontend)     | Frontend loader and `ajs dms` CLI plugin (Vue 3)                        |
+| [dms-assistant](https://github.com/AntelopeJS/dms-assistant)   | AI assistant and onboarding for the dashboard                           |
+| [dms-database](https://github.com/AntelopeJS/dms-database)     | Row explorer, schema diagram, AQL playground                            |
+| [dms-api](https://github.com/AntelopeJS/dms-api)               | Endpoint tree, docs and request statistics                              |
+| [dms-saas](https://github.com/AntelopeJS/dms-saas)             | Tenants, plans, subscriptions and invoicing                             |
+| [dms-lang](https://github.com/AntelopeJS/dms-lang)             | Locales and translation keys                                            |
+| [dms-media](https://github.com/AntelopeJS/dms-media)           | Media library                                                           |
+| [dms-automation](https://github.com/AntelopeJS/dms-automation) | Workflow automation                                                     |
+| [dms-mailing](https://github.com/AntelopeJS/dms-mailing)       | Mail templates, sends and delivery tracking                             |
+| [dms-marketing](https://github.com/AntelopeJS/dms-marketing)   | Pages, campaigns, funnels and analytics                                 |
 
 </details>
 
