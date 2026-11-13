@@ -100,8 +100,7 @@ Dashboard core and modules.
 | -------------------------------------------------------------- | ------------------------------------------------ |
 | [dms](https://github.com/AntelopeJS/dms)                       | Runtime module and public interface package      |
 | [dms-frontend](https://github.com/AntelopeJS/dms-frontend)     | Frontend loader and `ajs dms` CLI plugin (Vue 3) |
-| [dms-ai](https://github.com/AntelopeJS/dms-ai)                 | AI assistant that knows DMS conventions          |
-| [dms-builder](https://github.com/AntelopeJS/dms-builder)       | Visual page builder                              |
+| [dms-assistant](https://github.com/AntelopeJS/dms-assistant)   | A development assistant inside the AntelopeJS DMS dashboard, and the builder that writes its page changes as TypeScript |
 | [dms-database](https://github.com/AntelopeJS/dms-database)     | Row explorer, schema diagram, AQL playground     |
 | [dms-api](https://github.com/AntelopeJS/dms-api)               | Endpoint tree, docs and request statistics       |
 | [dms-saas](https://github.com/AntelopeJS/dms-saas)             | Tenants, plans, subscriptions and invoicing      |
