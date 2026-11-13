@@ -162,7 +162,7 @@ head whose sync output was not applied fails `ci / checks`, and a head pushed
 without a successful dispatch has no `ci / checks` at all.
 
 Callers still on a single `ci` job that grants `contents: write` and
-`actions: write` and calls `ci-node.yml` without inputs keep working unchanged:
+`actions: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
 `ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
 its failure or cancellation still fails `ci / checks`.
 
