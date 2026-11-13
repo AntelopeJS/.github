@@ -90,6 +90,7 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
+| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services, the pull request title check and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 
 On a pull request, the `gitleaks` job scans the commits the pull request adds,
 merge commits included, with gitleaks 8.30.1 and fails on any finding. It reads
