@@ -251,6 +251,8 @@ re-pointed to the latest `main` commit, so every repository picks up the change
 without editing its own workflow. Changes released under `v1` must therefore be
 backward compatible. A breaking change, such as a new required input or a
 removed input, needs a new `v2` tag, and repositories move to it explicitly.
+A changed input default stays on `v1` only when every caller that the new
+default would break passes the old value before `v1` is re-pointed.
 
 When the tests run by `pnpm release` need service containers, such as a
 database or a storage emulator, describe them in a docker compose file and pass
