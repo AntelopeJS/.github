@@ -55,6 +55,10 @@ on:
         description: Run extra-commands in their own job, in parallel with the other checks
         default: false
         type: boolean
+      extra-job-timeout-minutes:
+        description: Minutes the extra-commands job may run before GitHub cancels it
+        default: 360
+        type: number
       windows:
         description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check, sync:check and skill evals are skipped, so tests that need the services must not run on Windows
         default: false
@@ -350,6 +354,7 @@ jobs:
     name: Extra ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     if: inputs.extra-commands-job && inputs.extra-commands != ''
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ inputs.extra-job-timeout-minutes }}
     permissions:
       contents: read
     strategy:
@@ -421,6 +426,24 @@ jobs:
         env:
           SETUP_COMMANDS: ${{ inputs.setup-commands }}
         run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Restore cache
+        if: inputs.cache-paths != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
+
+      - name: Restore cache again so links extracted before their target become directory links
+        if: inputs.cache-paths != '' && runner.os == 'Windows'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Start services
         id: services
