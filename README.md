@@ -90,8 +90,13 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 
+On a pull request, the `gitleaks` job scans the commits the pull request adds
+with gitleaks 8.30.1 and fails on any finding. It skips the fingerprints listed
+in the repository's `.gitleaksignore`, which is optional. On other events the
+job is skipped.
+
 The `checks` job stays the single required result. It succeeds only when every
-Node.js job, every test job and every extra-commands job, if enabled, succeeds and the Renovate sync run by this workflow, if any, did not
+Node.js job, every test job and every extra-commands job, if enabled, succeeds, the `gitleaks` job, if run, succeeds and the Renovate sync run by this workflow, if any, did not
 fail or get cancelled.
 
 Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands` in the Node.js job, the Node.js job does not start them. After a successful start,
