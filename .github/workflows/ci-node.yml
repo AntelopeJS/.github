@@ -56,7 +56,7 @@ on:
         default: false
         type: boolean
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check, documentation check and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check and skill evals are skipped, so tests that need the services must not run on Windows
         default: false
         type: boolean
 
@@ -166,7 +166,7 @@ jobs:
             ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Check documentation
-        if: inputs.docs-files != '' && runner.os != 'Windows'
+        if: inputs.docs-files != ''
         uses: AntelopeJS/tooling-configs/actions/docs@d4fdcee525bcbf724049c60fc3660e9fc2401136 # v0.5.8
         with:
           files: ${{ inputs.docs-files }}
