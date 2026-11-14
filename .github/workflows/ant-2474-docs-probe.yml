@@ -1,0 +1,70 @@
+name: ANT-2474 docs probe, do not merge
+
+on:
+  push:
+    branches: [test/ant-2474-docs-windows-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  caller:
+    name: ${{ matrix.repo }} docs on Windows
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include: [{"repo": "antelopejs", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "api", "docs": "README.md\nplayground/README.md\n", "project": ""}, {"repo": "auth-jwt", "docs": "README.md\nplayground/README.md\n", "project": ""}, {"repo": "brevo", "docs": "README.md\ndocs\nplayground/README.md\n", "project": "docs/tsconfig.json"}, {"repo": "checkout-com", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "dms-api", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "dms-automation", "docs": "README.md\ndocs\npackages/dms-automation/README.md\npackages/dms-automation/docs\npackages/interface-dms-automation/README.md\npackages/interface-dms-automation/docs\n", "project": "packages/interface-dms-automation/docs/tsconfig.json"}, {"repo": "dms-frontend", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "dms-mailing", "docs": "README.md\ndocs\npackages/dms-mailing/README.md\npackages/dms-mailing/docs\npackages/interface-dms-mailing/README.md\npackages/interface-dms-mailing/docs\n", "project": "packages/interface-dms-mailing/docs/tsconfig.json"}, {"repo": "file-storage-local", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "file-storage-s3", "docs": "README.md\n", "project": "tsconfig.docs.json"}, {"repo": "interface-api", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-api-util", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-auth", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-core", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-data-api", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-database", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-database-catalog", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-database-decorators", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-email", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-file-storage", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-mongodb", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "interface-payment", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-redis", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "interface-redis-scheduler", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-rethinkdb", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-stripe", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "interface-subscriptions", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "mollie", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "mongodb", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "mysql", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "nodemailer", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "payment-subscriptions", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "postgres", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "redis", "docs": "README.md\ndocs\nplayground/README.md\n", "project": "docs/tsconfig.json"}, {"repo": "rethinkdb", "docs": "README.md\ndocs\n", "project": ""}, {"repo": "stripe", "docs": "README.md\ndocs\n", "project": "docs/tsconfig.json"}, {"repo": "template-dms-adonis", "docs": "README.md\n", "project": ""}]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CALLER: ${{ matrix.repo }}
+    steps:
+      - name: Use LF line endings, symlinks and Git Bash for package scripts
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.symlinks true
+          bash_path=$(cygpath -w /usr/bin/bash)
+          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
+
+      - name: Check out the caller outside any .git directory
+        id: caller
+        run: |
+          dir="$RUNNER_TEMP/$CALLER"
+          git clone --quiet --depth 2 "https://github.com/AntelopeJS/$CALLER" "$dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "node=$(cat "$dir/.nvmrc")" >> "$GITHUB_OUTPUT"
+          echo "pnpm=$(node -p "require(process.argv[1]).packageManager.split('@')[1].split('+')[0]" "$dir/package.json")" >> "$GITHUB_OUTPUT"
+          echo "checkout: $(cygpath -w "$dir")"
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ steps.caller.outputs.pnpm }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.caller.outputs.node }}
+
+      - name: Install dependencies
+        working-directory: ${{ steps.caller.outputs.dir }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Check documentation with the v0.5.8 docs action steps
+        working-directory: ${{ steps.caller.outputs.dir }}
+        env:
+          DOCS_FILES: ${{ matrix.docs }}
+          DOCS_TYPESCRIPT_PROJECT: ${{ matrix.project }}
+        run: |
+          action="$RUNNER_TEMP/tooling-configs/actions/docs"
+          git clone --quiet --filter=blob:none https://github.com/AntelopeJS/tooling-configs "$RUNNER_TEMP/tooling-configs"
+          git -C "$RUNNER_TEMP/tooling-configs" checkout --quiet d4fdcee525bcbf724049c60fc3660e9fc2401136
+          npm ci --prefix "$action" --omit=dev --ignore-scripts --no-audit --no-fund
+          if [ "$(node "$action/check.mjs" --print-standard)" = true ]; then
+            VALE_BIN=$("$action/install-vale.sh" "$RUNNER_TEMP/vale")
+            export VALE_BIN
+          fi
+          node "$action/check.mjs" --files "$DOCS_FILES" --typescript-project "$DOCS_TYPESCRIPT_PROJECT"
