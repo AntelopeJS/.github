@@ -167,7 +167,7 @@ jobs:
 
       - name: Check documentation
         if: inputs.docs-files != '' && runner.os != 'Windows'
-        uses: AntelopeJS/tooling-configs/actions/docs@61363eb6dc74d9c7a21da1d674569d114c8c90b9 # v0.2.18
+        uses: AntelopeJS/tooling-configs/actions/docs@d4fdcee525bcbf724049c60fc3660e9fc2401136 # v0.5.8
         with:
           files: ${{ inputs.docs-files }}
           typescript-project: ${{ inputs.docs-typescript-project }}
