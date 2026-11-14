@@ -90,10 +90,14 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 
-On a pull request, the `gitleaks` job scans the commits the pull request adds
-with gitleaks 8.30.1 and fails on any finding. It skips the fingerprints listed
-in the repository's `.gitleaksignore`, which is optional. On other events the
-job is skipped.
+On a pull request, the `gitleaks` job scans the commits the pull request adds,
+merge commits included, with gitleaks 8.30.1 and fails on any finding. It reads
+the commits between the parents of the pull request's merge ref, so base branch
+commits merged into the pull request are not scanned again. It loads the
+repository's `.gitleaks.toml` and skips the fingerprints listed in its
+`.gitleaksignore`; both are optional. A fingerprint without its leading commit,
+`<file>:<rule>:<line>`, still matches after a rebase or a squash. On other
+events the job is skipped.
 
 The `checks` job stays the single required result. It succeeds only when every
 Node.js job, every test job and every extra-commands job, if enabled, succeeds, the `gitleaks` job, if run, succeeds and the Renovate sync run by this workflow, if any, did not

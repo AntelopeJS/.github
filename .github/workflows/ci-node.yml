@@ -509,10 +509,10 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
 
       - name: Scan the pull request's commits, minus the fingerprints in .gitleaksignore
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 --log-opts="${BASE_SHA}..${HEAD_SHA}" .'
+        run: |
+          base=$(git rev-parse --verify HEAD^1)
+          head=$(git rev-parse --verify HEAD^2)
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 --log-opts="--remerge-diff ${base}..${head}" .
 
   renovate-sync:
     if: inputs.renovate-sync
