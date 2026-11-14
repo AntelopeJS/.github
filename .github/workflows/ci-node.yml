@@ -512,7 +512,8 @@ jobs:
         run: |
           base=$(git rev-parse --verify HEAD^1)
           head=$(git rev-parse --verify HEAD^2)
-          if [ -n "$(git rev-list --min-parents=3 "${base}..${head}")" ]; then
+          octopus=$(git rev-list --min-parents=3 "${base}..${head}")
+          if [ -n "$octopus" ]; then
             echo "::error::The pull request has an octopus merge, whose changes git cannot show to gitleaks. Replace it with two-parent merges."
             exit 1
           fi
