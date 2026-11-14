@@ -489,16 +489,46 @@ jobs:
           echo "docs-only=${docs_only}" >> "$GITHUB_OUTPUT"
           echo "docs-only: ${docs_only}" >> "$GITHUB_STEP_SUMMARY"
 
+  gitleaks:
+    name: Gitleaks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install gitleaks 8.30.1 from its checksummed release
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c --quiet -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+
+      - name: Scan the pull request's commits, minus the fingerprints in .gitleaksignore
+        run: |
+          base=$(git rev-parse --verify HEAD^1)
+          head=$(git rev-parse --verify HEAD^2)
+          octopus=$(git rev-list --min-parents=3 "${base}..${head}")
+          if [ -n "$octopus" ]; then
+            echo "::error::The pull request has an octopus merge, whose changes git cannot show to gitleaks. Replace it with two-parent merges."
+            exit 1
+          fi
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 --log-opts="--remerge-diff ${base}..${head}" .
+
   renovate-sync:
     if: inputs.renovate-sync
     uses: ./.github/workflows/ci-renovate-sync.yml
 
   checks:
     if: always()
-    needs: [node, test, extra, renovate-sync]
+    needs: [node, test, extra, gitleaks, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || (needs.extra.result != 'success' && needs.extra.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
+      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || (needs.extra.result != 'success' && needs.extra.result != 'skipped') || (needs.gitleaks.result != 'success' && needs.gitleaks.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
         run: exit 1
