@@ -96,8 +96,10 @@ the commits between the parents of the pull request's merge ref, so base branch
 commits merged into the pull request are not scanned again. It loads the
 repository's `.gitleaks.toml` and skips the fingerprints listed in its
 `.gitleaksignore`; both are optional. A fingerprint without its leading commit,
-`<file>:<rule>:<line>`, still matches after a rebase or a squash. On other
-events the job is skipped.
+`<file>:<rule>:<line>`, still matches after a rebase or a squash. A finding in a
+file whose merge conflict was resolved by hand is reported as `b/<file>`. The
+job fails on an octopus merge, whose changes it cannot scan. On other events
+the job is skipped.
 
 The `checks` job stays the single required result. It succeeds only when every
 Node.js job, every test job and every extra-commands job, if enabled, succeeds, the `gitleaks` job, if run, succeeds and the Renovate sync run by this workflow, if any, did not
