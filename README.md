@@ -217,6 +217,26 @@ Runs share a concurrency group per repository, event and package directory,
 and a running release is never cancelled. Previews and stable releases sit in
 different groups, so a queued preview never cancels a pending stable release.
 
+### What a caller declares
+
+`antelopejs-sync` writes this caller, and the workflows keep it stable.
+
+- **File.** `.github/workflows/release.yml`. npm trusted publishing names this
+  file, and the release train dispatches it.
+- **Triggers.** `push` to `next` (`develop` in `cloud`) for previews, and
+  `workflow_dispatch` for stable releases.
+- **Dispatch inputs.** `release-version`, `release-commit`, `dependency-ranges`
+  (default `"{}"`) and `release-notes`, all optional strings that the release
+  train sets. A repository whose package is not at its root adds
+  `package-directory`.
+- **Permissions.** `contents: write` and `id-token: write`.
+- **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
+  `NPM_ANTELOPE_TOKEN` for the private one.
+- **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
+  each dispatch input passed through under the same name.
+- **Repository setting.** The `npm-publish` environment allows the preview
+  branch, `next`, besides the default branch.
+
 ### Caller workflow
 
 The caller is the `release.yml` of the repository. It needs both triggers and
@@ -255,7 +275,7 @@ permissions:
 
 jobs:
   release:
-    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
+    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v2
     with:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
@@ -271,8 +291,8 @@ not at its root also declares a `package-directory` input in
 `workflow_dispatch`, because the release train passes it, and forwards it with
 `package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
 
-The caller uses `@main` during the pilot. `v1` keeps the previous interface, so
-a caller moves to `@v2` once that tag exists, through `antelopejs-sync`.
+Callers use `@v2`. `v1` keeps the previous interface. Until the `v2` tag exists,
+the pilot repositories call `@main`.
 
 ## Node CI
 
@@ -523,7 +543,7 @@ releasing a package below `packages/` needs no extra input:
 ```yaml
 jobs:
   release:
-    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
+    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v2
     with:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
