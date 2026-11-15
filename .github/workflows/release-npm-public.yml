@@ -253,7 +253,7 @@ jobs:
           const changelog = (typeof output === 'string' ? output : 'CHANGELOG.md').replace(/^\.\//, '')
           const shipped = (revision) => ({ ...JSON.parse(git('show', `${revision}:./package.json`)), version: null })
           const ships = (file) => file !== changelog && (file !== 'package.json' || !isDeepStrictEqual(shipped(PREVIOUS), shipped(GITHUB_SHA)))
-          const changed = git('diff', '--name-only', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
+          const changed = git('diff', '--name-only', '--no-renames', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
           process.exit(changed.some(ships) ? 1 : 0)
           NODE
           then
