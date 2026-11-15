@@ -73,7 +73,8 @@ function isInside(outer: string, inner: string): boolean {
 }
 
 function buildPlan(command: Command, system: System): Plan {
-  const places = new Map<PackageSource, { from: Checkout; revision: Revision }>();
+  const sources: PackageSource[] = [];
+  const places = new Map<string, { from: Checkout; revision: Revision }>();
   const checkouts = new Map<string, Checkout>();
   for (const target of command.targets) {
     const from = checkouts.get(location(target)) ?? openCheckout(target, system);
@@ -82,9 +83,10 @@ function buildPlan(command: Command, system: System): Plan {
     const nested = command.targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
-    places.set(readSource(system, from, revision, target.directory, nested), { from, revision });
+    const source = readSource(system, from, revision, target.directory, nested);
+    sources.push(source);
+    places.set(source.manifest.name, { from, revision });
   }
-  const sources = [...places.keys()];
   const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicate !== undefined) throw new Error(`${duplicate} is listed twice.`);
@@ -93,7 +95,7 @@ function buildPlan(command: Command, system: System): Plan {
   const ref = command.ref ?? [...new Set(sources.map((source) => source.branch))].join(", ");
   const search = commitSearch(system);
   const contains = (name: string, sha: string): boolean => {
-    const place = [...places].find(([source]) => source.manifest.name === name)?.[1];
+    const place = places.get(name);
     return place !== undefined && search(place.from, place.revision, sha);
   };
   return computePlan(sources, { ref, exclude: command.exclude, contains });
@@ -105,13 +107,6 @@ function label(entry: Release): string {
   return `${entry.source.manifest.name} ${entry.to}`;
 }
 
-function release(system: System, entry: Release, earlier: Release | undefined): RunOutcome {
-  if (earlier !== undefined) {
-    return { kind: "failed", detail: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
-  }
-  return releaseRun(system, entry);
-}
-
 function list(releases: readonly Release[]): string {
   return releases.length === 0 ? "nothing" : releases.map(label).join(", ");
 }
@@ -120,7 +115,11 @@ function go(plan: Plan, system: System): number {
   const releases = plan.entries.filter((entry) => entry.status === "release");
   for (const [position, entry] of releases.entries()) {
     const published = releases.slice(0, position);
-    const outcome = release(system, entry, published.find((other) => other.source.slug === entry.source.slug));
+    const earlier = published.find((other) => other.source.slug === entry.source.slug);
+    const outcome: RunOutcome =
+      earlier === undefined
+        ? releaseRun(system, entry)
+        : { kind: "failed", detail: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
     if (outcome.kind === "success") {
       system.out(`published ${label(entry)}  ${outcome.url}\n`);
       continue;
