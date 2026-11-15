@@ -225,6 +225,56 @@ its failure or cancellation still fails `ci / checks`.
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
+## Next branch
+
+A repository with a `next` branch takes agents' pull requests on `next`, where
+each one merges on its own green checks, and reaches `main` through one pull
+request from `next` that Antony merges.
+
+`scripts/next-branch-setup.sh <owner>/<repo>` sets a repository up. It prints
+the changes it would make; with `--apply` it makes them and prints only
+failures. It can run again at any time and changes only what differs:
+
+- it creates `next` from the default branch when `next` does not exist, and
+  never moves an existing `next`;
+- it allows auto-merge in the repository;
+- it creates or updates the repository ruleset `next`: changes through pull
+  requests only, no approval, squash merges, the status checks the default
+  branch requires (`ci / checks`, plus `ubuntu` in the DMS repositories)
+  without the up-to-date requirement. Repository admins may push to `next`;
+- it creates or updates the repository ruleset `next history`, which nobody
+  bypasses: `next` cannot be deleted, not even by the automatic deletion of
+  a merged pull request's head branch, and cannot be force-pushed.
+
+It never changes the default branch's rulesets, and it refuses
+`k8s-gitops-infra`, `antelope-hardening` and `antelope-compliance`, whose pull
+requests always target `main`. `--branch develop` sets up `develop` instead,
+for `cloud`.
+
+The reusable `next-sync.yml` workflow merges the default branch into `next`
+after each push to it, a merged pull request or a release commit alike, so
+that `next` always contains `main` and its pull request to `main` stays up to
+date. It pushes the merge commit with `RELEASE_GITHUB_TOKEN`, whose push starts
+the `next` checks. When the merge conflicts, it pushes nothing, fails, and
+files one task in the Tasks Inbox with the `NOTION_TOKEN` secret, or adds the
+new run to the open task it filed before. A repository admin resolves it by
+merging `main` into `next` and pushing the merge commit straight to `next`: a
+pull request would squash it, and the same conflict would come back.
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `branch` | `next` | Branch that receives the default branch. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the `next` ruleset lets push. |
+| `NOTION_TOKEN` (secret) | | Notion integration token allowed to read, insert and update content in the Tasks database. |
+
+Merge the pull request from `next` to `main` with **Squash and merge**. `main`
+requires a linear history, so a merge commit cannot land there, and the merge
+of `main` back into `next` keeps the next pull request's diff to the work done
+since. The squash commit is the only commit the stable release sees, so title
+the pull request as described in
+[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its checks are those `next` already ran on the same commit. See the
+[caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
 ## Link rot
 
 `link-rot.yml` runs weekly in this repository, and on demand by

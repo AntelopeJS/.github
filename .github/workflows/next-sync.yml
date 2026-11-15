@@ -1,0 +1,122 @@
+name: Next sync
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: Integration branch that receives the default branch
+        default: next
+        type: string
+    secrets:
+      RELEASE_GITHUB_TOKEN:
+        description: Token of a repository admin, which the branch's ruleset lets push
+        required: true
+      NOTION_TOKEN:
+        description: Notion integration token allowed to read, insert and update content in the Tasks database
+        required: true
+
+permissions: {}
+
+jobs:
+  sync:
+    name: Merge the default branch into ${{ inputs.branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: next-sync-${{ github.repository }}-${{ inputs.branch }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ inputs.branch }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Merge
+        id: merge
+        env:
+          TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          git init -q
+          git remote add origin "https://github.com/${GH_REPO}.git"
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch -q origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            git checkout -q -B "$BRANCH" "origin/${BRANCH}"
+            if git merge-base --is-ancestor "origin/${DEFAULT_BRANCH}" HEAD; then
+              exit 0
+            fi
+            if ! git merge -q --no-ff --no-edit -m "chore: merge ${DEFAULT_BRANCH} into ${BRANCH}" "origin/${DEFAULT_BRANCH}"; then
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ -n "$conflicts" ]; then
+                delimiter="conflicts-$(openssl rand -hex 16)"
+                { echo "conflicts<<${delimiter}"; echo "$conflicts"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+                echo "::error::${DEFAULT_BRANCH} conflicts with ${BRANCH} in $(echo "$conflicts" | wc -l) files."
+              fi
+              exit 1
+            fi
+            if git push -q origin "HEAD:refs/heads/${BRANCH}"; then
+              exit 0
+            fi
+            [ "$attempt" = 3 ] || sleep 5
+          done
+          echo "::error::The merge was not pushed to ${BRANCH} after 3 attempts. Either ${BRANCH} moved each time, or the RELEASE_GITHUB_TOKEN owner is not a repository admin."
+          exit 1
+
+      - name: File the conflict in the Inbox
+        if: failure() && steps.merge.outputs.conflicts != ''
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TASKS: 2f2d36f1-99db-4ff3-b040-f66d7480ac9a
+        run: |
+          repo="${GH_REPO#*/}"
+          key="next-sync:${repo}"
+          notion() {
+            curl -fsS -X "$1" "https://api.notion.com/v1/$2" \
+              -H "Authorization: Bearer ${NOTION_TOKEN}" \
+              -H "Notion-Version: 2025-09-03" \
+              -H "Content-Type: application/json" \
+              --data @-
+          }
+          count=$(wc -l <<< "$CONFLICTS")
+          files=$(head -n 20 <<< "$CONFLICTS" | paste -sd ',' | sed 's/,/, /g' | cut -c1-1500)
+          [ "$count" -le 20 ] || files="${files} and $((count - 20)) more"
+          page=$(jq -n --arg key "$key" '{page_size: 1, filter: {and: [
+            {property: "Key", rich_text: {equals: $key}},
+            {property: "Status", status: {does_not_equal: "Done"}},
+            {property: "Status", status: {does_not_equal: "Dropped"}}
+          ]}}' | notion POST "data_sources/${TASKS}/query" | jq -r '.results[0].id // empty')
+          if [ -n "$page" ]; then
+            jq -n --arg text "Seen again: ${files}. Run: ${RUN_URL}" \
+              '{children: [{paragraph: {rich_text: [{text: {content: $text}}]}}]}' \
+              | notion PATCH "blocks/${page}/children" > /dev/null
+            exit 0
+          fi
+          jq -n \
+            --arg tasks "$TASKS" \
+            --arg key "$key" \
+            --arg repo "$repo" \
+            --arg title "${repo}: merge ${DEFAULT_BRANCH} into ${BRANCH} by hand" \
+            --arg goal "The Next sync workflow could not merge ${DEFAULT_BRANCH} into ${BRANCH}: they conflict in ${files}. Until ${DEFAULT_BRANCH} is merged, the ${BRANCH} to ${DEFAULT_BRANCH} pull request cannot be up to date. Run: ${RUN_URL}" \
+            --arg done_means "${DEFAULT_BRANCH} is an ancestor of ${BRANCH}: on ${BRANCH}, merge origin/${DEFAULT_BRANCH}, resolve the conflicts, and push the merge commit straight to ${BRANCH} with a repository admin's account. A pull request would squash the merge and lose ${DEFAULT_BRANCH}'s history, so the same conflict would come back." \
+            '{
+              parent: {type: "data_source_id", data_source_id: $tasks},
+              properties: {
+                "Task name": {title: [{text: {content: $title}}]},
+                Key: {rich_text: [{text: {content: $key}}]},
+                Status: {status: {name: "Inbox"}},
+                Priority: {select: {name: "High"}},
+                Repos: {multi_select: [{name: $repo}]}
+              },
+              children: [
+                {heading_2: {rich_text: [{text: {content: "Goal"}}]}},
+                {paragraph: {rich_text: [{text: {content: $goal}}]}},
+                {heading_2: {rich_text: [{text: {content: "Done means"}}]}},
+                {bulleted_list_item: {rich_text: [{text: {content: $done_means}}]}}
+              ]
+            }' | notion POST pages > /dev/null
