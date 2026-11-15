@@ -526,7 +526,7 @@ for (const { file, text } of workflows) {
       });
     });
 
-    test("a preview pins each workspace sibling that publishes a preview at its commit, and keeps the stable range of one that publishes none", () => {
+    test("a preview pins each workspace sibling's preview from its commit or its unreleased next, and keeps the stable range of one released since", () => {
       const manifest = (name: string, version: string, dependencies: Record<string, string> = {}) => `${JSON.stringify({ name, version, dependencies })}\n`;
       const { directory, sha: first } = repository(`${file}-siblings`, {
         "package.json": JSON.stringify({ name: "workspace", private: true }),
@@ -535,10 +535,16 @@ for (const { file, text } of workflows) {
         "packages/interface-x/.release-it.json": "{}\n",
         "packages/interface-y/package.json": manifest("@antelopejs/interface-y", "0.4.0"),
         "packages/interface-y/.release-it.json": "{}\n",
-        "packages/x/package.json": manifest("@antelopejs/x", "0.12.1", { "@antelopejs/interface-x": "workspace:^", "@antelopejs/interface-y": "workspace:^" }),
+        "packages/interface-z/package.json": manifest("@antelopejs/interface-z", "0.2.0"),
+        "packages/interface-z/.release-it.json": "{}\n",
+        "packages/x/package.json": manifest("@antelopejs/x", "0.12.1", {
+          "@antelopejs/interface-x": "workspace:^",
+          "@antelopejs/interface-y": "workspace:^",
+          "@antelopejs/interface-z": "workspace:^",
+        }),
         "packages/x/.release-it.json": "{}\n",
       });
-      const yPreview = commitFiles(directory, "fix: y", { "packages/interface-y/index.js": "y\n" });
+      const previewed = commitFiles(directory, "fix: y and z", { "packages/interface-y/index.js": "y\n", "packages/interface-z/index.js": "z\n" });
       const sha = commitFiles(directory, "feat: x", { "packages/interface-x/index.js": "x\n", "packages/x/index.js": "x\n" });
       const views = join(root, `${file}-npm-views.tsv`);
       writeFileSync(
@@ -549,7 +555,11 @@ for (const { file, text } of workflows) {
           ["@antelopejs/interface-x version", "0.10.0"],
           ["@antelopejs/interface-x@next gitHead", first],
           ["@antelopejs/interface-y version", "0.4.0"],
-          ["@antelopejs/interface-y@next gitHead", yPreview],
+          ["@antelopejs/interface-y@next gitHead", previewed],
+          ["@antelopejs/interface-y@next version", "0.4.0-next.1.g0000000"],
+          ["@antelopejs/interface-z version", "0.2.0"],
+          ["@antelopejs/interface-z@next gitHead", previewed],
+          ["@antelopejs/interface-z@next version", "0.2.1-next.2.g1111111"],
         ]
           .map((row) => row.join("\t"))
           .join("\n") + "\n",
@@ -570,15 +580,16 @@ for (const { file, text } of workflows) {
         ...hermeticGit,
       });
       assert.equal(resolved.status, 0, resolved.stderr);
-      assert.equal(resolved.outputs, `pins={"@antelopejs/interface-x":"0.10.1-${suffix}"}\nversion=0.12.2-${suffix}\n`);
+      const pins = `{"@antelopejs/interface-x":"0.10.1-${suffix}","@antelopejs/interface-z":"0.2.1-next.2.g1111111"}`;
+      assert.equal(resolved.outputs, `pins=${pins}\nversion=0.12.2-${suffix}\n`);
       const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: directory, encoding: "utf8" });
       assert.equal(installed.status, 0, installed.stderr);
-      const preview = publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PINS: `{"@antelopejs/interface-x":"0.10.1-${suffix}"}` });
+      const preview = publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PINS: pins });
       assert.equal(preview.status, 0, preview.stderr);
       assert.deepEqual(preview.publication?.manifest, {
         name: "@antelopejs/x",
         version: `0.12.2-${suffix}`,
-        dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0" },
+        dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0", "@antelopejs/interface-z": "0.2.1-next.2.g1111111" },
         gitHead: sha,
       });
     });

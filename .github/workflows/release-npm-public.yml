@@ -319,6 +319,13 @@ jobs:
             pins='{}'
             while IFS=$'\t' read -r sibling directory; do
               pin=$(cd "$(git rev-parse --show-toplevel)/$directory" && preview_of)
+              if [ -z "$pin" ]; then
+                current=$(npm view "$sibling@next" version 2>/dev/null || true)
+                latest=$(latest_of "$sibling")
+                if [ -n "$current" ] && { [ -z "$latest" ] || node -e 'const [a, b] = process.argv.slice(1).map((v) => v.split("-")[0].split(".").map(Number)); process.exit((a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) > 0 ? 0 : 1)' "$current" "$latest"; }; then
+                  pin=$current
+                fi
+              fi
               if [ -n "$pin" ]; then
                 pins=$(jq -c --arg name "$sibling" --arg pin "$pin" '. + {($name): $pin}' <<< "$pins")
               fi
