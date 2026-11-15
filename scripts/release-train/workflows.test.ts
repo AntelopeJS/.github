@@ -643,6 +643,7 @@ for (const { file, text } of workflows) {
       const runner = join(root, `runner-${origins}`);
       git(root, "clone", "--quiet", bare, runner);
       const env = { ...hermeticGit, RUNNER_TEMP: root, BRANCH: "next", GITHUB_TOKEN: "token" };
+      assert.equal(runStep(text, "Configure release identity", runner, hermeticGit).status, 0);
       writeFileSync(join(runner, "package.json"), pinned("1.8.6", ">=0.5.0 <0.6.0"));
       git(runner, "add", "package.json");
       const kept = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, MESSAGE: "fix(deps): depend on the stable @antelopejs/interface-database" });
