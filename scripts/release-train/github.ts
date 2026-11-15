@@ -1,5 +1,5 @@
-import { isAncestor, type Checkout, type Revision } from "./git.ts";
-import type { Entry } from "./plan.ts";
+import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
+import { renderReleaseNotes, type Release } from "./plan.ts";
 import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
@@ -68,7 +68,7 @@ function awaitRun(system: System, slug: string, id: number): RunOutcome {
 }
 
 /** Dispatches the `release.yml` run of a release entry and waits until the train knows how it ended. */
-export function releaseRun(system: System, entry: Extract<Entry, { status: "release" }>): RunOutcome {
+export function releaseRun(system: System, entry: Release): RunOutcome {
   const { slug, directory, branch, head } = entry.source;
   const before = listRuns(system, slug);
   if (before === null) return { kind: "failed", detail: `gh run list --repo ${slug} failed, so nothing was dispatched` };
@@ -78,6 +78,7 @@ export function releaseRun(system: System, entry: Extract<Entry, { status: "rele
     "-f", `release-version=${entry.to}`,
     "-f", `release-commit=${head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
+    "-f", `release-notes=${renderReleaseNotes(entry)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
   ]);
   if (dispatched.status !== 0) {
@@ -91,12 +92,6 @@ export function releaseRun(system: System, entry: Extract<Entry, { status: "rele
     if (created !== undefined) return awaitRun(system, slug, created.id);
   }
   return { kind: "unknown", detail: "no release.yml run appeared after the dispatch", url: `https://github.com/${slug}/actions` };
-}
-
-interface MergedPull {
-  number: number;
-  mergeCommit: string;
-  head: string;
 }
 
 function parsePulls(text: string): MergedPull[] {
@@ -115,16 +110,13 @@ function parsePulls(text: string): MergedPull[] {
     .sort((left, right) => right.number - left.number);
 }
 
-/**
- * Answers whether the branch a checkout was read at holds a commit. The branch holds it when the commit
- * is an ancestor of the branch head, or of the head of a pull request merged into the branch. A squash
- * merge of `next` into the default branch keeps the preview's commit only in the head of its pull request.
- * Any `gh` failure answers no.
- */
-export function commitSearch(system: System): (from: Checkout, revision: Revision, sha: string) => boolean {
-  const pulls = new Map<string, MergedPull[]>();
-  const answers = new Map<string, boolean>();
-  const mergedPulls = (slug: string, branch: string): MergedPull[] => {
+/** Reads the last 100 pull requests merged into a branch of a repository, newest first, once each. A `gh` failure gives null. */
+export type MergedPulls = (slug: string, branch: string) => MergedPull[] | null;
+
+/** The {@link MergedPulls} reader of the train, which caches each answer. */
+export function mergedPulls(system: System): MergedPulls {
+  const pulls = new Map<string, MergedPull[] | null>();
+  return (slug, branch) => {
     const key = `${slug} ${branch}`;
     const cached = pulls.get(key);
     if (cached !== undefined) return cached;
@@ -132,10 +124,20 @@ export function commitSearch(system: System): (from: Checkout, revision: Revisio
       "pr", "list", "--repo", slug, "--base", branch, "--state", "merged", "--limit", "100",
       "--json", "number,mergeCommit,headRefOid",
     ]);
-    const found = result.status === 0 ? parsePulls(result.stdout) : [];
+    const found = result.status === 0 ? parsePulls(result.stdout) : null;
     pulls.set(key, found);
     return found;
   };
+}
+
+/**
+ * Answers whether the branch a checkout was read at holds a commit. The branch holds it when the commit
+ * is an ancestor of the branch head, or of the head of a pull request merged into the branch. A squash
+ * merge of `next` into the default branch keeps the preview's commit only in the head of its pull request.
+ * Any `gh` failure answers no.
+ */
+export function commitSearch(system: System, pulls: MergedPulls): (from: Checkout, revision: Revision, sha: string) => boolean {
+  const answers = new Map<string, boolean>();
   const holds = (slug: string, sha: string, head: string): boolean => {
     const result = system.run("gh", ["api", `repos/${slug}/compare/${sha}...${head}`, "--jq", ".status"]);
     const status = result.stdout.trim();
@@ -146,7 +148,7 @@ export function commitSearch(system: System): (from: Checkout, revision: Revisio
     if (resolved.status !== 0) return false;
     const commit = resolved.stdout.trim();
     if (isAncestor(system, repository, commit, revision.name)) return true;
-    return mergedPulls(slug, revision.branch).some(
+    return (pulls(slug, revision.branch) ?? []).some(
       (pull) => isAncestor(system, repository, pull.mergeCommit, revision.name) && holds(slug, commit, pull.head),
     );
   };

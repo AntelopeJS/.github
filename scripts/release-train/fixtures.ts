@@ -9,19 +9,24 @@ import type { RunResult, System } from "./system.ts";
 const root = mkdtempSync(join(tmpdir(), "release-train-"));
 const identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
 
+let clock = Date.parse("2026-01-01T00:00:00Z") / 1000;
+
 export function git(repository: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", repository, ...identity, ...args], { encoding: "utf8" });
+  clock += 1;
+  const date = `${clock} +0000`;
+  const env = { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
+  const result = spawnSync("git", ["-C", repository, ...identity, ...args], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
 }
 
-export function commit(repository: string, message: string, files: Record<string, unknown>): string {
+export function commit(repository: string, message: string, files: Record<string, unknown>, author = "Test"): string {
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(dirname(join(repository, file)), { recursive: true });
     writeFileSync(join(repository, file), typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`);
   }
   git(repository, "add", "--all");
-  git(repository, "commit", "--quiet", "--allow-empty", "-m", message);
+  git(repository, "commit", "--quiet", "--allow-empty", `--author=${author} <test@example.com>`, "-m", message);
   return git(repository, "rev-parse", "HEAD");
 }
 
@@ -40,7 +45,7 @@ export function manifest(name: string, version: string, fields: Record<string, R
   return { name: `@antelopejs/${name}`, version, ...fields };
 }
 
-const pulls: Record<string, unknown[]> = {};
+export const pulls: Record<string, unknown[]> = {};
 export const commits = { cursor: "", feed: "", later: "" };
 
 export const interfaceDatabase = repository("interface-database", (path) => {
@@ -149,10 +154,20 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
   return { system, calls, sleeps, output: () => out, errors: () => err };
 }
 
-export function dispatches(calls: string[][]): string[][] {
+function fields(calls: string[][]): string[][] {
   return calls
     .filter((args) => args[0] === "workflow")
     .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
+}
+
+export function dispatches(calls: string[][]): string[][] {
+  return fields(calls).map((values) => values.filter((value) => !value.startsWith("release-notes=")));
+}
+
+export function releaseNotes(calls: string[][]): Record<string, string> {
+  return Object.fromEntries(
+    fields(calls).map(([repo = "", ...values]) => [repo, values.find((value) => value.startsWith("release-notes="))?.slice(14) ?? ""]),
+  );
 }
 
 export function tip(repository: string, branch = "main"): string {
@@ -169,7 +184,7 @@ export const expectedPlan = (): string => [
   `1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database@${short(tip(interfaceDatabase))}`,
   "     feat(query)!: drop the legacy cursor",
   `2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb@${short(tip(mongodb))}`,
-  "     fix(database): close the change feed (#7)",
+  "     fix(database): close the change feed",
   `     @antelopejs/interface-database 0.4.3-next.12.g${short(commits.cursor)} -> >=0.5.0 <0.6.0`,
   `3. @antelopejs/dms-database 0.5.3 -> 0.5.4 (patch)  AntelopeJS/dms-database@${short(tip(dmsDatabase))}`,
   "     replaces preview pins",

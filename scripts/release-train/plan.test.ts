@@ -11,8 +11,8 @@ import {
   type PackageSource,
 } from "./plan.ts";
 
-function commit(subject: string, body = ""): Commit {
-  return { sha: subject.length.toString(16).padStart(7, "0"), subject, level: commitLevel(subject, body) };
+function commit(subject: string, body = "", author = "Antony Rizzitelli"): Commit {
+  return { sha: subject.length.toString(16).padStart(40, "0"), subject, author, level: commitLevel(subject, body) };
 }
 
 function source(
@@ -21,14 +21,17 @@ function source(
   subjects: string[],
   fields: Partial<Manifest> = {},
 ): PackageSource {
+  const commits = subjects.map((subject) => commit(subject));
   return {
     slug: `AntelopeJS/${name}`,
     directory: ".",
     branch: "main",
     head: createHash("sha1").update(name).digest("hex"),
+    tagName: "v${version}",
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
-    commits: subjects.map((subject) => commit(subject)),
+    commits,
+    notes: commits,
   };
 }
 
@@ -271,6 +274,33 @@ describe("computePlan", () => {
     assert.equal(entry(entries, "c").status, "release");
   });
 
+  test("the level reads the cycle's commits as well as the branch's, so a promotion titled too low still releases a minor", () => {
+    const promoted = {
+      ...source("promoted", "0.3.1", ["fix: promote next (#16)"]),
+      notes: [commit("feat(api)!: rename read to fetch (#15)"), commit("chore: tidy (#14)")],
+    };
+    const quiet = { ...source("quiet", "0.2.0", ["fix: promote next (#3)"]), notes: [commit("chore: tidy (#2)")] };
+    const result = plan([promoted, quiet]);
+    assert.deepEqual(
+      result.entries.map((candidate) => (candidate.status === "release" ? [candidate.to, candidate.level] : candidate.status)),
+      [
+        ["0.4.0", "minor"],
+        ["0.2.1", "patch"],
+      ],
+    );
+    assert.equal(
+      renderPlan(result),
+      [
+        "Release plan from main, 2 packages: 2 to release",
+        "",
+        `1. @antelopejs/promoted 0.3.1 -> 0.4.0 (minor)  AntelopeJS/promoted@${at("promoted")}`,
+        "     feat(api)!: rename read to fetch (#15)",
+        `2. @antelopejs/quiet 0.2.0 -> 0.2.1 (patch)  AntelopeJS/quiet@${at("quiet")}`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("a package with no releasable commit and no preview pin is unchanged", () => {
     const quiet = source("quiet", "0.3.0", ["chore: tidy", "ci: cache", "test: cover"]);
     assert.deepEqual(plan([quiet]).entries, [{ status: "unchanged", source: quiet }]);
@@ -287,7 +317,7 @@ describe("renderPlan", () => {
       plan(
         [
           interfaceDatabase,
-          { ...mongodb, commits: [commit("fix(database): close the change feed"), commit("chore: tidy")] },
+          { ...mongodb, notes: [commit("fix(database): close the change feed"), commit("chore: tidy")] },
           dms,
           nested,
           source("foo", "1.0.0", ["test: x"]),

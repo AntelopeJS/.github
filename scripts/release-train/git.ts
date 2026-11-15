@@ -21,6 +21,20 @@ export interface Revision {
   name: string;
 }
 
+/** A pull request merged into a branch: its merge commit on the branch and the head commit it merged. */
+export interface MergedPull {
+  number: number;
+  mergeCommit: string;
+  head: string;
+}
+
+/** Where one package lives in a checkout, and what the train reads beside it. */
+export interface Place {
+  directory: string;
+  nested: readonly string[];
+  merged: readonly MergedPull[] | null;
+}
+
 const remotePattern = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
 const releaseSubjectPattern = /^(?:chore\(release\)|release): /;
 
@@ -83,7 +97,7 @@ function parseManifest(text: string, where: string): Manifest {
   return manifest;
 }
 
-function tagPattern(system: System, repository: string, revision: string, directory: string): RegExp {
+function readTagName(system: System, repository: string, revision: string, directory: string): string {
   const file = posix.join(directory, ".release-it.json");
   const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();
   let tagName = "v${version}";
@@ -96,6 +110,11 @@ function tagPattern(system: System, repository: string, revision: string, direct
   if (parts.length !== 2 || parts.some((part) => part.includes("${"))) {
     throw new Error(`${repository}/${file} has a git.tagName the train cannot read: ${tagName}`);
   }
+  return tagName;
+}
+
+function tagPattern(tagName: string): RegExp {
+  const parts = tagName.split("${version}");
   const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`^${escaped[0]}(\\d+\\.\\d+\\.\\d+)${escaped[1]}$`);
 }
@@ -106,28 +125,51 @@ function parseCommits(log: string): Commit[] {
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record) => {
-      const [sha = "", subject = "", body = ""] = record.split("\x1f");
-      return { sha, subject, level: commitLevel(subject, body) };
+      const [sha = "", subject = "", body = "", author = ""] = record.split("\x1f");
+      return { sha, subject, author, level: commitLevel(subject, body) };
     })
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
 
-/**
- * Reads one package at a revision: its manifest, its last stable tag and the commits since that tag.
- * The commits leave out the `nested` directories, which hold other listed packages.
- */
-export function readSource(
+const logFormat = "--format=%H%x1f%s%x1f%b%x1f%an%x1e";
+
+function hasCommit(system: System, repository: string, sha: string): boolean {
+  return system.run("git", ["-C", repository, "--no-lazy-fetch", "cat-file", "-e", `${sha}^{commit}`]).status === 0;
+}
+
+function cycleNotes(
   system: System,
-  from: Checkout,
-  { branch, name: revision }: Revision,
-  directory: string,
-  nested: readonly string[],
-): PackageSource {
+  repository: string,
+  head: string,
+  tag: string | null,
+  paths: readonly string[],
+  merged: readonly MergedPull[],
+): Commit[] {
+  const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
+  const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
+  const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
+  const current = landed.filter((pull) => !released(pull) && present(pull));
+  const previous = landed.filter((pull) => released(pull) && present(pull));
+  const include = [head, ...current.map((pull) => pull.head)];
+  const exclude = [...(tag === null ? [] : [tag]), ...previous.map((pull) => pull.head)];
+  const log = exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, ...include, "--not", ...exclude, "--", ...paths]);
+  const replaced = new Set(current.map((pull) => pull.mergeCommit));
+  return parseCommits(log).filter((commit) => !replaced.has(commit.sha));
+}
+
+/**
+ * Reads one package at a revision: its manifest, its last stable tag, the commits since that tag and the
+ * commits of the tasks the pull requests merged since that tag carried. Both leave out the `nested`
+ * directories, which hold other listed packages. With no merged pull request known, the notes are the commits.
+ */
+export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
+  const { directory, nested, merged } = place;
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
   const manifest = parseManifest(manifestText, where);
-  const pattern = tagPattern(system, repository, revision, directory);
+  const tagName = readTagName(system, repository, revision, directory);
+  const pattern = tagPattern(tagName);
   let stable: { version: string; tag: string } | null = null;
   for (const tag of exec(system, "git", ["-C", repository, "tag", "--merged", revision]).split("\n")) {
     const version = pattern.exec(tag.trim())?.[1];
@@ -135,11 +177,13 @@ export function readSource(
       stable = { version, tag: tag.trim() };
     }
   }
-  const range = stable === null ? revision : `refs/tags/${stable.tag}..${revision}`;
+  const tag = stable === null ? null : `refs/tags/${stable.tag}`;
+  const range = tag === null ? revision : `${tag}..${revision}`;
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
-  const log = exec(system, "git", ["-C", repository, "log", "--format=%H%x1f%s%x1f%b%x1e", range, "--", ...paths]);
-  return { slug: from.slug, directory, branch, head, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
+  const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, range, "--", ...paths]));
+  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, repository, head, tag, paths, merged);
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

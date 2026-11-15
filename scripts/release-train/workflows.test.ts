@@ -152,19 +152,22 @@ for (const { file, text } of workflows) {
     });
 
     test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {
-      const mode = (event: string, ref: string, version = "", commit = head) =>
+      const mode = (event: string, ref: string, version = "", commit = head, notes = "### 🩹 Fixes") =>
         runStep(text, "Resolve release mode", root, {
           GITHUB_EVENT_NAME: event,
           GITHUB_REF: ref,
           DEFAULT_BRANCH: "main",
           RELEASE_VERSION: version,
           RELEASE_COMMIT: commit,
+          RELEASE_NOTES: notes,
         });
       assert.equal(mode("push", "refs/heads/next").outputs, "mode=preview\n");
-      assert.equal(mode("push", "refs/heads/next", "", "").outputs, "mode=preview\n");
+      assert.equal(mode("push", "refs/heads/next", "", "", "").outputs, "mode=preview\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
+      const notes = mode("workflow_dispatch", "refs/heads/main", "0.5.0", head, "");
+      assert.deepEqual([notes.status, notes.stderr], [1, "A stable release needs release-notes, the changelog section the release train renders.\n"]);
       assert.equal(mode("workflow_dispatch", "refs/heads/main").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
@@ -181,6 +184,75 @@ for (const { file, text } of workflows) {
       assert.equal(
         moved.stderr,
         `main moved since the plan: HEAD is ${head}, the plan released ${firstCommit}. Run the release train again.\n`,
+      );
+    });
+
+    test("Write release notes puts the train's section on top of the changelog and points release-it at it", () => {
+      const notes = "[compare changes](https://github.com/AntelopeJS/x/compare/v0.4.2...v0.5.0)\n\n### 🩹 Fixes\n\n- Close the feed";
+      const section = `## v0.5.0\n\n${notes}\n\n`;
+      const write = (name: string, files: Record<string, string>) => {
+        const directory = join(root, `${file}-${name}`);
+        mkdirSync(join(directory, "docs"), { recursive: true });
+        git(directory, "init", "--quiet");
+        for (const [path, content] of Object.entries(files)) writeFileSync(join(directory, path), content);
+        const result = runStep(text, "Write release notes", directory, { RELEASE_NOTES: notes, RELEASE_VERSION: "0.5.0" });
+        assert.equal(result.status, 0, result.stderr);
+        const read = (path: string): string => readFileSync(join(directory, path), "utf8");
+        const config: unknown = JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
+        return { read, staged: git(directory, "diff", "--cached", "--name-only"), config };
+      };
+      const existing = write("existing", {
+        "CHANGELOG.md": "# Changelog\n\n## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n",
+        ".release-it.json": JSON.stringify({
+          git: { tagName: "v${version}", requireCommits: true },
+          github: { release: true },
+          plugins: { "release-it-changelogen": { disableVersion: true }, "@release-it/bumper": {} },
+        }),
+      });
+      assert.equal(existing.read("CHANGELOG.md"), `# Changelog\n\n${section}## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n`);
+      assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), notes);
+      assert.deepEqual(existing.config, {
+        git: { tagName: "v${version}", requireCommits: true, requireCleanWorkingDir: false },
+        github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+        plugins: { "@release-it/bumper": {} },
+      });
+
+      const fresh = write("fresh", {});
+      assert.equal(fresh.read("CHANGELOG.md"), `# Changelog\n\n${section}`);
+      assert.equal(fresh.staged, "CHANGELOG.md");
+      assert.deepEqual(fresh.config, {
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+      });
+
+      const custom = write("custom", {
+        "changelogen.config.json": JSON.stringify({ output: "docs/CHANGES.md" }),
+        "docs/CHANGES.md": "# Changes\n",
+        ".release-it.json": JSON.stringify({ plugins: { "release-it-changelogen": {} } }),
+      });
+      assert.equal(custom.read("docs/CHANGES.md"), `# Changes\n\n${section}`);
+      assert.equal(custom.staged, "docs/CHANGES.md");
+      assert.deepEqual(custom.config, {
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+      });
+    });
+
+    test("Publish stable release runs release-it with the written config", () => {
+      const bin = join(root, `${file}-pnpm`);
+      mkdirSync(bin);
+      writeFileSync(join(bin, "pnpm"), '#!/bin/sh\necho "$@"\n');
+      chmodSync(join(bin, "pnpm"), 0o755);
+      const published = runStep(text, "Publish stable release", checkout, {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        RELEASE_VERSION: "0.5.0",
+        GITHUB_TOKEN: "token",
+        GITHUB_REF_NAME: "main",
+      });
+      assert.equal(published.status, 0, published.stderr);
+      assert.equal(
+        published.stdout,
+        `exec release-it --config ${join(root, "release-it.json")} --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
       );
     });
 
@@ -203,6 +275,45 @@ for (const { file, text } of workflows) {
       assert.deepEqual([unchanged.status, unchanged.outputs], [0, ""]);
       const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.4.3-${previewSuffix}` });
       assert.deepEqual([published.status, published.outputs], [0, ""]);
+    });
+
+    test("Resolve release version publishes no preview when only the version and the changelog changed", () => {
+      const repository = join(root, `${file}-back-merge`);
+      const directory = join(repository, "packages", "x");
+      mkdirSync(directory, { recursive: true });
+      git(repository, "init", "--quiet");
+      const step = (files: Record<string, string>): string => {
+        for (const [path, content] of Object.entries(files)) writeFileSync(join(directory, path), content);
+        git(repository, "add", "--all");
+        git(repository, "commit", "--quiet", "-m", "x");
+        return git(repository, "rev-parse", "HEAD");
+      };
+      const manifest = (version: string, range = ">=1.8.6 <1.9.0") =>
+        `${JSON.stringify({ name: "@antelopejs/x", version, dependencies: { "@antelopejs/mongodb": range } }, null, 2)}\n`;
+      const preview = step({ "package.json": manifest("0.4.2"), "index.js": "x\n" });
+      const release = step({ "package.json": manifest("0.4.3"), "CHANGELOG.md": "# Changelog\n\n## v0.4.3\n" });
+      const range = step({ "package.json": manifest("0.4.4", ">=1.8.7 <1.9.0") });
+      const source = step({ "index.js": "y\n" });
+      const custom = step({ "changelogen.config.json": '{ "output": "./HISTORY.md" }\n' });
+      const customRelease = step({ "package.json": manifest("0.4.5", ">=1.8.7 <1.9.0"), "HISTORY.md": "## v0.4.5\n" });
+      const resolve = (previous: string, sha: string) => {
+        git(repository, "checkout", "--quiet", "--detach", sha);
+        return runStep(text, "Resolve release version", directory, {
+          PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+          MODE: "preview",
+          GITHUB_SHA: sha,
+          FAKE_NEXT_HEAD: previous,
+          FAKE_LATEST: "0.4.3",
+          FAKE_PUBLISHED: "",
+        });
+      };
+      const skipped = resolve(preview, release);
+      assert.deepEqual([skipped.status, skipped.outputs], [0, ""], skipped.stderr);
+      assert.equal(skipped.stdout, "::notice::@antelopejs/x ships nothing new since its last preview, so it gets no new one.\n");
+      assert.match(resolve(release, range).outputs, /^version=0\.4\.4-next\.\d+\.g[0-9a-f]{7}\n$/);
+      assert.match(resolve(range, source).outputs, /^version=0\.4\.4-next\./);
+      assert.equal(resolve(custom, customRelease).outputs, "");
+      assert.match(resolve(source, customRelease).outputs, /^version=0\.4\.4-next\./);
     });
 
     test("Resolve release version refuses a stable version that changes the major or does not move forward", () => {
