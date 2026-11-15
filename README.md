@@ -238,6 +238,9 @@ not at its root also declares a `package-directory` input in
 `workflow_dispatch`, because the release train passes it, and forwards it with
 `package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
 
+The caller uses `@main` during the pilot. `v1` keeps the previous interface, so
+a caller moves to `@v2` once that tag exists, through `antelopejs-sync`.
+
 ## Node CI
 
 The reusable `ci-node.yml` workflow installs dependencies with the frozen

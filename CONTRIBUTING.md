@@ -231,13 +231,13 @@ removed input, needs a new `v2` tag, and repositories move to it explicitly.
 A changed input default stays on `v1` only when every caller that the new
 default would break passes the old value before `v1` is re-pointed.
 
-The preview and release train interface is the exception. It removes the
-`channel` and `services-compose-file` inputs. The pilot repositories call both
-workflows at `@main` while `v1` keeps the previous interface. Once one change
-has gone the whole path, from a push to `next` through a preview to a stable
-release by the release train, `v1` moves to that commit. A caller that still
-passes `channel` fails from then on, so every caller replaces its
-`release.yml` with the new caller when `v1` moves.
+The preview and release train interface is such a breaking change. It removes
+the `channel` and `services-compose-file` inputs and adds `release-commit`.
+`v1` keeps the previous interface and never moves to it. The pilot
+repositories call both workflows at `@main`. Once one change has gone the
+whole path, from a push to `next` through a preview to a stable release by the
+release train, the new interface gets the `v2` tag, and `antelopejs-sync`
+writes callers at `@v2`.
 
 ### Working on `next`
 
