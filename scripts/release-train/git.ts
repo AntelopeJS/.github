@@ -112,8 +112,17 @@ function parseCommits(log: string): Commit[] {
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
 
-/** Reads one package at a revision: its manifest, its last stable tag and the commits since that tag. */
-export function readSource(system: System, from: Checkout, revision: string, directory: string): PackageSource {
+/**
+ * Reads one package at a revision: its manifest, its last stable tag and the commits since that tag.
+ * The commits leave out the `nested` directories, which hold other listed packages.
+ */
+export function readSource(
+  system: System,
+  from: Checkout,
+  revision: string,
+  directory: string,
+  nested: readonly string[],
+): PackageSource {
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
@@ -127,6 +136,7 @@ export function readSource(system: System, from: Checkout, revision: string, dir
     }
   }
   const range = stable === null ? revision : `refs/tags/${stable.tag}..${revision}`;
-  const log = exec(system, "git", ["-C", repository, "log", "--format=%H%x1f%s%x1f%b%x1e", range, "--", directory]);
+  const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
+  const log = exec(system, "git", ["-C", repository, "log", "--format=%H%x1f%s%x1f%b%x1e", range, "--", ...paths]);
   return { slug: from.slug, directory, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
 }

@@ -179,6 +179,32 @@ describe("plan", () => {
     );
   });
 
+  test("a package's commits leave out the listed packages nested in its directory", () => {
+    const workspace = repository("workspace", (path) => {
+      commit(path, "feat: first", {
+        "package.json": manifest("workspace", "1.0.0"),
+        "packages/inner/package.json": manifest("inner", "0.2.0"),
+        "packages/inner/.release-it.json": { git: { tagName: "inner-v${version}" } },
+      });
+      git(path, "tag", "v1.0.0");
+      git(path, "tag", "inner-v0.2.0");
+      commit(path, "fix(inner): trim the input", { "packages/inner/index.ts": "export {};\n" });
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", workspace, `${workspace}:packages/inner`], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        "1. @antelopejs/inner 0.2.0 -> 0.2.1 (patch)  AntelopeJS/workspace:packages/inner",
+        "     fix(inner): trim the input",
+        "Unchanged: @antelopejs/workspace",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("reads another branch with --ref", () => {
     git(mongodb, "branch", "next", "refs/tags/v1.8.6");
     const { system, output } = fakeSystem();

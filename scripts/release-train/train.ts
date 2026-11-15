@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { openCheckout, readSource, resolveRevision, type Target } from "./git.ts";
+import { openCheckout, readSource, resolveRevision, type Checkout, type Target } from "./git.ts";
 import { awaitRun, dispatch } from "./github.ts";
 import { computePlan, parseVersion, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
 import type { System } from "./system.ts";
@@ -76,12 +76,25 @@ function npmLatest(system: System): (name: string) => string | null {
   };
 }
 
+function location(target: Target): string {
+  return target.kind === "slug" ? target.slug : target.path;
+}
+
+function isInside(outer: string, inner: string): boolean {
+  return inner !== outer && (outer === "." || inner.startsWith(`${outer}/`));
+}
+
 function buildPlan(command: Command, system: System): { plan: Plan; branches: Map<PackageSource, string> } {
   const branches = new Map<PackageSource, string>();
+  const checkouts = new Map<string, Checkout>();
   for (const target of command.targets) {
-    const from = openCheckout(target, system);
+    const from = checkouts.get(location(target)) ?? openCheckout(target, system);
+    checkouts.set(location(target), from);
     const revision = resolveRevision(system, from, command.ref);
-    branches.set(readSource(system, from, revision.name, target.directory), revision.branch);
+    const nested = command.targets
+      .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
+      .map((other) => other.directory);
+    branches.set(readSource(system, from, revision.name, target.directory, nested), revision.branch);
   }
   const names = [...branches.keys()].map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
