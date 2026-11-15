@@ -257,12 +257,18 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
-          name=$(node -p "require('./package.json').name")
-          previous=""
-          if [ "$MODE" = preview ]; then
+          shopt -s inherit_errexit
+          latest_of() {
+            if ! npm view "$1" version 2>"$RUNNER_TEMP/npm-view.log" && ! grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
+              cat "$RUNNER_TEMP/npm-view.log" >&2
+              return 1
+            fi
+          }
+          preview_of() {
+            local name previous latest major minor patch base
+            name=$(node -p "require('./package.json').name")
             previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
-          fi
-          if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
+            if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
           const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
           const { isDeepStrictEqual } = require('node:util')
@@ -277,31 +283,72 @@ jobs:
           const changed = git('diff', '--name-only', '--no-renames', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
           process.exit(changed.filter(own).some(ships) ? 1 : 0)
           NODE
-          then
-            echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
-            exit 0
-          fi
-          if latest=$(npm view "$name" version 2>"$RUNNER_TEMP/npm-view.log"); then
-            :
-          elif grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
-            latest=""
-          else
-            cat "$RUNNER_TEMP/npm-view.log" >&2
-            exit 1
-          fi
-          IFS=. read -r major minor patch <<< "${latest:-0.0.0}"
-          if [ "$MODE" = preview ]; then
+            then
+              return 0
+            fi
+            latest=$(latest_of "$name")
             if [ -n "$latest" ]; then
+              IFS=. read -r major minor patch <<< "$latest"
               base="$major.$minor.$((patch + 1))"
             else
               base=$(node -p "require('./package.json').version.split('-')[0]")
             fi
-            version="$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            echo "$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+          }
+          name=$(node -p "require('./package.json').name")
+          if [ "$MODE" = preview ]; then
+            version=$(preview_of)
+            if [ -z "$version" ]; then
+              echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
+              exit 0
+            fi
             if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
               echo "::notice::$name@$version is already published."
               exit 0
             fi
+            node > "$RUNNER_TEMP/siblings.tsv" <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const pkg = require('./package.json')
+          const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+          const nameOf = (file) => {
+            try {
+              return JSON.parse(fs.readFileSync(path.join(top, file), 'utf8')).name
+            } catch {
+              return undefined
+            }
+          }
+          const files = execFileSync('git', ['ls-files', '-z', '--', ':(glob)**/package.json'], { cwd: top, encoding: 'utf8' }).split('\0').filter(Boolean)
+          const directories = new Map(files.filter((file) => fs.existsSync(path.join(top, path.dirname(file), '.release-it.json'))).map((file) => [nameOf(file), path.dirname(file)]))
+          const siblings = new Set(['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
+            Object.entries(pkg[field] ?? {}).filter(([, spec]) => spec.startsWith('workspace:')).map(([name]) => name),
+          ))
+          for (const name of siblings) {
+            const directory = directories.get(name)
+            if (directory !== undefined) console.log(`${name}\t${directory}`)
+          }
+          NODE
+            pins='{}'
+            while IFS=$'\t' read -r sibling directory; do
+              pin=$(cd "$(git rev-parse --show-toplevel)/$directory" && preview_of)
+              if [ -z "$pin" ]; then
+                current=$(npm view "$sibling@next" version 2>/dev/null || true)
+                latest=$(latest_of "$sibling")
+                if [ -n "$current" ] && { [ -z "$latest" ] || node -e 'const [a, b] = process.argv.slice(1).map((v) => v.split("-")[0].split(".").map(Number)); process.exit((a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) > 0 ? 0 : 1)' "$current" "$latest"; }; then
+                  pin=$current
+                fi
+              fi
+              if [ -n "$pin" ]; then
+                pins=$(jq -c --arg name "$sibling" --arg pin "$pin" '. + {($name): $pin}' <<< "$pins")
+              fi
+            done < "$RUNNER_TEMP/siblings.tsv"
+            if [ "$pins" != '{}' ]; then
+              echo "pins=$pins" >> "$GITHUB_OUTPUT"
+            fi
           else
+            latest=$(latest_of "$name")
+            IFS=. read -r major minor patch <<< "${latest:-0.0.0}"
             version=$RELEASE_VERSION
             IFS=. read -r new_major new_minor new_patch <<< "$version"
             if [ -n "$latest" ] && [ "$new_major" != "$major" ]; then
@@ -486,7 +533,7 @@ jobs:
           const from = git('tag', '--merged', 'HEAD').split('\n')
             .filter((name) => name.length > prefix.length + suffix.length && name.startsWith(prefix) && name.endsWith(suffix))
             .map((name) => name.slice(prefix.length, name.length - suffix.length))
-            .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+            .filter((version) => /^\d+\.\d+\.\d+$/.test(version) && order(version, RELEASE_VERSION) < 0)
             .sort(order)
             .at(-1)
           const nested = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean)
@@ -560,10 +607,47 @@ jobs:
         working-directory: ${{ inputs.package-directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PINS: ${{ steps.version.outputs.pins }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
-          npm pkg set "version=$VERSION"
-          npm publish --tag next
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const { execFileSync } = require('node:child_process')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const pins = JSON.parse(process.env.PINS || '{}')
+          for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+            for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
+              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = pins[name]
+            }
+          }
+          const gitHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION, gitHead }, null, 2)}\n`)
+          NODE
+          destination=$(mktemp -d "$RUNNER_TEMP/pack.XXXXXX")
+          pnpm pack --pack-destination "$destination" > /dev/null
+          tarball=$(find "$destination" -name '*.tgz')
+          NPM_PACKAGE_ARG="$(dirname "$(readlink -f "$(command -v npm)")")/../node_modules/npm-package-arg" TARBALL=$tarball node <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const npa = require(process.env.NPM_PACKAGE_ARG)
+          const pkg = JSON.parse(execFileSync('tar', ['-xOzf', process.env.TARBALL, 'package/package.json'], { encoding: 'utf8' }))
+          const installable = new Set(['version', 'range', 'tag', 'alias', 'remote'])
+          const resolvesOutside = (name, spec) => {
+            try {
+              return installable.has(npa.resolve(name, spec).type)
+            } catch {
+              return false
+            }
+          }
+          const refused = ['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
+            Object.entries(pkg[field] ?? {}).filter(([name, spec]) => !resolvesOutside(name, spec)).map(([name, spec]) => `${field} ${name} ${spec}`),
+          )
+          if (refused.length) {
+            console.error(`${pkg.name}@${pkg.version} would ship specs that resolve only inside its repository:\n${refused.join('\n')}`)
+            process.exit(1)
+          }
+          NODE
+          npm publish "$tarball" --tag next
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'

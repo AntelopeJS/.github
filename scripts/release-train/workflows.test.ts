@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
@@ -120,6 +120,40 @@ function commitFiles(cwd: string, message: string, files: Record<string, string>
   git(cwd, "add", "--all");
   git(cwd, "commit", "--quiet", "-m", message);
   return git(cwd, "rev-parse", "HEAD");
+}
+
+function repository(name: string, files: Record<string, string>): { directory: string; sha: string } {
+  const directory = join(root, name);
+  mkdirSync(directory);
+  git(directory, "init", "--quiet");
+  return { directory, sha: commitFiles(directory, "feat: x", files) };
+}
+
+const realNpm = realpathSync(spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).stdout.trim());
+const recordingNpm = join(root, "recording-npm", "bin");
+mkdirSync(recordingNpm, { recursive: true });
+symlinkSync(join(dirname(realNpm), "..", "node_modules"), join(recordingNpm, "..", "node_modules"));
+writeFileSync(
+  join(recordingNpm, "npm"),
+  `#!/bin/sh\nif [ "$1" = publish ]; then printf '%s\\n' "$PWD" "$@" > "$NPM_PUBLISH_LOG"; exit 0; fi\nexec '${realNpm}' "$@"\n`,
+);
+chmodSync(join(recordingNpm, "npm"), 0o755);
+
+interface Publication {
+  manifest: unknown;
+  args: string[];
+}
+
+let previews = 0;
+function publishPreview(text: string, cwd: string, version: string, env: Record<string, string> = {}): StepResult & { publication: Publication | null } {
+  previews += 1;
+  const log = join(root, `npm-publish-${previews}.log`);
+  const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
+  if (!existsSync(log)) return { ...result, publication: null };
+  const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
+  const tarball = args.find((arg) => arg.endsWith(".tgz"));
+  const manifest = tarball === undefined ? readFileSync(join(directory, "package.json"), "utf8") : spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout;
+  return { ...result, publication: { manifest: JSON.parse(manifest), args: args.filter((arg) => arg !== tarball) } };
 }
 
 function pinned(version: string, spec: string): string {
@@ -341,6 +375,27 @@ for (const { file, text } of workflows) {
       });
     });
 
+    test("Write release notes start from the highest tag below the released version, never from a stray tag above it", () => {
+      const { directory } = repository(`${file}-stray-major`, { "package.json": "{}\n" });
+      git(directory, "tag", "v1.24.1");
+      commitFiles(directory, "feat: accidental major", { "major.js": "x\n" });
+      git(directory, "tag", "v2.0.1");
+      const fix = commitFiles(directory, "fix: close the feed", { "feed.js": "x\n" });
+      const result = runStep(text, "Write release notes", directory, {
+        PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+        FAKE_PULLS: "[]",
+        GITHUB_REPOSITORY: "AntelopeJS/x",
+        DEFAULT_BRANCH: "main",
+        RELEASE_VERSION: "1.24.2",
+        ...hermeticGit,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const notes = readFileSync(join(root, "release-notes.md"), "utf8").split("\n\n");
+      assert.equal(notes[0], "[compare changes](https://github.com/AntelopeJS/x/compare/v1.24.1...v1.24.2)");
+      assert.ok(notes.includes(`- Close the feed ([${fix.slice(0, 7)}](https://github.com/AntelopeJS/x/commit/${fix}))`), notes.join("\n\n"));
+      assert.ok(notes.some((line) => line.startsWith("- Accidental major")), notes.join("\n\n"));
+    });
+
     test("Write release notes lists one line per task of the cycle from the promotion's head, with breaking changes and contributors", () => {
       const repo = join(root, `${file}-cycle`);
       mkdirSync(repo);
@@ -461,6 +516,147 @@ for (const { file, text } of workflows) {
       assert.equal(
         published.stdout,
         `exec release-it --config ${join(root, "release-it.json")} --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
+      );
+    });
+
+    test("Publish preview publishes the packed package, with each workspace: spec resolved and the commit as gitHead", () => {
+      const { directory, sha } = repository(`${file}-monorepo`, {
+        "package.json": JSON.stringify({ name: "workspace", private: true }),
+        "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+        "packages/interface-x/package.json": JSON.stringify({ name: "@antelopejs/interface-x", version: "0.10.0" }),
+        "packages/x/package.json": JSON.stringify({
+          name: "@antelopejs/x",
+          version: "0.12.1",
+          dependencies: { "@antelopejs/interface-x": "workspace:^" },
+          peerDependencies: { "@antelopejs/interface-x": "workspace:*" },
+        }),
+      });
+      const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: directory, encoding: "utf8" });
+      assert.equal(installed.status, 0, installed.stderr);
+      const preview = publishPreview(text, join(directory, "packages", "x"), "0.12.2-next.2.gabc1234");
+      assert.equal(preview.status, 0, preview.stderr);
+      assert.deepEqual(preview.publication, {
+        manifest: {
+          name: "@antelopejs/x",
+          version: "0.12.2-next.2.gabc1234",
+          dependencies: { "@antelopejs/interface-x": "^0.10.0" },
+          peerDependencies: { "@antelopejs/interface-x": "0.10.0" },
+          gitHead: sha,
+        },
+        args: ["publish", "--tag", "next"],
+      });
+    });
+
+    test("a preview pins each workspace sibling's preview from its commit or its unreleased next, and keeps the stable range of one released since", () => {
+      const manifest = (name: string, version: string, dependencies: Record<string, string> = {}) => `${JSON.stringify({ name, version, dependencies })}\n`;
+      const { directory, sha: first } = repository(`${file}-siblings`, {
+        "package.json": JSON.stringify({ name: "workspace", private: true }),
+        "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+        "packages/interface-x/package.json": manifest("@antelopejs/interface-x", "0.10.0"),
+        "packages/interface-x/.release-it.json": "{}\n",
+        "packages/interface-y/package.json": manifest("@antelopejs/interface-y", "0.4.0"),
+        "packages/interface-y/.release-it.json": "{}\n",
+        "packages/interface-z/package.json": manifest("@antelopejs/interface-z", "0.2.0"),
+        "packages/interface-z/.release-it.json": "{}\n",
+        "packages/x/test/fixture/package.json": manifest("@antelopejs/interface-x", "0.0.0"),
+        "packages/x/package.json": manifest("@antelopejs/x", "0.12.1", {
+          "@antelopejs/interface-x": "workspace:^",
+          "@antelopejs/interface-y": "workspace:^",
+          "@antelopejs/interface-z": "workspace:^",
+        }),
+        "packages/x/.release-it.json": "{}\n",
+      });
+      const previewed = commitFiles(directory, "fix: y and z", { "packages/interface-y/index.js": "y\n", "packages/interface-z/index.js": "z\n" });
+      const sha = commitFiles(directory, "feat: x", { "packages/interface-x/index.js": "x\n", "packages/x/index.js": "x\n" });
+      const views = join(root, `${file}-npm-views.tsv`);
+      writeFileSync(
+        views,
+        [
+          ["@antelopejs/x version", "0.12.1"],
+          ["@antelopejs/x@next gitHead", first],
+          ["@antelopejs/interface-x version", "0.10.0"],
+          ["@antelopejs/interface-x@next gitHead", first],
+          ["@antelopejs/interface-y version", "0.4.0"],
+          ["@antelopejs/interface-y@next gitHead", previewed],
+          ["@antelopejs/interface-y@next version", "0.4.0-next.1.g0000000"],
+          ["@antelopejs/interface-z version", "0.2.0"],
+          ["@antelopejs/interface-z@next gitHead", previewed],
+          ["@antelopejs/interface-z@next version", "0.2.1-next.2.g1111111"],
+        ]
+          .map((row) => row.join("\t"))
+          .join("\n") + "\n",
+      );
+      const registry = join(root, `${file}-registry-npm`);
+      mkdirSync(registry);
+      writeFileSync(
+        join(registry, "npm"),
+        `#!/bin/sh\nif [ "$1" = view ] && [ "$2 $3" = "$FAKE_DOWN" ]; then echo "npm error code E500" >&2; exit 1; fi\nif [ "$1" = view ]; then awk -F '\\t' -v key="$2 $3" '$1 == key { print $2; found = 1 } END { exit !found }' "$FAKE_VIEWS" && exit 0; echo "npm error code E404" >&2; exit 1; fi\nexec '${realNpm}' "$@"\n`,
+      );
+      chmodSync(join(registry, "npm"), 0o755);
+      const suffix = `next.3.g${sha.slice(0, 7)}`;
+      const resolve = (env: Record<string, string> = {}) =>
+        runStep(text, "Resolve release version", join(directory, "packages", "x"), {
+          PATH: `${registry}:${process.env.PATH ?? ""}`,
+          MODE: "preview",
+          GITHUB_SHA: sha,
+          FAKE_VIEWS: views,
+          ...hermeticGit,
+          ...env,
+        });
+      const down = resolve({ FAKE_DOWN: "@antelopejs/interface-x version" });
+      assert.deepEqual([down.status, down.outputs], [1, ""]);
+      const resolved = resolve();
+      assert.equal(resolved.status, 0, resolved.stderr);
+      const pins = `{"@antelopejs/interface-x":"0.10.1-${suffix}","@antelopejs/interface-z":"0.2.1-next.2.g1111111"}`;
+      assert.equal(resolved.outputs, `pins=${pins}\nversion=0.12.2-${suffix}\n`);
+      const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: directory, encoding: "utf8" });
+      assert.equal(installed.status, 0, installed.stderr);
+      const preview = publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PINS: pins });
+      assert.equal(preview.status, 0, preview.stderr);
+      assert.deepEqual(preview.publication?.manifest, {
+        name: "@antelopejs/x",
+        version: `0.12.2-${suffix}`,
+        dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0", "@antelopejs/interface-z": "0.2.1-next.2.g1111111" },
+        gitHead: sha,
+      });
+    });
+
+    test("Publish preview refuses a package that would ship a spec resolving only inside its repository", () => {
+      const local = [
+        "file:../interface-database",
+        "link:../interface-database",
+        "github:AntelopeJS/interface-database#next",
+        "git+https://github.com/AntelopeJS/interface-database.git",
+        "https://github.com/AntelopeJS/interface-database.git",
+        "https://github.com/AntelopeJS/interface-database",
+        "git@github.com:AntelopeJS/interface-database.git",
+        "ssh://git@github.com/AntelopeJS/interface-database.git",
+        "AntelopeJS/interface-database",
+        "../interface-database",
+        "interface-database.tgz",
+        "portal:../interface-database",
+      ];
+      const { directory } = repository(`${file}-unpublishable`, {
+        "package.json": JSON.stringify({
+          name: "@antelopejs/x",
+          version: "1.0.0",
+          dependencies: { ...Object.fromEntries(local.map((spec, index) => [`@antelopejs/d${index}`, spec])), "@antelopejs/r": "^1.0.0", "@antelopejs/a": "npm:@antelopejs/x@>=1 <2", "@antelopejs/l": "latest", "@antelopejs/t": "https://example.com/t.tgz" },
+          peerDependencies: { "@antelopejs/p": "file:../p" },
+          optionalDependencies: { "@antelopejs/o": "link:../o" },
+          devDependencies: { "@antelopejs/dev": "file:../dev" },
+        }),
+      });
+      const refused = publishPreview(text, directory, "1.0.1-next.1.gabc1234");
+      assert.deepEqual([refused.status, refused.publication], [1, null]);
+      assert.equal(
+        refused.stderr,
+        [
+          "@antelopejs/x@1.0.1-next.1.gabc1234 would ship specs that resolve only inside its repository:",
+          ...local.map((spec, index) => `dependencies @antelopejs/d${index} ${spec}`),
+          "peerDependencies @antelopejs/p file:../p",
+          "optionalDependencies @antelopejs/o link:../o",
+          "",
+        ].join("\n"),
       );
     });
 
