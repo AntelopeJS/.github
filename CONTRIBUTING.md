@@ -222,29 +222,20 @@ Use the shared Renovate preset in `renovate.json5`:
 
 ## Release channels
 
-npm packages are published from two branches, each bound to one npm
-distribution tag:
+Work moves from `next` to `main` to the npm `latest` dist-tag:
 
-| Branch | npm dist-tag | Versions             |
-| ------ | ------------ | -------------------- |
-| `main` | `latest`     | `1.9.0`              |
-| `next` | `next`       | `1.9.0-next.0`, etc. |
-
-The Release workflow refuses any other combination: `latest` only releases
-from `main`, and `next` only releases from `next`.
+| Branch | npm dist-tag | Versions | Published by |
+| ------ | ------------ | -------- | ------------ |
+| `next` | `next` | `0.4.3-next.161.g3f9a2c1` | every push that changes the package |
+| `main` | `latest` | `0.5.0` | the release train |
 
 Anything merged into `main` must be releasable as stable at any time.
 
 ### Reusable release workflows
 
 Repositories call the reusable workflows of this repository,
-`release-npm-public.yml` or `release-npm-private.yml`, through the `v1` tag:
-
-```yaml
-jobs:
-  release:
-    uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v1
-```
+`release-npm-public.yml` or `release-npm-private.yml`, from their own
+`release.yml`. See the [caller workflow](README.md#caller-workflow).
 
 `v1` is a moving tag. After each merge that changes these workflows, it is
 re-pointed to the latest `main` commit, so every repository picks up the change
@@ -254,58 +245,38 @@ removed input, needs a new `v2` tag, and repositories move to it explicitly.
 A changed input default stays on `v1` only when every caller that the new
 default would break passes the old value before `v1` is re-pointed.
 
-When the tests run by `pnpm release` need service containers, such as a
-database or a storage emulator, describe them in a docker compose file and pass
-its path, relative to the repository root, as `services-compose-file`. The
-workflow runs `docker compose -f <file> up -d --wait` before publishing, so
-give each service a healthcheck when readiness matters, and always runs
-`docker compose -f <file> down -v` at the end of the job. The file must be a
-regular file inside the repository. Release secrets are not passed to the
-compose commands.
+The preview and release train interface is the exception. It removes the
+`channel` and `services-compose-file` inputs. The pilot repositories call both
+workflows at `@main` while `v1` keeps the previous interface. Once one change
+has gone the whole path, from a push to `next` through a preview to a stable
+release by the release train, `v1` moves to that commit. A caller that still
+passes `channel` fails from then on, so every caller replaces its
+`release.yml` with the new caller when `v1` moves.
 
-### Work that is not ready to ship
-
-Keep the feature branch open, as a draft pull request against `main`, until the
-change is ready to release.
-
-If consumers need a published build to test it, open a prerelease cycle:
+### Working on `next`
 
 1. Create `next` from `main` if it does not exist yet.
-2. Open the pull request against `next` instead of `main`.
-3. After merging, run the Release workflow on `next` with the `next` channel.
-4. Consumers install `@antelopejs/<package>@next`.
+2. Open the pull request against `next`.
+3. After the merge, the push publishes a preview of each package it changed.
+4. A repository that needs the change pins the exact preview on its own `next`
+   branch, as described in [preview versions](README.md#preview-versions).
 
-Prerelease commits are named `release: v1.9.0-next.0` instead of
-`chore(release): v1.9.0-next.0`. `release` is not a changelog type, so these
-commits never show up in a changelog, in particular not in the stable changelog
-that later covers the whole cycle. Stable releases keep
-`chore(release): v1.9.0`.
+A preview writes nothing to git, so `next` keeps the version of the last stable
+release in its `package.json`. Cross-repository work never waits for a stable
+release or a tarball.
 
-### Stable fixes during a prerelease cycle
+### Releasing `next`
 
-1. Open the fix against `main` and release it on the `latest` channel.
-2. Rebase `next` onto `main` so the cycle includes the fix:
+1. Open a pull request from `next` to `main` and merge it with a merge commit,
+   so every commit of `next` lands on `main` with its own type.
+2. Run the [release train](README.md#release-train) with `plan`. Leave out with
+   `--exclude` any package that should not ship now. Its commits stay on `main`
+   and the next plan includes them.
+3. Run `go` once a maintainer approves the plan. Each stable run replaces the preview
+   pins with stable ranges and refuses to publish a version that still depends
+   on a preview.
+4. Merge `main` back into `next`, so `next` holds the release commits, the
+   changelogs and the stable ranges.
 
-   ```sh
-   git switch next
-   git fetch origin
-   git rebase origin/main
-   git push --force-with-lease
-   ```
-
-   On conflicts in the `package.json` version or at the top of `CHANGELOG.md`,
-   keep the `next` side.
-
-### Promoting `next` to stable
-
-1. Open a pull request from `next` to `main` and merge it with **Rebase and
-   merge**, so the cycle's commits land on `main` individually.
-2. Run the Release workflow on `main` with the `latest` channel.
-3. Delete the `next` branch.
-
-Stable releases ignore prerelease tags. The stable changelog therefore covers
-every commit since the previous stable release, not just those since the last
-`-next` tag. When `package.json` holds a prerelease such as `1.9.0-next.4`, the
-stable release is pinned to its base version, `1.9.0`, even if the cycle
-contains breaking commits. Choose the right major or minor version when
-opening the cycle.
+A fix that cannot wait for the next release opens against `main` and ships with
+the release train like any other change. Merge `main` into `next` afterwards.

@@ -8,66 +8,180 @@ Repositories can override a community file when they need project-specific
 guidance. Reusable workflows remain centrally maintained and are called from a
 small workflow in each consuming repository.
 
-## Private npm releases
+## npm releases
 
-The private npm release workflow accepts these inputs:
+Each repository that publishes an npm package has a `release.yml` workflow
+that calls `release-npm-public.yml` or `release-npm-private.yml` of this
+repository. npm trusted publishing checks the calling workflow file, so both
+previews and stable releases run from that one `release.yml`. The event that
+starts the run decides what it publishes. A caller only declares the triggers.
 
-- `channel` (required): `latest` or `next`.
-- `install-core` (optional, default `true`): install the AntelopeJS CLI before
-  releasing.
-- `package-directory` (optional, default `.`): a relative directory below the
-  repository root containing the package to release.
+| Event | Branch | Publishes |
+| ----- | ------ | --------- |
+| `push` | any branch but the default one, normally `next` | a preview under the npm dist-tag `next` |
+| `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest` |
 
-Existing callers release the root package without changes. A caller releasing a
-nested package can set `package-directory`, for example:
+Any other event or branch fails the run with the reason. A release runs no
+tests. The checks of the pull request that brought each commit are the gate.
 
-```yaml
-jobs:
-  release:
-    uses: AntelopeJS/.github/.github/workflows/release-npm-private.yml@main
-    with:
-      channel: ${{ inputs.channel }}
-      package-directory: packages/my-private-package
-    secrets: inherit
+### Preview versions
+
+Every push to `next` publishes a preview of the package when the push changed
+its directory. A push that left the directory alone publishes nothing and says
+so in a notice. The preview version is
+`<base>-next.<commit count>.g<short sha>`, such as `0.4.3-next.161.g3f9a2c1`.
+The base is the patch after the current `latest` version on npm. A package that
+was never published uses the version of its `package.json` without its
+prerelease part. A rerun of the same commit finds the version already on npm and
+publishes nothing.
+
+A preview moves only the `next` dist-tag. `latest` stays on the last stable
+release. The run writes no commit, no tag, no changelog and no GitHub release.
+
+A dependent pins the exact preview it needs:
+
+```sh
+npm view @antelopejs/interface-database dist-tags.next
+pnpm add @antelopejs/interface-database@0.5.0-next.12.g3f9a2c1 --save-exact
 ```
 
-The workflow validates that the directory is inside the checked-out repository
-and contains a `package.json`, then uses it for metadata validation, dependency
-installation, and the `release-it` command. The pnpm cache is keyed on the
-lockfile that governs the package: see [pnpm workspaces](#pnpm-workspaces). Git
-history, tags, and GitHub release operations continue to use the checked-out
-repository.
+Commit that pin on the dependent's `next` branch. The release train replaces it
+with a stable range when both packages are released.
 
-## Public npm releases
+### Release train
 
-The public npm release workflow keeps existing root-package callers unchanged.
-It accepts these inputs:
+The release train publishes the stable versions of several packages once, in
+dependency order. Run it from a checkout of this repository with Node.js 24 and
+an authenticated `gh`:
 
-- `channel` (required): `latest` or `next`.
-- `install-core` (optional, default `false`): install the AntelopeJS CLI before
-  releasing.
-- `package-directory` (optional, default `.`): a relative directory below the
-  repository root containing the package to release.
+```sh
+node scripts/release-train/train.ts plan AntelopeJS/interface-database AntelopeJS/mongodb AntelopeJS/dms-database
+node scripts/release-train/train.ts plan --ref next AntelopeJS/interface-database AntelopeJS/mongodb
+node scripts/release-train/train.ts plan --exclude @antelopejs/mongodb AntelopeJS/interface-database AntelopeJS/mongodb
+node scripts/release-train/train.ts go AntelopeJS/interface-database AntelopeJS/mongodb AntelopeJS/dms-database
+```
 
-To publish only a nested package, pass its directory to the reusable workflow:
+A package is `owner/repo` or a path to a git checkout, followed by
+`:<directory>` when the package is not at the repository root. The train clones
+each `owner/repo` into `~/.cache/antelopejs-release-train` with blobs on demand
+and fetches it again on the next run. It reads a local checkout as it is.
+
+`plan` prints the release plan and changes nothing. It reads each package at
+the head of its default branch. `--ref next` reads the `next` branch instead, so
+you see what merging `next` would release. For each package it reads
+`package.json`, the last stable tag reachable from that branch (the
+`git.tagName` of `.release-it.json`, `v${version}` by default) and the commits
+since that tag that touched the package directory. Release commits do not
+count. The plan then decides each package in dependency order.
+
+- A commit with `!` or a `BREAKING CHANGE:` footer asks for a minor release.
+  `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `types` and `revert` ask
+  for a patch. Other types ask for nothing. A release never changes the major
+  version.
+- Each preview pin moves to the stable range of the version the plan releases
+  for that dependency, such as `>=0.5.0 <0.6.0`. A dependency the plan does not
+  release moves to its `latest` version on npm. A pin alone makes a patch
+  release.
+- A package is refused when one of its preview pins has no stable version to
+  move to. That happens when the dependency is left out, is refused itself, has
+  no stable release, or has a stable release older than the preview's base, or
+  when the pin is not an exact version. A refusal reaches every package that
+  pins a preview of the refused one.
+- A package with no releasable commit and no preview pin is unchanged.
+- `--exclude <name>` leaves a package out of this release. It is listed under
+  "Not now". Its commits stay unreleased, so the next plan includes them.
+
+`go` takes no `--ref`. It prints the plan, then dispatches `release.yml` on the
+default branch of each package to release, one at a time, with the planned
+`release-version` and `dependency-ranges`. It waits for each run to finish
+before it dispatches the next one, so a dependent installs a dependency that is
+already published. It stops at the first run that does not succeed and names
+what was published and what was not. Fix the failure and run `go` again. The
+plan is read again from the tags, so the train continues where it stopped.
+
+A stable run then does the following.
+
+1. It refuses a `release-version` that changes the major version of the `latest`
+   version on npm, or that is not greater than it.
+2. It writes each range of `dependency-ranges` into every dependency field of
+   `package.json` that names the package. It fails when a name is in no field.
+3. It fails when `package.json` still holds a prerelease spec in
+   `dependencies`, `peerDependencies`, `optionalDependencies` or
+   `devDependencies`.
+4. When it wrote ranges, it updates the lockfile with
+   `pnpm install --no-frozen-lockfile` and commits `package.json` and the
+   lockfile as `fix(deps): depend on the stable <names>`. Otherwise it installs
+   with `pnpm install --frozen-lockfile`.
+5. It runs `pnpm exec release-it --ci --increment=<release-version>`, which
+   writes the changelog since the last stable tag, the release commit, the tag
+   and the GitHub release, and publishes to npm. It never runs the
+   repository's `release` script, so no tests run.
+
+### Workflow inputs
+
+`release-npm-public.yml` and `release-npm-private.yml` take the same inputs.
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. A preview ignores it. |
+| `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
+| `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
+| `package-directory` | `.` | Directory of the package, relative to the repository root. |
+
+The public workflow publishes to npmjs with public access and provenance and
+needs the `RELEASE_GITHUB_TOKEN` secret for a stable release. The private
+workflow publishes to `https://npm.antelopejs.cloud/` and also needs
+`NPM_ANTELOPE_TOKEN` for every run. Each validates that the package directory
+resolves inside the repository and holds a `package.json`, and checks the
+publication metadata of `package.json` before it publishes.
+
+Runs share a concurrency group per repository, event and package directory,
+and a running release is never cancelled. Previews and stable releases sit in
+different groups, so a queued preview never cancels a pending stable release.
+
+### Caller workflow
+
+The caller is the `release.yml` of the repository. It needs both triggers and
+passes both inputs:
 
 ```yaml
+name: Release
+
+on:
+  push:
+    branches:
+      - next
+  workflow_dispatch:
+    inputs:
+      release-version:
+        description: Stable version to release, set by the release train
+        required: false
+        type: string
+      dependency-ranges:
+        description: JSON object of stable ranges that replace preview pins, set by the release train
+        required: false
+        default: "{}"
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
   release:
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
     with:
-      channel: ${{ inputs.channel }}
-      package-directory: packages/interface-dms-automation
-    secrets: inherit
+      release-version: ${{ inputs.release-version }}
+      dependency-ranges: ${{ inputs.dependency-ranges }}
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
 ```
 
-The workflow validates that the directory resolves inside the checked-out
-repository and contains a `package.json`. It uses that directory for metadata
-validation, dependency installation, and the release command, so unrelated
-root-level packages are not released. The pnpm cache is keyed on the lockfile
-that governs the package, which is not always the one next to its
-`package.json`: see [pnpm workspaces](#pnpm-workspaces). Public packages
-continue to use npmjs with public access and provenance.
+A private package calls `release-npm-private.yml` and also passes
+`NPM_ANTELOPE_TOKEN`, or uses `secrets: inherit`. A repository whose package is
+not at its root also declares a `package-directory` input in
+`workflow_dispatch`, because the release train passes it, and forwards it with
+`package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
 
 ## Node CI
 
@@ -279,13 +393,14 @@ jobs:
   release:
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
     with:
-      channel: ${{ inputs.channel }}
+      release-version: ${{ inputs.release-version }}
+      dependency-ranges: ${{ inputs.dependency-ranges }}
       package-directory: packages/dms-automation
     secrets: inherit
 ```
 
-`pnpm install --frozen-lockfile` still runs from the package directory. In a
-workspace, pnpm walks up to `pnpm-workspace.yaml`, validates the root lockfile,
-and installs every workspace project, so the released package and the workspace
-dependencies it links through `workspace:*` are installed together; no
-`--filter` is required.
+Both workflows install from the nearest directory at or above the package
+directory that holds `pnpm-workspace.yaml`, or from the package directory when
+there is none. pnpm validates the root lockfile and installs every workspace
+project, so the released package and the workspace dependencies it links
+through `workspace:*` are installed together. No `--filter` is required.
