@@ -185,4 +185,37 @@ describe("go", () => {
     assert.equal(errors(), "go always releases the default branch, so it takes no --ref.\n");
     assert.deepEqual(calls, []);
   });
+
+  test("a re-plan that fails still says what was published and what was not", () => {
+    const workspace = repository("go-replan", (path) => {
+      commit(path, "feat: first", {
+        "package.json": manifest("replan-root", "1.0.0", { dependencies: { "@antelopejs/replan-inner": ">=0.2.0 <0.3.0" } }),
+        "packages/inner/package.json": manifest("replan-inner", "0.2.0"),
+        "packages/inner/.release-it.json": { git: { tagName: "inner-v${version}" } },
+      });
+      git(path, "tag", "v1.0.0");
+      git(path, "tag", "inner-v0.2.0");
+      commit(path, "fix(inner): trim the input", { "packages/inner/index.ts": "export {};\n" });
+      commit(path, "fix: log the start", { "index.ts": "export {};\n" });
+    });
+    const fakes: { pullsDown?: boolean; dispatched?: () => void } = {
+      dispatched: () => {
+        commit(workspace, "chore(release): v0.2.1", { "packages/inner/CHANGELOG.md": "x\n" });
+        git(workspace, "tag", "inner-v0.2.1");
+        git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");
+        fakes.pullsDown = true;
+      },
+    };
+    const { system, errors } = fakeSystem({}, fakes);
+    assert.equal(main(["go", workspace, `${workspace}:packages/inner`], system), 1);
+    assert.equal(
+      errors(),
+      [
+        "The plan could not be read again after the release of @antelopejs/replan-inner 0.2.1: gh pr list --repo AntelopeJS/go-replan --base main failed, so the plan cannot read the commits of the cycle.",
+        "Published: @antelopejs/replan-inner 0.2.1.",
+        "Not published: @antelopejs/replan-root 1.0.1.",
+        "",
+      ].join("\n"),
+    );
+  });
 });

@@ -169,7 +169,19 @@ function go(plan: Plan, replan: () => Plan, system: System): number {
     pending = rest;
     const { slug, head } = entry.source;
     if (!rest.some((other) => other.source.slug === slug)) continue;
-    const next = releasesOf(replan());
+    let next: Release[];
+    try {
+      next = releasesOf(replan());
+    } catch (error) {
+      system.err(
+        [
+          `The plan could not be read again after the release of ${label(entry)}: ${error instanceof Error ? error.message : String(error)}`,
+          `Published: ${list(published)}.`,
+          `Not published: ${list(rest)}.`,
+        ].join("\n"),
+      );
+      return 1;
+    }
     const moved = next.filter((other) => other.source.slug === slug).every((other) => other.source.head !== head);
     if (!moved || !sameReleases(rest, next)) {
       system.err(

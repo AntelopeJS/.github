@@ -237,7 +237,7 @@ for (const { file, text } of workflows) {
       const absent = runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: '{"@antelopejs/nope":"~1.0.0"}' });
       assert.equal(absent.status, 1);
       assert.match(absent.stderr, /does not pin to a preview: @antelopejs\/nope$/m);
-      for (const range of ["file:../x", "github:AntelopeJS/x#next", "0.7.0-next.1.gabc1234", "latest"]) {
+      for (const range of ["file:../x", "github:AntelopeJS/x#next", "0.7.0-next.1.gabc1234", "latest", `${Array.from({ length: 40 }, () => "1").join("      ")}!`]) {
         const invalid = runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: JSON.stringify({ "@antelopejs/core": range }) });
         assert.deepEqual([invalid.status, invalid.stderr], [1, `dependency-ranges must map each name to a stable version range:\n@antelopejs/core ${range}\n`]);
       }
@@ -535,15 +535,17 @@ for (const { file, text } of workflows) {
           FAKE_STABLE_HEAD: publishedFrom,
           GITHUB_REF_NAME: "main",
         });
-      const resumed = "resume=true\nversion=0.4.2\n";
-      assert.equal(stable("").outputs, resumed);
-      assert.equal(stable(head).outputs, resumed);
-      assert.equal(stable("1".repeat(40)).outputs, resumed);
-      const elsewhere = stable(firstCommit);
-      assert.deepEqual(
-        [elsewhere.status, elsewhere.stderr],
-        [1, `npm holds @antelopejs/x 0.4.2 from commit ${firstCommit}, not from main at the planned commit, so this run cannot finish its release.\n`],
-      );
+      assert.equal(stable(head).outputs, "resume=true\nversion=0.4.2\n");
+      const refused = (from: string, shown = from) => {
+        const result = stable(from);
+        assert.deepEqual(
+          [result.status, result.stderr],
+          [1, `npm holds @antelopejs/x 0.4.2 from commit ${shown}, not from main at the planned commit ${head}, so this run cannot finish its release.\n`],
+        );
+      };
+      refused(firstCommit);
+      refused("1".repeat(40));
+      refused("", "unknown");
       git(checkout, "tag", "v0.4.2");
       const released = stable("");
       git(checkout, "tag", "--delete", "v0.4.2");
@@ -597,11 +599,15 @@ for (const { file, text } of workflows) {
         assert.equal(ranges.status, 0, ranges.stderr);
         writeFileSync(join(runner, "pnpm-lock.yaml"), lockfile(">=0.5.0 <0.6.0", "0.5.0"));
         const message = ranges.outputs.replace(/^message=/, "").trim();
-        assert.equal(runStep(text, "Commit stable dependencies", runner, { ...env, MESSAGE: message, PACKAGE_DIRECTORY: ".", LOCKFILE: "pnpm-lock.yaml" }).status, 0);
+        const planned = git(runner, "rev-parse", "HEAD");
+        assert.equal(runStep(text, "Stage stable dependencies", runner, { ...env, PACKAGE_DIRECTORY: ".", LOCKFILE: "pnpm-lock.yaml" }).status, 0);
         if (bringToNext) {
-          const brought = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "next", GITHUB_TOKEN: "token" });
+          const brought = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "next", MESSAGE: message, GITHUB_TOKEN: "token" });
           assert.deepEqual([brought.status, brought.stdout], [0, ""], brought.stderr);
+          assert.equal(git(bare, "log", "-1", "--format=%s", "next"), message);
         }
+        assert.equal(git(runner, "rev-parse", "HEAD"), planned);
+        assert.deepEqual(git(runner, "diff", "--cached", "--name-only").split("\n"), ["package.json", "pnpm-lock.yaml"]);
         commitFiles(runner, "chore(release): v1.8.7", { "package.json": pinned("1.8.7", ">=0.5.0 <0.6.0"), "CHANGELOG.md": "## v1.8.7\n" });
         git(runner, "tag", "v1.8.7");
         git(runner, "push", "--quiet", "origin", "main", "--tags");
@@ -637,8 +643,9 @@ for (const { file, text } of workflows) {
       const runner = join(root, `runner-${origins}`);
       git(root, "clone", "--quiet", bare, runner);
       const env = { ...hermeticGit, RUNNER_TEMP: root, BRANCH: "next", GITHUB_TOKEN: "token" };
-      commitFiles(runner, "fix(deps): depend on the stable @antelopejs/interface-database", { "package.json": pinned("1.8.6", ">=0.5.0 <0.6.0") });
-      const kept = runStep(text, "Bring the stable ranges to the integration branch", runner, env);
+      writeFileSync(join(runner, "package.json"), pinned("1.8.6", ">=0.5.0 <0.6.0"));
+      git(runner, "add", "package.json");
+      const kept = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, MESSAGE: "fix(deps): depend on the stable @antelopejs/interface-database" });
       assert.deepEqual(
         [kept.status, kept.stdout],
         [0, "::warning::next changed the same dependency lines since the plan, so it keeps them and the Next sync of this release will conflict.\n"],
@@ -659,6 +666,7 @@ for (const { file, text } of workflows) {
         "inner/package.json": "{}\n",
         "inner/.release-it.json": "{}\n",
         "frontend-vue/package.json": "{}\n",
+        "pnpm-lock.yaml": "inner: 0.1.0\n",
       });
       const decide = (from: string, to: string) =>
         runStep(text, "Resolve release version", previews, {
@@ -671,7 +679,7 @@ for (const { file, text } of workflows) {
         }).outputs;
       const backMerge = commitFiles(previews, "chore: merge main into next", { "package.json": manifest("0.5.1"), "CHANGELOG.md": "## v0.5.1\n" });
       assert.equal(decide(previous, backMerge), "");
-      const nested = commitFiles(previews, "chore(release): inner v0.2.0", { "inner/CHANGELOG.md": "## v0.2.0\n", "inner/index.js": "y\n" });
+      const nested = commitFiles(previews, "chore(release): inner v0.2.0", { "inner/CHANGELOG.md": "## v0.2.0\n", "inner/index.js": "y\n", "pnpm-lock.yaml": "inner: 0.2.0\n" });
       assert.equal(decide(previous, nested), "");
       const frontend = commitFiles(previews, "fix(frontend): x", { "frontend-vue/index.vue": "x\n" });
       assert.match(decide(previous, frontend), /^version=0\.5\.1-next\./);

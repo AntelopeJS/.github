@@ -137,7 +137,7 @@ describe("plan", () => {
     git(dirname(remote), "clone", "--quiet", "--filter=blob:none", `file://${remote}`, clone);
     const { system } = fakeSystem();
     const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
-    const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head }];
+    const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head, branch: "" }];
     const source = readSource(system, from, resolveRevision(system, from, null), { directory: ".", nested: [], merged });
     assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
     assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
@@ -275,5 +275,35 @@ describe("plan", () => {
     const { system, output } = fakeSystem();
     assert.equal(main(["plan", workspace, `${workspace}:packages/automation`], system), 0);
     assert.equal(output(), "Release plan from main, nothing to release\n\nUnchanged: @antelopejs/nested-root, @antelopejs/nested-automation\n");
+  });
+
+  test("a local checkout whose origin/next lacks the promotion's head stops the plan instead of reading the title alone", () => {
+    const ids = { squash: "", head: "" };
+    const remote = repository("stale-remote", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("stale", "0.4.2") });
+      git(path, "tag", "v0.4.2");
+      git(path, "branch", "next");
+    });
+    const clone = join(dirname(remote), "stale-clone");
+    git(dirname(remote), "clone", "--quiet", `file://${remote}`, clone);
+    git(clone, "remote", "set-url", "origin", "https://github.com/AntelopeJS/stale.git");
+    git(remote, "checkout", "--quiet", "next");
+    ids.head = commit(remote, "feat(query)!: rename ReadCursor.next to ReadCursor.read", { "src/cursor.ts": "export {};\n" });
+    git(remote, "checkout", "--quiet", "main");
+    git(remote, "merge", "--quiet", "--squash", "next");
+    git(remote, "commit", "--quiet", "-m", "feat(query): batch reads and cursor fixes (#122)");
+    ids.squash = tip(remote);
+    git(clone, "fetch", "--quiet", `file://${remote}`, "main:refs/remotes/origin/main");
+    pulls["AntelopeJS/stale"] = [{ number: 122, mergeCommit: { oid: ids.squash }, headRefOid: ids.head, headRefName: "next" }];
+    const { system, errors } = fakeSystem();
+    assert.equal(main(["plan", clone], system), 1);
+    assert.equal(
+      errors(),
+      `${clone} lacks commit ${short(ids.head)}, the head of pull request #122 from next, so its origin/next is stale. Run git fetch origin there, then plan again.\n`,
+    );
+    git(clone, "fetch", "--quiet", `file://${remote}`, "next:refs/remotes/origin/next");
+    const fetched = fakeSystem();
+    assert.equal(main(["plan", clone], fetched.system), 0);
+    assert.match(fetched.output(), /0\.4\.2 -> 0\.5\.0 \(minor\)/);
   });
 });

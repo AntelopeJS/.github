@@ -105,6 +105,7 @@ type View = "fail" | "running";
 
 interface Fakes {
   down?: boolean;
+  pullsDown?: boolean;
   views?: Record<string, View[]>;
   npm?: Record<string, string>;
   dispatched?: (repo: string, fields: Record<string, string>) => void;
@@ -130,7 +131,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
         if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
         return held === "error" ? answer("", 1) : answer(`${held}\n`);
       }
-      if (gh.down) return answer("", 1);
+      if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
       if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
       if (args[0] === "api") return answer(`${compare(args[1] ?? "")}\n`);
       const repo = flag(args, "--repo");

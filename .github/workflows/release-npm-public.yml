@@ -261,7 +261,7 @@ jobs:
           const shipped = (revision) => ({ ...JSON.parse(git('show', `${revision}:./package.json`)), version: null })
           const ships = (file) => file !== changelog && (file !== 'package.json' || !isDeepStrictEqual(shipped(PREVIOUS), shipped(GITHUB_SHA)))
           const released = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean).map((file) => file.slice(0, -'.release-it.json'.length))
-          const own = (file) => !released.some((directory) => file.startsWith(directory))
+          const own = (file) => !released.some((directory) => file.startsWith(directory)) && !/(^|\/)pnpm-lock\.yaml$/.test(file)
           const changed = git('diff', '--name-only', '--no-renames', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
           process.exit(changed.filter(own).some(ships) ? 1 : 0)
           NODE
@@ -303,8 +303,8 @@ jobs:
                 exit 1
               fi
               published=$(npm view "$name@$version" gitHead 2>/dev/null || true)
-              if [ -n "$published" ] && [ "$published" != "$(git rev-parse HEAD)" ] && git cat-file -e "$published^{commit}" 2>/dev/null; then
-                echo "npm holds $name $version from commit $published, not from $GITHUB_REF_NAME at the planned commit, so this run cannot finish its release." >&2
+              if [ "$published" != "$(git rev-parse HEAD)" ]; then
+                echo "npm holds $name $version from commit ${published:-unknown}, not from $GITHUB_REF_NAME at the planned commit $(git rev-parse HEAD), so this run cannot finish its release." >&2
                 exit 1
               fi
               echo "::notice::npm holds $name $version but the tag $tag is missing, so this run writes the release commit, the tag and the GitHub release without publishing again."
@@ -329,11 +329,15 @@ jobs:
           const part = '(?:0|[1-9]\\d*|[xX*])'
           const identifiers = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*'
           const partial = `v?${part}(?:\\.${part}(?:\\.${part}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`
-          const comparator = `(?:[<>]=?|=|~>?|\\^)?\\s*${partial}`
-          const set = `(?:${partial}\\s+-\\s+${partial}|${comparator}(?:\\s+${comparator})*)`
-          const range = new RegExp(`^\\s*${set}(?:\\s*\\|\\|\\s*${set})*\\s*$`)
+          const partialPattern = new RegExp(`^${partial}$`)
+          const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`)
           const alias = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/
-          const isRegistrySpec = (spec) => range.test(alias.exec(spec)?.[1] ?? spec)
+          const isRegistrySpec = (spec) =>
+            (alias.exec(spec)?.[1] ?? spec).split('||').every((set) => {
+              const words = set.trim().replace(/([<>=~^])\s+/g, '$1').split(/\s+/)
+              if (words.length === 3 && words[1] === '-') return words.every((word, index) => index === 1 || partialPattern.test(word))
+              return words.every((word) => comparatorPattern.test(word))
+            })
           const isPreview = (spec) => /\d+\.\d+\.\d+-/.test(spec)
           let ranges = null
           try {
@@ -399,27 +403,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit stable dependencies
+      - name: Stage stable dependencies
         if: steps.ranges.outputs.message != ''
         env:
-          MESSAGE: ${{ steps.ranges.outputs.message }}
           PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
           LOCKFILE: ${{ steps.lockfile.outputs.path }}
         run: |
           git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
-          git commit --quiet -m "$MESSAGE"
 
       - name: Bring the stable ranges to the integration branch
         if: steps.ranges.outputs.message != ''
         env:
           BRANCH: ${{ inputs.integration-branch }}
+          MESSAGE: ${{ steps.ranges.outputs.message }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" > /dev/null; then
             exit 0
           fi
-          commit=$(git rev-parse HEAD)
+          commit=$(git commit-tree "$(git write-tree)" -p HEAD -m "$MESSAGE")
           worktree="$RUNNER_TEMP/integration-branch"
           auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
           git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"

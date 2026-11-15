@@ -39,9 +39,9 @@ changed since the commit of the current `next` preview, read from npm as its
 `gitHead`. A change to the changelog, or to the `version` field of
 `package.json`, does not count. The changelog is the `output` of
 `changelogen.config.json`, or `CHANGELOG.md`. So the merge of a release commit
-back into `next` publishes no preview. Neither does a change inside a nested
-directory that holds its own `.release-it.json`, which is another released
-package. A release that wrote stable ranges pushes them to `next` itself, so
+back into `next` publishes no preview. Neither does a change to
+`pnpm-lock.yaml`, which no package ships, or a change inside a nested directory
+that holds its own `.release-it.json`, which is another released package. A release that wrote stable ranges pushes them to `next` itself, so
 that push publishes a preview with the stable ranges and the merge publishes
 none. A package that changed nothing it ships publishes nothing and says so in a
 notice. A push whose run GitHub dropped from the queue is still covered
@@ -101,7 +101,9 @@ requests merged into the default branch, for `--ref next` too. A pull request
 merged since the stable tag gives the commits of its head, in place of its
 squash commit. The heads of the pull requests merged before the tag mark where
 the cycle starts. A pull request whose head the checkout lacks, such as a
-person's branch deleted after the merge, keeps its squash commit. The train
+person's branch deleted after the merge, keeps its squash commit. When the
+checkout still has that branch as `origin/<branch>`, it is stale, and the plan
+stops and asks to fetch it. The train
 never fetches a missing head, not even in its partial clone. Merge commits
 and release commits do not count. When no pull request was merged, the plan
 lists the branch's commits. When `gh pr list` fails, the plan stops, because the
@@ -193,8 +195,8 @@ A stable run then does the following.
    version on npm, or that is lower than it. When `release-version` is the
    `latest` version and its tag is missing, an earlier run published it and
    then failed, so this run resumes that release without publishing it again.
-   It refuses to resume when the tag exists, or when npm's `gitHead` for that
-   version is a commit of the repository other than `release-commit`.
+   It resumes only when npm's `gitHead` for that version is `release-commit`,
+   so the tag lands on the code npm holds. It refuses when the tag exists.
 3. It fails when a value of `dependency-ranges` is not a stable semver range.
    It writes each range into the dependency fields of `package.json` where
    that name holds a preview. A stable spec of the same name in another field
@@ -203,10 +205,12 @@ A stable run then does the following.
    still hold a prerelease spec, or a spec that does not resolve from the
    registry. A `devDependencies` preview gives a warning and stays.
 5. When it wrote ranges, it updates the lockfile with
-   `pnpm install --no-frozen-lockfile` and commits `package.json` and the
-   lockfile as `fix(deps): depend on the stable <names>`. It cherry-picks that
-   commit onto the `integration-branch`, `next` by default, and pushes it, so
-   the Next sync merge of the release finds the same lines on both sides. When
+   `pnpm install --no-frozen-lockfile` and stages `package.json` and the
+   lockfile, so the release commit holds them and npm records `release-commit`
+   as the `gitHead` of the version. It pushes the same change to the
+   `integration-branch`, `next` by default, as a
+   `fix(deps): depend on the stable <names>` commit, so the Next sync merge of
+   the release finds the same lines on both sides. When
    that branch changed the same lines since the plan, it keeps them and the run
    warns that the Next sync will conflict. Otherwise it installs with
    `pnpm install --frozen-lockfile`.
@@ -217,7 +221,7 @@ A stable run then does the following.
    default branch since the last stable tag (`gh pr list` with
    `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. A subject that is not
    conventional is left out. When the release writes stable ranges, the notes
-   also list its `fix(deps)` commit under Fixes. It writes them under a
+   also list `Depend on the stable <names>` under Fixes. It writes them under a
    `## v<version>` heading on top of the changelog, the `output` of
    `changelogen.config.json` or `CHANGELOG.md`, and stages it. It writes a
    release-it config from the repository's `.release-it.json`, without the

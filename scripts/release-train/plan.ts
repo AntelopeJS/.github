@@ -103,9 +103,8 @@ const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", 
 const versionPart = "(?:0|[1-9]\\d*|[xX*])";
 const identifiers = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
 const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`;
-const comparator = `(?:[<>]=?|=|~>?|\\^)?\\s*${partial}`;
-const comparatorSet = `(?:${partial}\\s+-\\s+${partial}|${comparator}(?:\\s+${comparator})*)`;
-const rangePattern = new RegExp(`^\\s*${comparatorSet}(?:\\s*\\|\\|\\s*${comparatorSet})*\\s*$`);
+const partialPattern = new RegExp(`^${partial}$`);
+const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`);
 const aliasPattern = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/;
 
 /** Parses `M.m.p` or `M.m.p-pre`, or returns null. */
@@ -155,7 +154,12 @@ export function isPreviewSpec(spec: string): boolean {
  * A path, `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec does not.
  */
 export function isRegistrySpec(spec: string): boolean {
-  return rangePattern.test(aliasPattern.exec(spec)?.[1] ?? spec);
+  const range = aliasPattern.exec(spec)?.[1] ?? spec;
+  return range.split("||").every((set) => {
+    const words = set.trim().replace(/([<>=~^])\s+/g, "$1").split(/\s+/);
+    if (words.length === 3 && words[1] === "-") return words.every((word, index) => index === 1 || partialPattern.test(word));
+    return words.every((word) => comparatorPattern.test(word));
+  });
 }
 
 interface Header {

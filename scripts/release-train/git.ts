@@ -21,11 +21,12 @@ export interface Revision {
   name: string;
 }
 
-/** A pull request merged into a branch: its merge commit on the branch and the head commit it merged. */
+/** A pull request merged into a branch: its merge commit on the branch, the head commit it merged and the branch it came from. */
 export interface MergedPull {
   number: number;
   mergeCommit: string;
   head: string;
+  branch: string;
 }
 
 /** Where one package lives in a checkout, and what the train reads beside it. */
@@ -148,6 +149,14 @@ function cycleNotes(
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
+  const stale = landed.find(
+    (pull) => !released(pull) && !present(pull) && pull.branch !== "" && hasRef(system, repository, `refs/remotes/origin/${pull.branch}`),
+  );
+  if (stale !== undefined) {
+    throw new Error(
+      `${repository} lacks commit ${stale.head.slice(0, 7)}, the head of pull request #${stale.number} from ${stale.branch}, so its origin/${stale.branch} is stale. Run git fetch origin there, then plan again.`,
+    );
+  }
   const current = landed.filter((pull) => !released(pull) && present(pull));
   const previous = landed.filter((pull) => released(pull) && present(pull));
   const include = [head, ...current.map((pull) => pull.head)];

@@ -88,6 +88,10 @@ describe("isRegistrySpec", () => {
     for (const spec of registrySpecs) assert.equal(isRegistrySpec(spec), true, spec);
     for (const spec of nonRegistrySpecs) assert.equal(isRegistrySpec(spec), false, spec);
   });
+
+  test("refuses a long run of comparators and spaces in linear time", { timeout: 2000 }, () => {
+    assert.equal(isRegistrySpec(`${Array.from({ length: 40 }, () => "1").join("      ")}!`), false);
+  });
 });
 
 describe("computePlan", () => {

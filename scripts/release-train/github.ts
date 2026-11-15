@@ -119,7 +119,7 @@ function parsePulls(text: string): MergedPull[] {
       typeof pull.headRefOid === "string" &&
       isRecord(pull.mergeCommit) &&
       typeof pull.mergeCommit.oid === "string"
-        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid }]
+        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid, branch: typeof pull.headRefName === "string" ? pull.headRefName : "" }]
         : [],
     )
     .sort((left, right) => right.number - left.number);
@@ -137,7 +137,7 @@ export function mergedPulls(system: System): MergedPulls {
     if (cached !== undefined) return cached;
     const result = system.run("gh", [
       "pr", "list", "--repo", slug, "--base", branch, "--state", "merged", "--limit", "100",
-      "--json", "number,mergeCommit,headRefOid",
+      "--json", "number,mergeCommit,headRefOid,headRefName",
     ]);
     const found = result.status === 0 ? parsePulls(result.stdout) : null;
     pulls.set(key, found);
