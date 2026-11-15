@@ -68,6 +68,9 @@ export type Entry =
   | { status: "excluded"; source: PackageSource }
   | { status: "refused"; source: PackageSource; reasons: string[] };
 
+/** The entry of a package this plan releases. */
+export type Release = Extract<Entry, { status: "release" }>;
+
 /** One release plan: an entry per package, dependencies first. */
 export interface Plan {
   ref: string;
@@ -92,7 +95,7 @@ const versionPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const previewPattern = /\d+\.\d+\.\d+-/;
 const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
-const headerPattern = /^([a-z]+)(?:\([^()]*\))?(!)?: \S/;
+const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]);
 
@@ -138,12 +141,25 @@ export function isPreviewSpec(spec: string): boolean {
   return previewPattern.test(spec);
 }
 
-/** The release level a commit message asks for, or null when it asks for none. */
-export function commitLevel(subject: string, body: string): Level | null {
+interface Header {
+  type: string;
+  scope: string;
+  breaking: boolean;
+  description: string;
+}
+
+function parseHeader(subject: string): Header | null {
   const match = headerPattern.exec(subject);
   if (match === null) return null;
-  if (match[2] === "!" || breakingFooterPattern.test(body)) return "minor";
-  return patchTypes.has(match[1] ?? "") ? "patch" : null;
+  return { type: match[1] ?? "", scope: match[2] ?? "", breaking: match[3] === "!", description: match[4] ?? "" };
+}
+
+/** The release level a commit message asks for, or null when it asks for none. */
+export function commitLevel(subject: string, body: string): Level | null {
+  const header = parseHeader(subject);
+  if (header === null) return null;
+  if (header.breaking || breakingFooterPattern.test(body)) return "minor";
+  return patchTypes.has(header.type) ? "patch" : null;
 }
 
 interface Dependency {
@@ -365,4 +381,77 @@ export function renderPlan(plan: Plan): string {
     ...(excluded === "" ? [] : [`Not now: ${excluded}`]),
     "",
   ].join("\n");
+}
+
+const noteSections: readonly (readonly [type: string, title: string])[] = [
+  ["feat", "🚀 Enhancements"],
+  ["perf", "🔥 Performance"],
+  ["fix", "🩹 Fixes"],
+  ["refactor", "💅 Refactors"],
+  ["docs", "📖 Documentation"],
+  ["build", "📦 Build"],
+  ["types", "🌊 Types"],
+  ["revert", "⏪ Reverts"],
+  ["chore", "🏡 Chore"],
+  ["examples", "🏀 Examples"],
+  ["test", "✅ Tests"],
+  ["style", "🎨 Styles"],
+  ["ci", "🤖 CI"],
+];
+const trailingPullPattern = /\s*\(#(\d+)\)$/;
+
+interface Note {
+  type: string;
+  breaking: boolean;
+  author: string;
+  line: string;
+}
+
+function noteOf(commit: Commit, slug: string): Note | null {
+  const header = parseHeader(commit.subject);
+  if (header === null) return null;
+  let { description } = header;
+  const pulls: string[] = [];
+  for (let match = trailingPullPattern.exec(description); match !== null; match = trailingPullPattern.exec(description)) {
+    pulls.unshift(`[#${match[1]}](https://github.com/${slug}/pull/${match[1]})`);
+    description = description.slice(0, match.index);
+  }
+  const links = pulls.length > 0 ? pulls : [`[${commit.sha.slice(0, 7)}](https://github.com/${slug}/commit/${commit.sha})`];
+  const scope = header.scope === "" ? "" : `**${header.scope}:** `;
+  const line = `- ${scope}${description.charAt(0).toUpperCase()}${description.slice(1)} (${links.join(", ")})`;
+  return { type: header.type, breaking: commit.level === "minor", author: commit.author, line };
+}
+
+function listNames(names: readonly string[]): string {
+  return names.length === 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/**
+ * Renders the changelog section of a release in changelogen's format, without its `## v…` heading: the
+ * compare link, one block per commit type with the oldest commit first, the breaking changes, then the
+ * contributors. A subject that is not conventional is left out.
+ */
+export function renderReleaseNotes(entry: Release): string {
+  const { slug, tagName, notes } = entry.source;
+  const listed = notes
+    .toReversed()
+    .flatMap((commit) => noteOf(commit, slug) ?? [])
+    .filter((note) => noteSections.some(([type]) => type === note.type));
+  const names = Object.keys(entry.ranges);
+  const deps = names.length === 0 ? [] : [`- **deps:** Depend on the stable ${listNames(names)}`];
+  const block = (title: string, lines: readonly string[]): string[] =>
+    lines.length === 0 ? [] : [`${title}\n\n${lines.join("\n")}`];
+  const tag = (version: string): string => tagName.replace("${version}", version);
+  const contributors = [...new Set(listed.map((note) => note.author))].filter((author) => !author.endsWith("[bot]"));
+  return [
+    ...(entry.from === null ? [] : [`[compare changes](https://github.com/${slug}/compare/${tag(entry.from)}...${tag(entry.to)})`]),
+    ...noteSections.flatMap(([type, title]) =>
+      block(`### ${title}`, [
+        ...listed.filter((note) => note.type === type).map((note) => note.line),
+        ...(type === "fix" ? deps : []),
+      ]),
+    ),
+    ...block("#### ⚠️ Breaking Changes", listed.filter((note) => note.breaking).map((note) => note.line)),
+    ...block("### ❤️ Contributors", contributors.map((author) => `- ${author}`)),
+  ].join("\n\n");
 }
