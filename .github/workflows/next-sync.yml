@@ -131,26 +131,27 @@ jobs:
           FILES: ${{ steps.merge.outputs.files }}
         run: |
           title="Next sync: merge ${DEFAULT_BRANCH} into ${BRANCH} by hand"
-          number=$(gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+          number=$(gh api --paginate "repos/${GH_REPO}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100" \
             | jq -s -r --arg title "$title" '[.[][] | select(.title == $title and .user.login == "github-actions[bot]" and (.pull_request | not)) | .number][0] // empty')
           if [ -n "$number" ]; then
             gh api -X POST "repos/${GH_REPO}/issues/${number}/comments" --silent \
-              -f "body=Seen again: ${FILES}. Run: ${RUN_URL}"
+              -f "body=Seen again: \`${FILES}\`. Run: ${RUN_URL}"
             exit 0
           fi
           body=$(printf '%s\n\n%s\n\n%s\n' \
-            "The Next sync workflow could not merge \`${DEFAULT_BRANCH}\` into \`${BRANCH}\`: they conflict in ${FILES}. Until \`${DEFAULT_BRANCH}\` is merged, the \`${BRANCH}\` to \`${DEFAULT_BRANCH}\` pull request cannot be up to date. Run: ${RUN_URL}" \
+            "The Next sync workflow could not merge \`${DEFAULT_BRANCH}\` into \`${BRANCH}\`: they conflict in \`${FILES}\`. Until \`${DEFAULT_BRANCH}\` is merged, the \`${BRANCH}\` to \`${DEFAULT_BRANCH}\` pull request cannot be up to date. Run: ${RUN_URL}" \
             "To resolve it, a repository admin merges \`origin/${DEFAULT_BRANCH}\` into \`${BRANCH}\`, resolves the conflicts, and pushes the merge commit straight to \`${BRANCH}\`. A pull request would squash the merge and lose \`${DEFAULT_BRANCH}\`'s history, so the same conflict would come back." \
             "The next successful sync closes this issue.")
           gh api -X POST "repos/${GH_REPO}/issues" --silent -f "title=${title}" -f "body=${body}"
 
       - name: Close the conflict issue
         if: success()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           title="Next sync: merge ${DEFAULT_BRANCH} into ${BRANCH} by hand"
-          gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+          gh api --paginate "repos/${GH_REPO}/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100" \
             | jq -s -r --arg title "$title" '.[][] | select(.title == $title and .user.login == "github-actions[bot]" and (.pull_request | not)) | .number' \
             | while read -r number; do
                 gh api -X POST "repos/${GH_REPO}/issues/${number}/comments" --silent -f "body=${DEFAULT_BRANCH} is merged into ${BRANCH}. Run: ${RUN_URL}"

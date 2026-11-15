@@ -179,8 +179,9 @@ jobs:
 ```
 
 A repository with a [`next` branch](README.md#next-branch) calls
-`next-sync.yml` on each push to `main`. The issues permission lets it open and
-close the conflict issue when no `NOTION_TOKEN` secret exists:
+`next-sync.yml` on each push to `main`. The job must grant `issues: write`,
+which the sync uses to open and close the conflict issue when no `NOTION_TOKEN`
+secret exists:
 
 ```yaml
 name: Next sync

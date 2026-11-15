@@ -270,6 +270,10 @@ pull request would squash it, and the same conflict would come back.
 | `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the `next` ruleset lets push. |
 | `NOTION_TOKEN` (secret) | | Optional. Notion integration token allowed to read, insert and update content in the Tasks database. Without it, a conflict opens a GitHub issue. |
 
+The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
+called workflow cannot ask for more than its caller grants, so GitHub refuses
+to start the sync otherwise.
+
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge
 of `main` back into `next` keeps the next pull request's diff to the work done
