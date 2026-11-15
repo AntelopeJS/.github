@@ -38,6 +38,13 @@ export interface PackageSource {
   commits: Commit[];
 }
 
+/** A devDependency preview pin that a release keeps, with the reason it cannot move to a stable range. */
+export interface KeptPin {
+  name: string;
+  spec: string;
+  reason: string;
+}
+
 /** The release decision for one package. */
 export type Entry =
   | {
@@ -48,6 +55,7 @@ export type Entry =
       level: Level;
       reasons: string[];
       ranges: Record<string, string>;
+      kept: KeptPin[];
     }
   | { status: "unchanged"; source: PackageSource }
   | { status: "excluded"; source: PackageSource }
@@ -143,20 +151,25 @@ function dependenciesOf(manifest: Manifest): Dependency[] {
   );
 }
 
-function edgesOf(source: PackageSource, listed: ReadonlySet<string>): string[] {
+function edgesOf(source: PackageSource, targets: ReadonlySet<string>, runtimeOnly: boolean): string[] {
   return dependenciesOf(source.manifest)
     .filter(
       ({ field, name, spec }) =>
-        listed.has(name) &&
+        targets.has(name) &&
         name !== source.manifest.name &&
-        (field !== "devDependencies" || isPreviewSpec(spec)),
+        (field !== "devDependencies" || (!runtimeOnly && isPreviewSpec(spec))),
     )
     .map(({ name }) => name);
 }
 
-function components(sources: readonly PackageSource[]): PackageSource[][] {
-  const listed = new Set(sources.map((source) => source.manifest.name));
-  const edges = new Map(sources.map((source) => [source.manifest.name, edgesOf(source, listed)]));
+function components(sources: readonly PackageSource[], targets: ReadonlySet<string>, runtimeOnly: boolean): PackageSource[][] {
+  const members = new Set(sources.map((source) => source.manifest.name));
+  const edges = new Map(
+    sources.map((source) => [
+      source.manifest.name,
+      edgesOf(source, targets, runtimeOnly).filter((name) => members.has(name)),
+    ]),
+  );
   const visited = new Map<string, { index: number; low: number }>();
   const stack: string[] = [];
   const result: PackageSource[][] = [];
@@ -181,6 +194,13 @@ function components(sources: readonly PackageSource[]): PackageSource[][] {
     if (!visited.has(source.manifest.name)) visit(source.manifest.name);
   }
   return result;
+}
+
+function releaseOrder(sources: readonly PackageSource[], exclude: ReadonlySet<string>): PackageSource[][] {
+  const targets = new Set(sources.map((source) => source.manifest.name).filter((name) => !exclude.has(name)));
+  return components(sources, targets, false).flatMap((component) =>
+    component.length === 1 ? [component] : components(component, targets, true),
+  );
 }
 
 function highestLevel(commits: readonly Commit[]): Level | null {
@@ -220,11 +240,14 @@ function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome
 function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const refusals = new Set<string>();
   const ranges: Record<string, string> = {};
+  const kept: KeptPin[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
-    if (!isPreviewSpec(dependency.spec)) continue;
+    const { field, name, spec } = dependency;
+    if (!isPreviewSpec(spec)) continue;
     const outcome = resolvePin(dependency, context);
-    if ("range" in outcome) ranges[dependency.name] = outcome.range;
-    else refusals.add(`depends on preview ${dependency.name}@${dependency.spec}, ${outcome.reason}`);
+    if ("range" in outcome) ranges[name] = outcome.range;
+    else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
+    else refusals.add(`depends on preview ${name}@${spec}, ${outcome.reason}`);
   }
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
 
@@ -239,7 +262,7 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     source.stable === null
       ? source.manifest.version.replace(/-.*$/, "")
       : bumpVersion(source.stable, level);
-  return { status: "release", source, from: source.stable, to, level, reasons, ranges };
+  return { status: "release", source, from: source.stable, to, level, reasons, ranges, kept };
 }
 
 /** Computes the release plan of the sources: one entry per package, dependencies first. */
@@ -248,7 +271,7 @@ export function computePlan(sources: readonly PackageSource[], options: PlanOpti
   const resolved = new Map<string, Entry>();
   const listed = new Map(sources.map((source) => [source.manifest.name, source]));
   const context: Resolution = { listed, exclude, resolved, contains: options.contains };
-  for (const component of components(sources)) {
+  for (const component of releaseOrder(sources, exclude)) {
     const names = component.map((source) => source.manifest.name);
     for (const source of component) {
       const name = source.manifest.name;
@@ -300,6 +323,7 @@ function renderEntry(entry: Entry, position: number): string[] {
     ...Object.entries(entry.ranges).map(
       ([name, range]) => `     ${name} ${specOf(manifest, name)} -> ${range}`,
     ),
+    ...entry.kept.map(({ name, spec, reason }) => `     keeps devDependency ${name}@${spec}, ${reason}`),
   ];
 }
 

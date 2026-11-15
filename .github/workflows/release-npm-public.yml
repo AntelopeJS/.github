@@ -294,10 +294,12 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs')
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const previews = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies'].flatMap((field) =>
-            Object.entries(pkg[field] ?? {})
-              .filter(([, spec]) => /\d+\.\d+\.\d+-/.test(spec))
-              .map(([name, spec]) => `${field} ${name} ${spec}`),
+          const previewsOf = (field) => Object.entries(pkg[field] ?? {}).filter(([, spec]) => /\d+\.\d+\.\d+-/.test(spec))
+          for (const [name, spec] of previewsOf('devDependencies')) {
+            console.log(`::warning::The stable release keeps the devDependency preview ${name} ${spec}.`)
+          }
+          const previews = ['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
+            previewsOf(field).map(([name, spec]) => `${field} ${name} ${spec}`),
           )
           if (previews.length) {
             console.error(`A stable release cannot depend on a preview. Give each a stable range in dependency-ranges:\n${previews.join('\n')}`)

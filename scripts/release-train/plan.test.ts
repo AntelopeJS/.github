@@ -123,6 +123,7 @@ describe("computePlan", () => {
       level: "patch",
       reasons: ["replaces preview pins"],
       ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
+      kept: [],
     });
   });
 
@@ -179,15 +180,20 @@ describe("computePlan", () => {
     });
   });
 
-  test("a refusal cascades to every package pinning a preview of the refused one", () => {
-    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase], ["@antelopejs/interface-database"]);
+  test("a refusal cascades to every package pinning a preview of the refused one at runtime", () => {
+    const app = source("app", "2.0.0", ["fix: x"], { peerDependencies: { "@antelopejs/mongodb": "1.8.7-next.41.gabc1234" } });
+    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase, app], ["@antelopejs/interface-database"]);
     assert.deepEqual(
       entries.map((candidate) => candidate.status),
-      ["excluded", "refused", "refused"],
+      ["excluded", "refused", "release", "refused"],
     );
     const dms = entry(entries, "dms-database");
-    assert.deepEqual(dms.status === "refused" && dms.reasons, [
-      "depends on preview @antelopejs/mongodb@1.8.7-next.40.gabc1234, which is refused",
+    assert.deepEqual(dms.status === "release" && dms.kept, [
+      { name: "@antelopejs/mongodb", spec: "1.8.7-next.40.gabc1234", reason: "which is refused" },
+    ]);
+    const refused = entry(entries, "app");
+    assert.deepEqual(refused.status === "refused" && refused.reasons, [
+      "depends on preview @antelopejs/mongodb@1.8.7-next.41.gabc1234, which is refused",
     ]);
   });
 
@@ -197,14 +203,65 @@ describe("computePlan", () => {
     assert.ok(entries.every((candidate) => candidate.status === "release"));
   });
 
-  test("refuses every package of a real cycle and names it", () => {
+  test("refuses every package of a cycle on runtime dependencies and names it", () => {
     const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
-    const b = source("b", "0.1.0", ["fix: x"], { devDependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234" } });
+    const b = source("b", "0.1.0", ["fix: x"], { peerDependencies: { "@antelopejs/a": ">=0.1.0 <0.2.0" } });
     const c = source("c", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/a": ">=0.1.0 <0.2.0" } });
     const { entries } = plan([c, a, b]);
     const reason = "is in a dependency cycle between @antelopejs/a, @antelopejs/b";
     assert.deepEqual(entry(entries, "a"), { status: "refused", source: a, reasons: [reason] });
     assert.deepEqual(entry(entries, "b"), { status: "refused", source: b, reasons: [reason] });
+    assert.equal(entry(entries, "c").status, "release");
+  });
+
+  test("a devDependency preview on a package that releases after it is kept and blocks nothing", () => {
+    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
+    const b = source("b", "0.1.0", ["fix: y"], {
+      devDependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234", "@antelopejs/z": "0.3.0-next.2.gabc1234" },
+    });
+    const result = plan([a, b]);
+    assert.deepEqual(names(result.entries), ["b", "a"]);
+    assert.deepEqual(entry(result.entries, "b"), {
+      status: "release",
+      source: b,
+      from: "0.1.0",
+      to: "0.1.1",
+      level: "patch",
+      reasons: [],
+      ranges: {},
+      kept: [
+        { name: "@antelopejs/a", spec: "0.1.1-next.1.gabc1234", reason: "which releases after it" },
+        { name: "@antelopejs/z", spec: "0.3.0-next.2.gabc1234", reason: "which this train does not list" },
+      ],
+    });
+    assert.equal(entry(result.entries, "a").status, "release");
+    assert.equal(
+      renderPlan(result),
+      [
+        "Release plan from main, 2 packages: 2 to release",
+        "",
+        "1. @antelopejs/b 0.1.0 -> 0.1.1 (patch)  AntelopeJS/b",
+        "     fix: y",
+        "     keeps devDependency @antelopejs/a@0.1.1-next.1.gabc1234, which releases after it",
+        "     keeps devDependency @antelopejs/z@0.3.0-next.2.gabc1234, which this train does not list",
+        "2. @antelopejs/a 0.1.0 -> 0.1.1 (patch)  AntelopeJS/a",
+        "     fix: x",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("an excluded package is in no cycle, and its dependents read it as not in this release", () => {
+    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
+    const b = source("b", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234" } });
+    const c = source("c", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
+    const { entries } = plan([a, b, c], ["@antelopejs/a"]);
+    assert.deepEqual(entry(entries, "a"), { status: "excluded", source: a });
+    assert.deepEqual(entry(entries, "b"), {
+      status: "refused",
+      source: b,
+      reasons: ["depends on preview @antelopejs/a@0.1.1-next.1.gabc1234, which is not in this release"],
+    });
     assert.equal(entry(entries, "c").status, "release");
   });
 

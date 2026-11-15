@@ -29,6 +29,7 @@ function runBlock(text: string, step: string): string {
 
 interface StepResult {
   status: number;
+  stdout: string;
   stderr: string;
   outputs: string;
 }
@@ -45,7 +46,7 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
     encoding: "utf8",
     env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output, ...env },
   });
-  return { status: result.status ?? 1, stderr: result.stderr, outputs: readFileSync(output, "utf8") };
+  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readFileSync(output, "utf8") };
 }
 
 function packageDirectory(name: string, manifest: object): string {
@@ -98,10 +99,11 @@ const previewSuffix = `next.3.g${git(checkout, "rev-parse", "--short=7", "HEAD")
 
 for (const { file, text } of workflows) {
   describe(file, () => {
-    test("Refuse preview dependencies fails on every preview spec and passes a stable manifest", () => {
+    test("Refuse preview dependencies fails on every runtime preview spec and warns on a devDependency one", () => {
       const pinned = packageDirectory(`${file}-pinned`, {
         name: "@antelopejs/x",
         dependencies: { "@antelopejs/a": "0.5.0-next.12.g3f9a2c1", "@antelopejs/b": ">=1.0.0 <1.1.0" },
+        optionalDependencies: { "@antelopejs/d": "1.0.1-next.3.gabc1234" },
         devDependencies: { "@antelopejs/c": "^2.0.0-beta.1" },
       });
       const refused = runStep(text, "Refuse preview dependencies", pinned);
@@ -109,10 +111,18 @@ for (const { file, text } of workflows) {
       assert.equal(
         refused.stderr,
         "A stable release cannot depend on a preview. Give each a stable range in dependency-ranges:\n" +
-          "dependencies @antelopejs/a 0.5.0-next.12.g3f9a2c1\ndevDependencies @antelopejs/c ^2.0.0-beta.1\n",
+          "dependencies @antelopejs/a 0.5.0-next.12.g3f9a2c1\noptionalDependencies @antelopejs/d 1.0.1-next.3.gabc1234\n",
       );
+      const dev = packageDirectory(`${file}-dev`, {
+        name: "@antelopejs/x",
+        dependencies: { "@antelopejs/b": "~1.8.6" },
+        devDependencies: { "@antelopejs/c": "^2.0.0-beta.1" },
+      });
+      const warned = runStep(text, "Refuse preview dependencies", dev);
+      assert.deepEqual([warned.status, warned.stdout], [0, "::warning::The stable release keeps the devDependency preview @antelopejs/c ^2.0.0-beta.1.\n"]);
       const clean = packageDirectory(`${file}-clean`, { name: "@antelopejs/x", dependencies: { "@antelopejs/b": "~1.8.6" } });
-      assert.equal(runStep(text, "Refuse preview dependencies", clean).status, 0);
+      const passed = runStep(text, "Refuse preview dependencies", clean);
+      assert.deepEqual([passed.status, passed.stdout], [0, ""]);
     });
 
     test("Apply dependency ranges rewrites only the preview specs of a name and names the commit", () => {
