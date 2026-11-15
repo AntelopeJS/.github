@@ -98,7 +98,7 @@ the default branch.
 
 ## Shared CI and maintenance workflows
 
-Repositories call `ci-node.yml`, `stale.yml`, and `triage.yml` through the same moving `v1`
+Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
 tag as the [release workflows](#reusable-release-workflows), so the same
 backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`,
 with the [Renovate sync](README.md#renovate-sync) in its own job so that only
@@ -173,45 +173,6 @@ jobs:
       issues: write
       pull-requests: write
     uses: AntelopeJS/.github/.github/workflows/stale.yml@v1
-```
-
-Call `triage.yml` when an issue is opened, so every new issue gets the
-`needs-triage` label:
-
-```yaml
-name: Issue triage
-on:
-  issues:
-    types: [opened]
-permissions: {}
-jobs:
-  triage:
-    permissions:
-      issues: write
-    uses: AntelopeJS/.github/.github/workflows/triage.yml@v1
-```
-
-A repository that commits `antelope-lock/` calls `modules-update.yml` once a
-day, and on demand. A module passes the command that records its locks, as
-described in the [module locks update](README.md#module-locks-update); a project
-omits `with`:
-
-```yaml
-name: Modules update
-on:
-  schedule:
-    - cron: "23 5 * * *"
-  workflow_dispatch:
-permissions: {}
-jobs:
-  modules-update:
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: write
-    uses: AntelopeJS/.github/.github/workflows/modules-update.yml@v1
-    with:
-      refresh-command: rm -rf antelope-lock && pnpm run test
 ```
 
 Use the shared Renovate preset in `renovate.json5`:
