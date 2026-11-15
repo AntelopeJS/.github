@@ -1,181 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { after, before, describe, test } from "node:test";
-import type { RunResult, System } from "./system.ts";
+import { describe, test } from "node:test";
+import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short } from "./fixtures.ts";
 import { main } from "./train.ts";
-
-const root = mkdtempSync(join(tmpdir(), "release-train-"));
-const identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
-
-function git(repository: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", repository, ...identity, ...args], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim();
-}
-
-function commit(repository: string, message: string, files: Record<string, unknown>): string {
-  for (const [file, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(repository, file)), { recursive: true });
-    writeFileSync(join(repository, file), typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`);
-  }
-  git(repository, "add", "--all");
-  git(repository, "commit", "--quiet", "--allow-empty", "-m", message);
-  return git(repository, "rev-parse", "HEAD");
-}
-
-function repository(name: string, build: (path: string) => void): string {
-  const path = join(root, name);
-  mkdirSync(path);
-  git(path, "init", "--quiet", "--initial-branch=main");
-  git(path, "remote", "add", "origin", `https://github.com/AntelopeJS/${name}.git`);
-  build(path);
-  git(path, "update-ref", "refs/remotes/origin/main", "HEAD");
-  git(path, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
-  return path;
-}
-
-function manifest(name: string, version: string, fields: Record<string, Record<string, string>> = {}) {
-  return { name: `@antelopejs/${name}`, version, ...fields };
-}
-
-let interfaceDatabase = "";
-let mongodb = "";
-let dmsDatabase = "";
-let dms = "";
-let cursorCommit = "";
-let feedCommit = "";
-let laterCommit = "";
-const pulls: Record<string, unknown[]> = {};
-
-before(() => {
-  interfaceDatabase = repository("interface-database", (path) => {
-    commit(path, "feat: first", { "package.json": manifest("interface-database", "0.4.2", { devDependencies: { "@antelopejs/mongodb": "~1.8.6" } }) });
-    git(path, "tag", "v0.4.2");
-    cursorCommit = commit(path, "feat(query)!: drop the legacy cursor", { "src/index.ts": "export {};\n" });
-    commit(path, "ci: cache the store", { "ci.txt": "x\n" });
-    git(path, "branch", "next");
-  });
-  mongodb = repository("mongodb", (path) => {
-    commit(path, "feat: first", { "package.json": manifest("mongodb", "1.8.5") });
-    commit(path, "chore(release): v1.8.6", { "package.json": manifest("mongodb", "1.8.6") });
-    git(path, "tag", "v1.8.6");
-    git(path, "checkout", "--quiet", "-b", "next");
-    feedCommit = commit(path, "fix(database): close the change feed", { "src/feed.ts": "export {};\n" });
-    laterCommit = commit(path, "fix(database): retry the change feed", { "src/retry.ts": "export {};\n" });
-    git(path, "checkout", "--quiet", "main");
-    const squash = commit(path, "fix(database): close the change feed (#7)", {
-      "src/feed.ts": "export {};\n",
-      "package.json": manifest("mongodb", "1.8.6", { dependencies: { "@antelopejs/interface-database": `0.4.3-next.12.g${cursorCommit.slice(0, 7)}` } }),
-    });
-    commit(path, "release: v1.8.7-next.0", { "notes.txt": "x\n" });
-    pulls["AntelopeJS/mongodb"] = [{ number: 7, mergeCommit: { oid: squash }, headRefOid: feedCommit }];
-  });
-  dmsDatabase = repository("dms-database", (path) => {
-    commit(path, "feat: first", { "package.json": manifest("dms-database", "0.5.3"), ".release-it.json": { git: { tagName: "release-${version}" } } });
-    git(path, "tag", "release-0.5.3");
-    git(path, "tag", "v9.9.9");
-    commit(path, "chore: pin the mongodb preview", {
-      "package.json": manifest("dms-database", "0.5.3", { devDependencies: { "@antelopejs/mongodb": `1.8.7-next.40.g${feedCommit.slice(0, 7)}` } }),
-    });
-  });
-  dms = repository("dms", (path) => {
-    commit(path, "feat: first", { "package.json": manifest("dms-root", "1.0.0"), "packages/automation/package.json": manifest("dms-automation", "0.11.1") });
-    git(path, "tag", "v0.11.1");
-    commit(path, "feat: root only", { "root.txt": "x\n" });
-    commit(path, "perf(automation): faster", { "packages/automation/index.ts": "export {};\n" });
-  });
-});
-
-after(() => rmSync(root, { recursive: true, force: true }));
-
-interface Run {
-  id: number;
-  repo: string;
-  branch: string;
-  views: number;
-}
-
-function compare(range: string): string {
-  const [, owner = "", repo = "", base = "", head = ""] = /^repos\/([^/]+)\/([^/]+)\/compare\/(\w+)\.\.\.(\w+)$/.exec(range) ?? [];
-  const ancestor = spawnSync("git", ["-C", join(root, repo), "merge-base", "--is-ancestor", base, head]);
-  assert.equal(owner, "AntelopeJS");
-  return base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged";
-}
-
-function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?: boolean } = {}) {
-  const calls: string[][] = [];
-  const runs: Run[] = [];
-  let out = "";
-  let err = "";
-  const answer = (stdout: string, status = 0): RunResult => ({ status, stdout, stderr: status === 0 ? "" : "failed" });
-  const flag = (args: readonly string[], name: string): string => args[args.indexOf(name) + 1] ?? "";
-  const system: System = {
-    run: (command, args) => {
-      if (command === "git") {
-        const result = spawnSync("git", args, { encoding: "utf8" });
-        return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
-      }
-      calls.push([...args]);
-      if (gh.down) return answer("", 1);
-      if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
-      if (args[0] === "api") return answer(`${compare(args[1] ?? "")}\n`);
-      const repo = flag(args, "--repo");
-      if (args[0] === "workflow") {
-        if (conclusions[repo] === "rejected") return answer("", 1);
-        runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
-        return answer("");
-      }
-      if (args[0] === "run" && args[1] === "list") {
-        const listed = runs.filter((run) => run.repo === repo).map((run) => ({ databaseId: run.id, headBranch: run.branch }));
-        return answer(JSON.stringify(listed));
-      }
-      const run = runs.find((candidate) => String(candidate.id) === args[2]);
-      assert.ok(run, `no run ${args[2]}`);
-      run.views += 1;
-      const status = run.views < 2 ? "in_progress" : "completed";
-      const conclusion = status === "completed" ? (conclusions[repo] ?? "success") : "";
-      return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
-    },
-    sleep: () => {},
-    out: (text) => {
-      out += text;
-    },
-    err: (text) => {
-      err += `${text}\n`;
-    },
-    cacheDirectory: join(root, "cache"),
-  };
-  return { system, calls, output: () => out, errors: () => err };
-}
-
-function dispatches(calls: string[][]): string[][] {
-  return calls
-    .filter((args) => args[0] === "workflow")
-    .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
-}
-
-function short(sha: string): string {
-  return sha.slice(0, 7);
-}
-
-const expectedPlan = (): string => [
-  "Release plan from main, 4 packages: 4 to release",
-  "",
-  "1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database",
-  "     feat(query)!: drop the legacy cursor",
-  "2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb",
-  "     fix(database): close the change feed (#7)",
-  `     @antelopejs/interface-database 0.4.3-next.12.g${short(cursorCommit)} -> >=0.5.0 <0.6.0`,
-  "3. @antelopejs/dms-database 0.5.3 -> 0.5.4 (patch)  AntelopeJS/dms-database",
-  "     replaces preview pins",
-  `     @antelopejs/mongodb 1.8.7-next.40.g${short(feedCommit)} -> >=1.8.7 <1.9.0`,
-  "4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation",
-  "     perf(automation): faster",
-  "",
-].join("\n");
 
 describe("plan", () => {
   test("reads each checkout at its default branch and prints the plan", () => {
@@ -198,7 +24,7 @@ describe("plan", () => {
         "1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database",
         "     feat(query)!: drop the legacy cursor",
         "2. @antelopejs/dms-database refused  AntelopeJS/dms-database",
-        `     depends on preview @antelopejs/mongodb@1.8.7-next.40.g${short(feedCommit)}, which is not in this release`,
+        `     depends on preview @antelopejs/mongodb@1.8.7-next.40.g${short(commits.feed)}, which is not in this release`,
         "Not now: @antelopejs/mongodb",
         "",
       ].join("\n"),
@@ -253,7 +79,7 @@ describe("plan", () => {
       git(path, "tag", "v0.1.0");
       commit(path, "chore: pin the mongodb previews", {
         "package.json": manifest("pinning", "0.1.0", {
-          dependencies: { "@antelopejs/mongodb": `1.8.7-next.41.g${short(laterCommit)}` },
+          dependencies: { "@antelopejs/mongodb": `1.8.7-next.41.g${short(commits.later)}` },
           peerDependencies: { "@antelopejs/mongodb": "1.8.7-next.9.gabc1234" },
         }),
       });
@@ -266,7 +92,7 @@ describe("plan", () => {
     };
     const unknown = "     depends on preview @antelopejs/mongodb@1.8.7-next.9.gabc1234, whose main does not contain commit abc1234";
     assert.deepEqual(reasons([]), [
-      `     depends on preview @antelopejs/mongodb@1.8.7-next.41.g${short(laterCommit)}, whose main does not contain commit ${short(laterCommit)}`,
+      `     depends on preview @antelopejs/mongodb@1.8.7-next.41.g${short(commits.later)}, whose main does not contain commit ${short(commits.later)}`,
       unknown,
     ]);
     assert.deepEqual(reasons(["--ref", "next"]), [unknown.replace("main", "next")]);
@@ -277,66 +103,7 @@ describe("plan", () => {
     assert.equal(main(["plan", interfaceDatabase, mongodb, dmsDatabase], system), 0);
     assert.match(
       output(),
-      new RegExp(`\n     depends on preview @antelopejs/mongodb@1\\.8\\.7-next\\.40\\.g${short(feedCommit)}, whose main does not contain commit ${short(feedCommit)}\n`),
+      new RegExp(`\n     depends on preview @antelopejs/mongodb@1\\.8\\.7-next\\.40\\.g${short(commits.feed)}, whose main does not contain commit ${short(commits.feed)}\n`),
     );
-  });
-});
-
-describe("go", () => {
-  test("dispatches each release in dependency order and waits for each run", () => {
-    const { system, output, calls } = fakeSystem();
-    const status = main(["go", dmsDatabase, mongodb, interfaceDatabase, `${dms}:packages/automation`], system);
-    assert.equal(status, 0);
-    assert.deepEqual(dispatches(calls), [
-      ["AntelopeJS/interface-database", "release-version=0.5.0", "dependency-ranges={}"],
-      ["AntelopeJS/mongodb", "release-version=1.8.7", 'dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}'],
-      ["AntelopeJS/dms-database", "release-version=0.5.4", 'dependency-ranges={"@antelopejs/mongodb":">=1.8.7 <1.9.0"}'],
-      ["AntelopeJS/dms", "release-version=0.11.2", "dependency-ranges={}", "package-directory=packages/automation"],
-    ]);
-    assert.ok(calls.filter((args) => args[0] === "workflow").every((args) => args[6] === "main"));
-    assert.equal(
-      output(),
-      `${expectedPlan()}published @antelopejs/interface-database 0.5.0  https://github.com/AntelopeJS/interface-database/actions/runs/100\n` +
-        "published @antelopejs/mongodb 1.8.7  https://github.com/AntelopeJS/mongodb/actions/runs/101\n" +
-        "published @antelopejs/dms-database 0.5.4  https://github.com/AntelopeJS/dms-database/actions/runs/102\n" +
-        "published @antelopejs/dms-automation 0.11.2  https://github.com/AntelopeJS/dms/actions/runs/103\n",
-    );
-  });
-
-  test("stops at the first run that does not succeed and names what is left", () => {
-    const { system, calls, errors } = fakeSystem({ "AntelopeJS/mongodb": "failure" });
-    const status = main(["go", interfaceDatabase, mongodb, dmsDatabase], system);
-    assert.equal(status, 1);
-    assert.deepEqual(
-      dispatches(calls).map(([repo]) => repo),
-      ["AntelopeJS/interface-database", "AntelopeJS/mongodb"],
-    );
-    assert.equal(
-      errors(),
-      [
-        "failed @antelopejs/mongodb 1.8.7 (failure)  https://github.com/AntelopeJS/mongodb/actions/runs/101",
-        "Published: @antelopejs/interface-database 0.5.0.",
-        "Not published: @antelopejs/mongodb 1.8.7, @antelopejs/dms-database 0.5.4.",
-        "Fix the failure, then run go again to continue.",
-        "",
-      ].join("\n"),
-    );
-  });
-
-  test("a dispatch that fails stops the train the same way", () => {
-    const { system, calls, errors } = fakeSystem({ "AntelopeJS/interface-database": "rejected" });
-    assert.equal(main(["go", interfaceDatabase, mongodb], system), 1);
-    assert.deepEqual(
-      calls.filter((args) => args[0] === "workflow").map((args) => args[4]),
-      ["AntelopeJS/interface-database"],
-    );
-    assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
-  });
-
-  test("refuses --ref and dispatches nothing", () => {
-    const { system, calls, errors } = fakeSystem();
-    assert.equal(main(["go", "--ref", "next", mongodb], system), 1);
-    assert.equal(errors(), "go always releases the default branch, so it takes no --ref.\n");
-    assert.deepEqual(calls, []);
   });
 });
