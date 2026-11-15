@@ -600,11 +600,13 @@ jobs:
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
-          if (config.npm?.publish !== false && RESUME !== 'true') {
-            const hooks = config.hooks ?? {}
-            config.hooks = { ...hooks, 'before:npm:release': [hooks['before:npm:release'] ?? []].flat().concat(`bash '${RUNNER_TEMP}/publish.sh' latest`) }
+          if (config.npm !== false) {
+            if (config.npm?.publish !== false && RESUME !== 'true') {
+              const hooks = config.hooks ?? {}
+              config.hooks = { ...hooks, 'before:npm:release': [hooks['before:npm:release'] ?? []].flat().concat(`bash '${RUNNER_TEMP}/publish.sh' latest`) }
+            }
+            config.npm = { ...config.npm, publish: false }
           }
-          config.npm = { ...config.npm, publish: false }
           fs.writeFileSync(`${RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
           NODE
 

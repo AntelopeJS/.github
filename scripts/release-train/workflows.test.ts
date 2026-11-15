@@ -862,7 +862,12 @@ for (const { file, text } of workflows) {
         git: { requireCleanWorkingDir: false },
         github: { releaseNotes: notes },
       });
-      assert.deepEqual(config("own-hook", { hooks: { "before:npm:release": "echo before" } }, ""), {
+      assert.deepEqual(config("no-npm", { npm: false }, ""), {
+        npm: false,
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: notes },
+      });
+      assert.deepEqual(config("own-hook",{ hooks: { "before:npm:release": "echo before" } }, ""), {
         hooks: { "before:npm:release": ["echo before", `bash '${join(root, "publish.sh")}' latest`] },
         git: { requireCleanWorkingDir: false },
         github: { releaseNotes: notes },
