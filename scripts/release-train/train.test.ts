@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import { main, type RunResult, type System } from "./train.ts";
+import type { RunResult, System } from "./system.ts";
+import { main } from "./train.ts";
 
 const root = mkdtempSync(join(tmpdir(), "release-train-"));
 const identity = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
