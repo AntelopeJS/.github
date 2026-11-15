@@ -1,0 +1,238 @@
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import {
+  commitLevel,
+  computePlan,
+  renderPlan,
+  type Commit,
+  type Entry,
+  type Manifest,
+  type PackageSource,
+} from "./plan.ts";
+
+function commit(subject: string, body = ""): Commit {
+  return { sha: subject.length.toString(16).padStart(7, "0"), subject, level: commitLevel(subject, body) };
+}
+
+function source(
+  name: string,
+  stable: string | null,
+  subjects: string[],
+  fields: Partial<Manifest> = {},
+): PackageSource {
+  return {
+    slug: `AntelopeJS/${name}`,
+    directory: ".",
+    manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
+    stable,
+    commits: subjects.map((subject) => commit(subject)),
+  };
+}
+
+function plan(sources: PackageSource[], exclude: string[] = [], npm: Record<string, string> = {}) {
+  return computePlan(sources, { ref: "main", exclude, latestStable: (name) => npm[name] ?? null });
+}
+
+function entry(entries: Entry[], name: string): Entry {
+  const found = entries.find((candidate) => candidate.source.manifest.name === `@antelopejs/${name}`);
+  assert.ok(found, `no entry for ${name}`);
+  return found;
+}
+
+function names(entries: Entry[]): string[] {
+  return entries.map((candidate) => candidate.source.manifest.name.replace("@antelopejs/", ""));
+}
+
+const interfaceDatabase = source("interface-database", "0.4.2", ["feat(query)!: drop the legacy cursor"], {
+  devDependencies: { "@antelopejs/mongodb": "~1.8.6" },
+});
+const mongodb = source("mongodb", "1.8.6", ["fix(database): close the change feed"], {
+  dependencies: { "@antelopejs/interface-database": "0.5.0-next.12.g3f9a2c1" },
+});
+const dmsDatabase = source("dms-database", "0.5.3", ["fix(data): translate refusals"], {
+  dependencies: { "@antelopejs/interface-database": ">=0.4.0 <0.5.0" },
+  devDependencies: { "@antelopejs/mongodb": "1.8.7-next.40.gabc1234" },
+});
+
+describe("commitLevel", () => {
+  test("a breaking change is a minor, any other releasable type a patch", () => {
+    assert.equal(commitLevel("feat(query)!: drop the cursor", ""), "minor");
+    assert.equal(commitLevel("fix: x", "Details.\n\nBREAKING CHANGE: the cursor is gone"), "minor");
+    assert.equal(commitLevel("refactor: x", "BREAKING-CHANGE: renamed"), "minor");
+    for (const type of ["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]) {
+      assert.equal(commitLevel(`${type}(scope): x`, ""), "patch", type);
+    }
+  });
+
+  test("chores, unparsed subjects and merges release nothing", () => {
+    for (const subject of ["chore: x", "ci(release): x", "test: x", "style: x", "Update README", "Merge pull request #12 from a/b"]) {
+      assert.equal(commitLevel(subject, ""), null, subject);
+    }
+  });
+});
+
+describe("computePlan", () => {
+  test("orders dependencies before their dependents whatever the input order", () => {
+    const { entries } = plan([dmsDatabase, mongodb, interfaceDatabase]);
+    assert.deepEqual(names(entries), ["interface-database", "mongodb", "dms-database"]);
+  });
+
+  test("bumps a breaking change to the next minor and anything else to the next patch", () => {
+    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase]);
+    assert.deepEqual(
+      entries.map((candidate) =>
+        candidate.status === "release" ? [candidate.from, candidate.to, candidate.level] : candidate.status,
+      ),
+      [
+        ["0.4.2", "0.5.0", "minor"],
+        ["1.8.6", "1.8.7", "patch"],
+        ["0.5.3", "0.5.4", "patch"],
+      ],
+    );
+  });
+
+  test("never bumps the major, and a first release ships the manifest version", () => {
+    const stable = source("core", "1.8.6", ["feat!: break everything"]);
+    const fresh = source("fresh", null, ["feat: start"], { version: "0.2.0-next.1.gabc1234" });
+    const versions = plan([stable, fresh]).entries.map((candidate) =>
+      candidate.status === "release" ? [candidate.from, candidate.to] : candidate.status,
+    );
+    assert.deepEqual(versions, [
+      ["1.8.6", "1.9.0"],
+      [null, "0.2.0"],
+    ]);
+  });
+
+  test("replaces a preview pin with the range of the version planned for its dependency", () => {
+    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase]);
+    const mongo = entry(entries, "mongodb");
+    const dms = entry(entries, "dms-database");
+    assert.equal(mongo.status === "release" && mongo.ranges["@antelopejs/interface-database"], ">=0.5.0 <0.6.0");
+    assert.equal(dms.status === "release" && dms.ranges["@antelopejs/mongodb"], ">=1.8.7 <1.9.0");
+  });
+
+  test("a pin on an unlisted package moves to its latest stable", () => {
+    const pinned = source("dms", "0.20.2", [], { dependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234" } });
+    const { entries } = plan([pinned], [], { "@antelopejs/x": "0.2.1" });
+    assert.deepEqual(entry(entries, "dms"), {
+      status: "release",
+      source: pinned,
+      from: "0.20.2",
+      to: "0.20.3",
+      level: "patch",
+      reasons: ["replaces preview pins"],
+      ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
+    });
+  });
+
+  test("refuses a package whose preview dependency is left out or has no stable release", () => {
+    const excluded = plan([interfaceDatabase, mongodb], ["@antelopejs/interface-database"]).entries;
+    assert.equal(entry(excluded, "interface-database").status, "excluded");
+    assert.deepEqual(entry(excluded, "mongodb"), {
+      status: "refused",
+      source: mongodb,
+      reasons: ["depends on preview @antelopejs/interface-database@0.5.0-next.12.g3f9a2c1, which is not in this release"],
+    });
+
+    const pinned = source("dms", "0.20.2", ["fix: x"], { peerDependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234" } });
+    assert.deepEqual(entry(plan([pinned]).entries, "dms"), {
+      status: "refused",
+      source: pinned,
+      reasons: ["depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release"],
+    });
+  });
+
+  test("refuses a pin whose stable is older than the preview, or that is not exact", () => {
+    const pinned = source("dms", "0.20.2", ["fix: x"], {
+      dependencies: { "@antelopejs/x": "0.3.0-next.1.gabc1234" },
+      optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
+    });
+    const refused = entry(plan([pinned], [], { "@antelopejs/x": "0.2.9", "@antelopejs/y": "0.1.0" }).entries, "dms");
+    assert.deepEqual(refused.status === "refused" && refused.reasons, [
+      "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
+      "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
+    ]);
+  });
+
+  test("a refusal cascades to every package pinning a preview of the refused one", () => {
+    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase], ["@antelopejs/interface-database"]);
+    assert.deepEqual(
+      entries.map((candidate) => candidate.status),
+      ["excluded", "refused", "refused"],
+    );
+    const dms = entry(entries, "dms-database");
+    assert.deepEqual(dms.status === "refused" && dms.reasons, [
+      "depends on preview @antelopejs/mongodb@1.8.7-next.40.gabc1234, which is refused",
+    ]);
+  });
+
+  test("a stable dev dependency back on a dependent is no cycle", () => {
+    const { entries } = plan([interfaceDatabase, mongodb]);
+    assert.deepEqual(names(entries), ["interface-database", "mongodb"]);
+    assert.ok(entries.every((candidate) => candidate.status === "release"));
+  });
+
+  test("refuses every package of a real cycle and names it", () => {
+    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
+    const b = source("b", "0.1.0", ["fix: x"], { devDependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234" } });
+    const c = source("c", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/a": ">=0.1.0 <0.2.0" } });
+    const { entries } = plan([c, a, b]);
+    const reason = "is in a dependency cycle between @antelopejs/a, @antelopejs/b";
+    assert.deepEqual(entry(entries, "a"), { status: "refused", source: a, reasons: [reason] });
+    assert.deepEqual(entry(entries, "b"), { status: "refused", source: b, reasons: [reason] });
+    assert.equal(entry(entries, "c").status, "release");
+  });
+
+  test("a package with no releasable commit and no preview pin is unchanged", () => {
+    const quiet = source("quiet", "0.3.0", ["chore: tidy", "ci: cache", "test: cover"]);
+    assert.deepEqual(plan([quiet]).entries, [{ status: "unchanged", source: quiet }]);
+  });
+});
+
+describe("renderPlan", () => {
+  test("lists each release and refusal in order, then the unchanged and the left out", () => {
+    const dms = source("dms-database", "0.5.3", ["fix: x"], {
+      dependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234" },
+    });
+    const nested = { ...source("dms-automation", "0.11.1", ["perf: faster"]), slug: "AntelopeJS/dms", directory: "packages/automation" };
+    const text = renderPlan(
+      plan(
+        [
+          interfaceDatabase,
+          { ...mongodb, commits: [commit("fix(database): close the change feed"), commit("chore: tidy")] },
+          dms,
+          nested,
+          source("foo", "1.0.0", ["test: x"]),
+          source("bar", "1.0.0", ["fix: y"]),
+        ],
+        ["@antelopejs/bar"],
+      ),
+    );
+    assert.equal(
+      text,
+      [
+        "Release plan from main, 4 packages: 3 to release, 1 refused",
+        "",
+        "1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database",
+        "     feat(query)!: drop the legacy cursor",
+        "2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb",
+        "     fix(database): close the change feed",
+        "     @antelopejs/interface-database 0.5.0-next.12.g3f9a2c1 -> >=0.5.0 <0.6.0",
+        "3. @antelopejs/dms-database refused  AntelopeJS/dms-database",
+        "     depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release",
+        "4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation",
+        "     perf: faster",
+        "Unchanged: @antelopejs/foo",
+        "Not now: @antelopejs/bar",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("says so when nothing is to release", () => {
+    assert.equal(
+      renderPlan(plan([source("foo", "1.0.0", [])])),
+      "Release plan from main, nothing to release\n\nUnchanged: @antelopejs/foo\n",
+    );
+  });
+});
