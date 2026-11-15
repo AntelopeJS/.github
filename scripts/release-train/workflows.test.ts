@@ -537,6 +537,7 @@ for (const { file, text } of workflows) {
         "packages/interface-y/.release-it.json": "{}\n",
         "packages/interface-z/package.json": manifest("@antelopejs/interface-z", "0.2.0"),
         "packages/interface-z/.release-it.json": "{}\n",
+        "packages/x/test/fixture/package.json": manifest("@antelopejs/interface-x", "0.0.0"),
         "packages/x/package.json": manifest("@antelopejs/x", "0.12.1", {
           "@antelopejs/interface-x": "workspace:^",
           "@antelopejs/interface-y": "workspace:^",
@@ -568,17 +569,22 @@ for (const { file, text } of workflows) {
       mkdirSync(registry);
       writeFileSync(
         join(registry, "npm"),
-        `#!/bin/sh\nif [ "$1" = view ]; then awk -F '\\t' -v key="$2 $3" '$1 == key { print $2; found = 1 } END { exit !found }' "$FAKE_VIEWS" && exit 0; echo "npm error code E404" >&2; exit 1; fi\nexec '${realNpm}' "$@"\n`,
+        `#!/bin/sh\nif [ "$1" = view ] && [ "$2 $3" = "$FAKE_DOWN" ]; then echo "npm error code E500" >&2; exit 1; fi\nif [ "$1" = view ]; then awk -F '\\t' -v key="$2 $3" '$1 == key { print $2; found = 1 } END { exit !found }' "$FAKE_VIEWS" && exit 0; echo "npm error code E404" >&2; exit 1; fi\nexec '${realNpm}' "$@"\n`,
       );
       chmodSync(join(registry, "npm"), 0o755);
       const suffix = `next.3.g${sha.slice(0, 7)}`;
-      const resolved = runStep(text, "Resolve release version", join(directory, "packages", "x"), {
-        PATH: `${registry}:${process.env.PATH ?? ""}`,
-        MODE: "preview",
-        GITHUB_SHA: sha,
-        FAKE_VIEWS: views,
-        ...hermeticGit,
-      });
+      const resolve = (env: Record<string, string> = {}) =>
+        runStep(text, "Resolve release version", join(directory, "packages", "x"), {
+          PATH: `${registry}:${process.env.PATH ?? ""}`,
+          MODE: "preview",
+          GITHUB_SHA: sha,
+          FAKE_VIEWS: views,
+          ...hermeticGit,
+          ...env,
+        });
+      const down = resolve({ FAKE_DOWN: "@antelopejs/interface-x version" });
+      assert.deepEqual([down.status, down.outputs], [1, ""]);
+      const resolved = resolve();
       assert.equal(resolved.status, 0, resolved.stderr);
       const pins = `{"@antelopejs/interface-x":"0.10.1-${suffix}","@antelopejs/interface-z":"0.2.1-next.2.g1111111"}`;
       assert.equal(resolved.outputs, `pins=${pins}\nversion=0.12.2-${suffix}\n`);

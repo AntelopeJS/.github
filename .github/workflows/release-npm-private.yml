@@ -257,6 +257,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
+          shopt -s inherit_errexit
           latest_of() {
             if ! npm view "$1" version 2>"$RUNNER_TEMP/npm-view.log" && ! grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
               cat "$RUNNER_TEMP/npm-view.log" >&2
@@ -319,13 +320,13 @@ jobs:
             }
           }
           const files = execFileSync('git', ['ls-files', '-z', '--', ':(glob)**/package.json'], { cwd: top, encoding: 'utf8' }).split('\0').filter(Boolean)
-          const directories = new Map(files.map((file) => [nameOf(file), path.dirname(file)]))
+          const directories = new Map(files.filter((file) => fs.existsSync(path.join(top, path.dirname(file), '.release-it.json'))).map((file) => [nameOf(file), path.dirname(file)]))
           const siblings = new Set(['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
             Object.entries(pkg[field] ?? {}).filter(([, spec]) => spec.startsWith('workspace:')).map(([name]) => name),
           ))
           for (const name of siblings) {
             const directory = directories.get(name)
-            if (directory !== undefined && fs.existsSync(path.join(top, directory, '.release-it.json'))) console.log(`${name}\t${directory}`)
+            if (directory !== undefined) console.log(`${name}\t${directory}`)
           }
           NODE
             pins='{}'
