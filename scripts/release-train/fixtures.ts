@@ -94,11 +94,13 @@ interface Run {
   views: number;
 }
 
-function compare(range: string): string {
-  const [, owner = "", repo = "", base = "", head = ""] = /^repos\/([^/]+)\/([^/]+)\/compare\/(\w+)\.\.\.(\w+)$/.exec(range) ?? [];
-  const ancestor = spawnSync("git", ["-C", join(root, repo), "merge-base", "--is-ancestor", base, head]);
+function compare(range: string): RunResult {
+  const [, owner = "", repo = "", base = "", head = ""] = /^repos\/([^/]+)\/([^/]+)\/compare\/(\w+)\.\.\.(.+)$/.exec(range) ?? [];
   assert.equal(owner, "AntelopeJS");
-  return base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged";
+  const known = (ref: string): boolean => spawnSync("git", ["-C", join(root, repo), "rev-parse", "--verify", "--quiet", `${decodeURIComponent(ref)}^{commit}`]).status === 0;
+  if (!known(base) || !known(head)) return { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
+  const ancestor = spawnSync("git", ["-C", join(root, repo), "merge-base", "--is-ancestor", base, decodeURIComponent(head)]);
+  return { status: 0, stdout: `${base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged"}\n`, stderr: "" };
 }
 
 type View = "fail" | "running";
@@ -106,6 +108,7 @@ type View = "fail" | "running";
 interface Fakes {
   down?: boolean;
   pullsDown?: boolean;
+  compareDown?: boolean;
   views?: Record<string, View[]>;
   npm?: Record<string, string>;
   dispatched?: (repo: string, fields: Record<string, string>) => void;
@@ -133,7 +136,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       }
       if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
       if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
-      if (args[0] === "api") return answer(`${compare(args[1] ?? "")}\n`);
+      if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);

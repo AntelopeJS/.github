@@ -299,6 +299,9 @@ describe("plan", () => {
     assert.equal(main(["plan", clone], elsewhere.system), 0, "a fork's or a reused branch's head that GitHub's branch does not hold keeps the squash commit");
     assert.match(elsewhere.output(), /0\.4\.2 -> 0\.4\.3 \(patch\)/);
     pulls["AntelopeJS/stale"] = [{ number: 122, mergeCommit: { oid: ids.squash }, headRefOid: ids.head, headRefName: "next" }];
+    const unreachable = fakeSystem({}, { compareDown: true });
+    assert.equal(main(["plan", clone], unreachable.system), 1);
+    assert.match(unreachable.errors(), new RegExp(`^gh api repos/AntelopeJS/stale/compare/${ids.head}\\.\\.\\.next failed, so the plan cannot tell whether next holds commit ${short(ids.head)}\\n`));
     const { system, errors } = fakeSystem();
     assert.equal(main(["plan", clone], system), 1);
     assert.equal(

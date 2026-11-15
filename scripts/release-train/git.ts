@@ -139,9 +139,14 @@ function hasCommit(system: System, repository: string, sha: string): boolean {
 }
 
 function branchHolds(system: System, slug: string, sha: string, branch: string): boolean {
-  const result = system.run("gh", ["api", `repos/${slug}/compare/${sha}...${branch}`, "--jq", ".status"]);
+  const path = `repos/${slug}/compare/${sha}...${branch.replace(/[%#?]/g, encodeURIComponent)}`;
+  const result = system.run("gh", ["api", path, "--jq", ".status"]);
+  if (result.status !== 0) {
+    if (/\bHTTP 404\b/.test(`${result.stderr}\n${result.stdout}`)) return false;
+    throw new Error(`gh api ${path} failed, so the plan cannot tell whether ${branch} holds commit ${sha.slice(0, 7)}\n${result.stderr.trim()}`);
+  }
   const status = result.stdout.trim();
-  return result.status === 0 && (status === "ahead" || status === "identical");
+  return status === "ahead" || status === "identical";
 }
 
 function cycleNotes(
