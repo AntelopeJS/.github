@@ -59,7 +59,7 @@ describe("the frozen caller", () => {
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
     const shared = read(`../../.github/workflows/${file}`);
-    const job = caller.replace("release-npm-public.yml", file);
+    const job = registry === "public" ? caller : caller.replace("release-npm-public.yml", file).replace("  id-token: write\n", "");
 
     test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
       assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
@@ -90,7 +90,23 @@ describe("the frozen caller", () => {
         return body.join("\n");
       })();
       writeFileSync(join(scratch, "mode.sh"), step);
-      const resolve = (event: string, ref: string, inputs: Record<string, string>) => {
+      const accepted = entries(shared, ["workflow_call", "inputs"]);
+      const wired = entries(job, ["jobs", "release", "with"]);
+      const stepEnv = entries(shared.slice(shared.indexOf("      - name: Resolve release mode")), ["env"]);
+      const resolve = (event: string, ref: string, dispatched: Record<string, string>) => {
+        const input = (name: string): string => {
+          const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
+          if (passed !== undefined) return dispatched[passed] ?? "";
+          const fallback = accepted.get(name)?.find((line) => line.startsWith("default: "))?.slice(9) ?? "";
+          return fallback.replace(/^"(.*)"$/, "$1");
+        };
+        const expression = (value: string): string => {
+          if (value === "${{ github.event.repository.default_branch }}") return "main";
+          const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
+          assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
+          return input(name);
+        };
+        const env = Object.fromEntries([...stepEnv].map(([name, [value = ""]]) => [name, expression(value)]));
         const output = join(scratch, `output-${event}`);
         writeFileSync(output, "");
         const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", join(scratch, "mode.sh")], {
@@ -100,9 +116,7 @@ describe("the frozen caller", () => {
             GITHUB_OUTPUT: output,
             GITHUB_EVENT_NAME: event,
             GITHUB_REF: ref,
-            DEFAULT_BRANCH: "main",
-            RELEASE_VERSION: inputs["release-version"] ?? "",
-            RELEASE_COMMIT: inputs["release-commit"] ?? "",
+            ...env,
           },
         });
         return [result.status, readFileSync(output, "utf8"), result.stderr];
