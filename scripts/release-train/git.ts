@@ -213,8 +213,11 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     }
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
-  const stableManifest = stable === null ? null : readManifest(system, repository, `refs/tags/${stable.tag}`, directory, `${where} at ${stable.tag}`);
+  const stableManifest = tag === null ? null : readManifest(system, repository, tag, directory, `${where} at ${stable?.tag}`);
   const forked = tag === null ? null : system.run("git", ["-C", repository, "merge-base", tag, revision]);
+  if (forked !== null && forked.status !== 0 && forked.status !== 1) {
+    throw new Error(`git -C ${repository} merge-base ${tag} ${revision} failed\n${forked.stderr.trim()}`);
+  }
   const base = forked?.status === 0 ? forked.stdout.trim() : null;
   const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
