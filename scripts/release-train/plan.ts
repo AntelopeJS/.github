@@ -359,7 +359,7 @@ function resolveSibling(source: PackageSource, { field, name, spec }: Dependency
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  const packed = source.stableManifest?.[field]?.[name] === spec ? source.stableSiblings[name] : undefined;
+  const packed = source.stableManifest?.[field]?.[name] === spec && Object.hasOwn(source.stableSiblings, name) ? source.stableSiblings[name] : undefined;
   const published = packed === undefined || admits(range, packed, version) ? null : packedRange(range, packed);
   return { range: packedRange(range, version), published };
 }

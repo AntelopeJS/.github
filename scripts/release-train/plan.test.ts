@@ -205,6 +205,10 @@ describe("computePlan", () => {
     assert.deepEqual(changed({ "@antelopejs/interface-dms-saas": "workspace:~" }), [
       "moves dependencies @antelopejs/interface-dms-saas workspace:~ -> workspace:^",
     ]);
+    const inherited = { ...inRepo("prototype", "0.10.0", ["feat!: x"]), manifest: { name: "constructor", version: "0.10.0" } };
+    const named = { ...inRepo("named", "0.12.1", ["build: x"], { dependencies: { constructor: "workspace:^" } }), stableSiblings: {} };
+    const unread = plan([named, inherited]).entries.find((candidate) => candidate.source === named);
+    assert.equal(unread?.status, "unchanged");
     const found = entry(plan([dependent({ "@antelopejs/interface-dms-saas": "workspace:^" }), minor]).entries, "dms-saas");
     assert.deepEqual(found.status === "release" && [found.to, found.level], ["0.12.2", "patch"]);
   });
