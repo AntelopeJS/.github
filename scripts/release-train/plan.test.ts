@@ -365,6 +365,37 @@ describe("computePlan", () => {
     }
   });
 
+  test("a tooling-only dependency releases a patch when a dependent pins its newer preview at runtime, and only then", () => {
+    const dependency = source("interface-database", "0.4.2", ["build: move to 0.8"]);
+    const runtime = source("mongodb", "1.8.6", ["fix: x"], { dependencies: { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" } });
+    const { entries } = plan([dependency, runtime]);
+    const released = entry(entries, "interface-database");
+    assert.deepEqual(released.status === "release" && [released.to, released.reasons], ["0.4.3", ["@antelopejs/mongodb pins the preview 0.4.3-next.2.g3f9a2c1"]]);
+    const dependent = entry(entries, "mongodb");
+    assert.deepEqual(dependent.status === "release" && dependent.ranges, { "@antelopejs/interface-database": ">=0.4.3 <0.5.0" });
+    assert.equal(entry(plan([dependency, runtime], [], () => false).entries, "interface-database").status, "unchanged");
+
+    const tooling = source("dms-database", "0.5.3", ["fix: y"], { devDependencies: { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" } });
+    assert.equal(entry(plan([dependency, tooling]).entries, "interface-database").status, "unchanged");
+    const older = source("dms-database", "0.5.3", ["fix: y"], { dependencies: { "@antelopejs/interface-database": "0.4.2-next.9.g3f9a2c1" } });
+    assert.equal(entry(plan([dependency, older]).entries, "interface-database").status, "unchanged");
+  });
+
+  test("a tooling-only cycle that replaces a preview pin names the pin, not a dependency move", () => {
+    const pinned = source("mongodb", "1.8.6", ["chore: pin the interface"], { dependencies: { "@antelopejs/interface-database": "0.4.2-next.1.g3f9a2c1" } }, { dependencies: { "@antelopejs/interface-database": ">=0.4.1 <0.5.0" } });
+    const found = entry(plan([source("interface-database", "0.4.2", []), pinned]).entries, "mongodb");
+    assert.deepEqual(found.status === "release" && found.reasons, ["replaces preview pins"]);
+  });
+
+  test("the reason of an unchanged package reads the cycle's notes, and names no version without a stable release", () => {
+    const promoted = { ...source("promoted", "0.3.1", ["chore: promote next (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
+    const fresh = source("fresh", null, ["build: scaffold", "docs: describe"]);
+    assert.deepEqual(
+      plan([promoted, fresh]).entries.map((found) => found.status === "unchanged" && found.reason),
+      ["only build, chore and test commits since 0.3.1", "only build and docs commits"],
+    );
+  });
+
   test("a cycle with a feat, fix, perf or refactor commit beside tooling commits releases as before", () => {
     for (const type of ["feat", "fix", "perf", "refactor"]) {
       const found = entry(plan([source("mongodb", "1.8.6", ["build: move to 0.8", `${type}: x`])]).entries, "mongodb");

@@ -41,7 +41,7 @@ export interface PackageSource {
   tagName: string;
   manifest: Manifest;
   stable: string | null;
-  /** The manifest at the stable tag, which npm published, or null when there is no stable tag. */
+  /** The manifest at the stable tag, which npm published, or null when there is no stable tag or the tag has no `package.json` in the directory. */
   stableManifest: Manifest | null;
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
@@ -289,9 +289,17 @@ function quietReason(source: PackageSource): string | null {
   return `only ${series(types)} commits${source.stable === null ? "" : ` since ${source.stable}`}`;
 }
 
+interface AwaitedPin {
+  dependent: string;
+  spec: string;
+  sha: string;
+}
+
 interface Resolution {
   listed: ReadonlyMap<string, PackageSource>;
   exclude: ReadonlySet<string>;
+  /** For each listed package, the runtime preview pins of other listed packages newer than its stable release. */
+  awaited: ReadonlyMap<string, readonly AwaitedPin[]>;
   resolved: ReadonlyMap<string, Entry>;
   contains: (name: string, sha: string, holder: Holder) => boolean;
 }
@@ -344,6 +352,9 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   let level = highestLevel([...source.commits, ...source.notes]);
   if (level === null) {
     reasons.push(...dependencyChanges(source, ranges));
+    const name = source.manifest.name;
+    const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
+    reasons.push(...held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`));
     if (Object.keys(ranges).length > 0) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
@@ -355,12 +366,30 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   return { status: "release", source, from: source.stable, to, level, reasons, ranges, kept };
 }
 
+function awaitedPins(sources: readonly PackageSource[], listed: ReadonlyMap<string, PackageSource>, exclude: ReadonlySet<string>): Map<string, AwaitedPin[]> {
+  const awaited = new Map<string, AwaitedPin[]>();
+  for (const source of sources) {
+    if (exclude.has(source.manifest.name)) continue;
+    for (const { field, name, spec } of dependenciesOf(source.manifest)) {
+      const dependency = listed.get(name);
+      const version = parseVersion(spec);
+      const sha = commitIdentifierPattern.exec(version?.prerelease?.split(".").at(-1) ?? "")?.[1];
+      if (field === "devDependencies" || dependency === undefined || name === source.manifest.name || version === null || sha === undefined) continue;
+      if (dependency.commits.length === 0 && dependency.notes.length === 0) continue;
+      const base = `${version.major}.${version.minor}.${version.patch}`;
+      if (dependency.stable !== null && compareCore(base, dependency.stable) <= 0) continue;
+      awaited.set(name, [...(awaited.get(name) ?? []), { dependent: source.manifest.name, spec, sha }]);
+    }
+  }
+  return awaited;
+}
+
 /** Computes the release plan of the sources: one entry per package, dependencies first. */
 export function computePlan(sources: readonly PackageSource[], options: PlanOptions): Plan {
   const exclude = new Set(options.exclude);
   const resolved = new Map<string, Entry>();
   const listed = new Map(sources.map((source) => [source.manifest.name, source]));
-  const context: Resolution = { listed, exclude, resolved, contains: options.contains };
+  const context: Resolution = { listed, exclude, resolved, contains: options.contains, awaited: awaitedPins(sources, listed, exclude) };
   for (const component of releaseOrder(sources, exclude)) {
     const names = component.map((source) => source.manifest.name);
     for (const source of component) {

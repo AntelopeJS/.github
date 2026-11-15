@@ -121,8 +121,10 @@ in dependency order.
   releases too little. A release never changes the major version.
 - A package whose commits ask for nothing still gets a patch when its
   `dependencies`, `peerDependencies` or `optionalDependencies` differ from the
-  `package.json` of its last stable tag, which npm published. The plan names
-  each change. Otherwise the plan lists the package as unchanged with the
+  `package.json` of its last stable tag, which npm published. It also gets a
+  patch when a listed package pins a preview of it in `dependencies`,
+  `peerDependencies` or `optionalDependencies` that is newer than its last
+  stable release. The plan names each change and each pin. Otherwise the plan lists the package as unchanged with the
   types of its commits, such as `only build commits since 0.4.2`. Those
   commits stay in the cycle, so the release notes of the next release list
   them.
@@ -162,7 +164,9 @@ in dependency order.
   they form a cycle, the plan orders its packages again on the first three
   fields alone. A cycle that remains is refused, and the plan names its
   packages. A left-out package is never part of a cycle.
-- A package with no releasable commit and no preview pin is unchanged.
+- A package with no releasable commit, no preview pin, no change to its
+  runtime dependencies and no dependent that pins a newer preview of it is
+  unchanged.
 - `--exclude <name>` leaves a package out of this release. It is listed under
   "Not now". Its commits stay unreleased, so the next plan includes them.
 
