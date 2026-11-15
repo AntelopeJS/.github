@@ -255,9 +255,12 @@ The reusable `next-sync.yml` workflow merges the default branch into `next`
 after each push to it, a merged pull request or a release commit alike, so
 that `next` always contains `main` and its pull request to `main` stays up to
 date. It pushes the merge commit with `RELEASE_GITHUB_TOKEN`, whose push starts
-the `next` checks. When the merge conflicts, it pushes nothing, fails, and
-files one task in the Tasks Inbox with the `NOTION_TOKEN` secret, or adds the
-new run to the open task it filed before. A repository admin resolves it by
+the `next` checks. When the merge conflicts, it pushes nothing and fails with
+a message that names the conflicting files. With the `NOTION_TOKEN` secret, it
+also files one task in the Tasks Inbox, or adds the new run to the open task it
+filed before. Without it, it opens one issue in the repository with the
+default token, or comments on the one it opened before, and the next
+successful sync closes that issue. A repository admin resolves the conflict by
 merging `main` into `next` and pushing the merge commit straight to `next`: a
 pull request would squash it, and the same conflict would come back.
 
@@ -265,15 +268,17 @@ pull request would squash it, and the same conflict would come back.
 | ----- | ------- | ----------- |
 | `branch` | `next` | Branch that receives the default branch. |
 | `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the `next` ruleset lets push. |
-| `NOTION_TOKEN` (secret) | | Notion integration token allowed to read, insert and update content in the Tasks database. |
+| `NOTION_TOKEN` (secret) | | Optional. Notion integration token allowed to read, insert and update content in the Tasks database. Without it, a conflict opens a GitHub issue. |
 
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge
 of `main` back into `next` keeps the next pull request's diff to the work done
 since. The squash commit is the only commit the stable release sees, so title
 the pull request as described in
-[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its checks are those `next` already ran on the same commit. See the
-[caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its
+checks are those `next` already ran on the same commit: `ci-node.yml` gives the
+pull request the `none` tier, so `ci / checks` succeeds without running again.
+See the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ## Link rot
 

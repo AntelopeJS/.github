@@ -12,8 +12,8 @@ on:
         description: Token of a repository admin, which the branch's ruleset lets push
         required: true
       NOTION_TOKEN:
-        description: Notion integration token allowed to read, insert and update content in the Tasks database
-        required: true
+        description: Notion integration token allowed to read, insert and update content in the Tasks database; without it, a conflict opens a GitHub issue instead
+        required: false
 
 permissions: {}
 
@@ -25,6 +25,8 @@ jobs:
     concurrency:
       group: next-sync-${{ github.repository }}-${{ inputs.branch }}
       cancel-in-progress: false
+    permissions:
+      issues: write
     defaults:
       run:
         shell: bash
@@ -32,6 +34,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       BRANCH: ${{ inputs.branch }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      HAS_NOTION: ${{ secrets.NOTION_TOKEN != '' }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Merge
         id: merge
@@ -52,9 +56,11 @@ jobs:
             if ! git merge -q --no-ff --no-edit -m "chore: merge ${DEFAULT_BRANCH} into ${BRANCH}" "origin/${DEFAULT_BRANCH}"; then
               conflicts=$(git diff --name-only --diff-filter=U)
               if [ -n "$conflicts" ]; then
-                delimiter="conflicts-$(openssl rand -hex 16)"
-                { echo "conflicts<<${delimiter}"; echo "$conflicts"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
-                echo "::error::${DEFAULT_BRANCH} conflicts with ${BRANCH} in $(echo "$conflicts" | wc -l) files."
+                count=$(wc -l <<< "$conflicts")
+                files=$(head -n 20 <<< "$conflicts" | paste -sd ',' | sed 's/,/, /g' | cut -c1-1500)
+                [ "$count" -le 20 ] || files="${files} and $((count - 20)) more"
+                echo "files=${files}" >> "$GITHUB_OUTPUT"
+                echo "::error::${DEFAULT_BRANCH} conflicts with ${BRANCH} in ${files}. Merge ${DEFAULT_BRANCH} into ${BRANCH}, resolve the conflicts, and push the merge commit straight to ${BRANCH} with a repository admin's account."
               fi
               exit 1
             fi
@@ -67,11 +73,10 @@ jobs:
           exit 1
 
       - name: File the conflict in the Inbox
-        if: failure() && steps.merge.outputs.conflicts != ''
+        if: failure() && steps.merge.outputs.files != '' && env.HAS_NOTION == 'true'
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FILES: ${{ steps.merge.outputs.files }}
           TASKS: 2f2d36f1-99db-4ff3-b040-f66d7480ac9a
         run: |
           repo="${GH_REPO#*/}"
@@ -83,9 +88,7 @@ jobs:
               -H "Content-Type: application/json" \
               --data @-
           }
-          count=$(wc -l <<< "$CONFLICTS")
-          files=$(head -n 20 <<< "$CONFLICTS" | paste -sd ',' | sed 's/,/, /g' | cut -c1-1500)
-          [ "$count" -le 20 ] || files="${files} and $((count - 20)) more"
+          files="$FILES"
           page=$(jq -n --arg key "$key" '{page_size: 1, filter: {and: [
             {property: "Key", rich_text: {equals: $key}},
             {property: "Status", status: {does_not_equal: "Done"}},
@@ -120,3 +123,36 @@ jobs:
                 {bulleted_list_item: {rich_text: [{text: {content: $done_means}}]}}
               ]
             }' | notion POST pages > /dev/null
+
+      - name: Open or update the conflict issue
+        if: failure() && steps.merge.outputs.files != '' && env.HAS_NOTION != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILES: ${{ steps.merge.outputs.files }}
+        run: |
+          title="Next sync: merge ${DEFAULT_BRANCH} into ${BRANCH} by hand"
+          number=$(gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+            | jq -s -r --arg title "$title" '[.[][] | select(.title == $title and .user.login == "github-actions[bot]" and (.pull_request | not)) | .number][0] // empty')
+          if [ -n "$number" ]; then
+            gh api -X POST "repos/${GH_REPO}/issues/${number}/comments" --silent \
+              -f "body=Seen again: ${FILES}. Run: ${RUN_URL}"
+            exit 0
+          fi
+          body=$(printf '%s\n\n%s\n\n%s\n' \
+            "The Next sync workflow could not merge \`${DEFAULT_BRANCH}\` into \`${BRANCH}\`: they conflict in ${FILES}. Until \`${DEFAULT_BRANCH}\` is merged, the \`${BRANCH}\` to \`${DEFAULT_BRANCH}\` pull request cannot be up to date. Run: ${RUN_URL}" \
+            "To resolve it, a repository admin merges \`origin/${DEFAULT_BRANCH}\` into \`${BRANCH}\`, resolves the conflicts, and pushes the merge commit straight to \`${BRANCH}\`. A pull request would squash the merge and lose \`${DEFAULT_BRANCH}\`'s history, so the same conflict would come back." \
+            "The next successful sync closes this issue.")
+          gh api -X POST "repos/${GH_REPO}/issues" --silent -f "title=${title}" -f "body=${body}"
+
+      - name: Close the conflict issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Next sync: merge ${DEFAULT_BRANCH} into ${BRANCH} by hand"
+          gh api --paginate "repos/${GH_REPO}/issues?state=open&per_page=100" \
+            | jq -s -r --arg title "$title" '.[][] | select(.title == $title and .user.login == "github-actions[bot]" and (.pull_request | not)) | .number' \
+            | while read -r number; do
+                gh api -X POST "repos/${GH_REPO}/issues/${number}/comments" --silent -f "body=${DEFAULT_BRANCH} is merged into ${BRANCH}. Run: ${RUN_URL}"
+                gh api -X PATCH "repos/${GH_REPO}/issues/${number}" --silent -f state=closed -f state_reason=completed
+              done

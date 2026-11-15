@@ -179,7 +179,8 @@ jobs:
 ```
 
 A repository with a [`next` branch](README.md#next-branch) calls
-`next-sync.yml` on each push to `main`:
+`next-sync.yml` on each push to `main`. The issues permission lets it open and
+close the conflict issue when no `NOTION_TOKEN` secret exists:
 
 ```yaml
 name: Next sync
@@ -190,6 +191,8 @@ on:
 permissions: {}
 jobs:
   next-sync:
+    permissions:
+      issues: write
     uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v1
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
@@ -267,11 +270,12 @@ commits never show up in a changelog. Stable releases keep
 
 1. Open the fix against `main` and release it on the `latest` channel.
 2. The Next sync workflow merges `main` into `next`, so the cycle includes the
-   fix. When the merge conflicts, it files a task in the Inbox. A repository
+   fix. When the merge conflicts, it files a task in the Inbox, or opens an
+   issue when the repository has no `NOTION_TOKEN` secret. A repository
    admin merges `origin/main` into `next`, resolves the conflicts and pushes
    the merge commit straight to `next`, not through a pull request, which
-   would squash it and bring the same conflict back. On
-   conflicts in the `package.json` version or at the top of `CHANGELOG.md`,
+   would squash it and bring the same conflict back. On conflicts in the
+   `package.json` version or at the top of `CHANGELOG.md`,
    keep the `next` side.
 
 ### Promoting `next` to stable
@@ -291,5 +295,5 @@ GitHub puts in the squash commit body.
 
 Stable releases ignore prerelease tags. When `package.json` holds a prerelease
 such as `1.9.0-next.4`, the stable release is pinned to its base version,
-`1.9.0`, even if the cycle contains breaking commits. Choose the right major or minor version when
-opening the cycle.
+`1.9.0`, even if the cycle contains breaking commits. Choose the right major
+or minor version when opening the cycle.
