@@ -4,7 +4,7 @@ import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
 import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
-import { computePlan, renderPlan, type PackageSource, type Plan, type Release } from "./plan.ts";
+import { computePlan, renderPlan, type Holder, type PackageSource, type Plan, type Release } from "./plan.ts";
 import type { System } from "./system.ts";
 
 interface Command {
@@ -74,7 +74,7 @@ function isInside(outer: string, inner: string): boolean {
 
 function buildPlan(command: Command, system: System): Plan {
   const sources: PackageSource[] = [];
-  const places = new Map<string, { from: Checkout; revision: Revision }>();
+  const places = new Map<string, { from: Checkout; revision: Revision; source: PackageSource }>();
   const checkouts = new Map<string, Checkout>();
   const pulls = mergedPulls(system);
   for (const target of command.targets) {
@@ -84,10 +84,14 @@ function buildPlan(command: Command, system: System): Plan {
     const nested = command.targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
-    const merged = pulls(from.slug, resolveRevision(system, from, null).branch);
+    const defaultBranch = resolveRevision(system, from, null).branch;
+    const merged = pulls(from.slug, defaultBranch);
+    if (merged === null) {
+      throw new Error(`gh pr list --repo ${from.slug} --base ${defaultBranch} failed, so the plan cannot read the commits of the cycle.`);
+    }
     const source = readSource(system, from, revision, { directory: target.directory, nested, merged });
     sources.push(source);
-    places.set(source.manifest.name, { from, revision });
+    places.set(source.manifest.name, { from, revision, source });
   }
   const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
@@ -96,9 +100,12 @@ function buildPlan(command: Command, system: System): Plan {
   if (unknown !== undefined) throw new Error(`--exclude ${unknown} names no listed package.`);
   const ref = command.ref ?? [...new Set(sources.map((source) => source.branch))].join(", ");
   const search = commitSearch(system, pulls);
-  const contains = (name: string, sha: string): boolean => {
+  const contains = (name: string, sha: string, holder: Holder): boolean => {
     const place = places.get(name);
-    return place !== undefined && search(place.from, place.revision, sha);
+    if (place === undefined) return false;
+    if (holder === "head") return search(place.from, place.revision, sha);
+    const { stable, tagName } = place.source;
+    return stable !== null && search(place.from, { ...place.revision, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
   };
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
@@ -111,39 +118,75 @@ function list(releases: readonly Release[]): string {
   return releases.length === 0 ? "nothing" : releases.map(label).join(", ");
 }
 
-function go(plan: Plan, system: System): number {
-  const releases = plan.entries.filter((entry) => entry.status === "release");
-  for (const [position, entry] of releases.entries()) {
-    const published = releases.slice(0, position);
-    const earlier = published.find((other) => other.source.slug === entry.source.slug);
-    const outcome: RunOutcome =
-      earlier === undefined
-        ? releaseRun(system, entry)
-        : { kind: "failed", detail: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
-    if (outcome.kind === "success") {
-      system.out(`published ${label(entry)}  ${outcome.url}\n`);
-      continue;
+function releasesOf(plan: Plan): Release[] {
+  return plan.entries.filter((entry) => entry.status === "release");
+}
+
+function sameReleases(left: readonly Release[], right: readonly Release[]): boolean {
+  const keys = (entries: readonly Release[]): string =>
+    entries.map((entry) => `${label(entry)} ${JSON.stringify(entry.ranges)}`).join("\n");
+  return keys(left) === keys(right);
+}
+
+function stopLines(outcome: Exclude<RunOutcome, { kind: "success" }>, entry: Release, published: readonly Release[], rest: readonly Release[]): string[] {
+  if (outcome.kind === "failed") {
+    return [
+      `failed ${label(entry)} ${outcome.detail}`,
+      `Published: ${list(published)}.`,
+      `Not published: ${list([entry, ...rest])}.`,
+      "Fix the failure, then run go again to continue.",
+    ];
+  }
+  if (outcome.kind === "incomplete") {
+    return [
+      `failed ${label(entry)} after npm published it ${outcome.detail}`,
+      `Published: ${list([...published, entry])}.`,
+      `Not published: ${list(rest)}.`,
+      `Run go again: the stable run writes the release commit, tag and GitHub release of ${label(entry)} without publishing it again, then the train continues. If its tag is on the default branch already, only its GitHub release is missing.`,
+    ];
+  }
+  return [
+    `unknown ${label(entry)}, ${outcome.detail}`,
+    `Published: ${list(published)}.`,
+    `Not published: ${list(rest)}.`,
+    `Unknown: ${label(entry)} (${outcome.url}).`,
+    "Check that run before you run go again.",
+  ];
+}
+
+function go(plan: Plan, replan: () => Plan, system: System): number {
+  const published: Release[] = [];
+  let pending = releasesOf(plan);
+  for (let entry = pending[0]; entry !== undefined; entry = pending[0]) {
+    const rest = pending.slice(1);
+    const outcome = releaseRun(system, entry);
+    if (outcome.kind !== "success") {
+      system.err(stopLines(outcome, entry, published, rest).join("\n"));
+      return 1;
     }
-    const lines =
-      outcome.kind === "failed"
-        ? [
-            `failed ${label(entry)} ${outcome.detail}`,
-            `Published: ${list(published)}.`,
-            `Not published: ${list(releases.slice(position))}.`,
-            "Fix the failure, then run go again to continue.",
-          ]
-        : [
-            `unknown ${label(entry)}, ${outcome.detail}`,
-            `Published: ${list(published)}.`,
-            `Not published: ${list(releases.slice(position + 1))}.`,
-            `Unknown: ${label(entry)} (${outcome.url}).`,
-            "Check that run before you run go again.",
-          ];
-    system.err(lines.join("\n"));
-    return 1;
+    system.out(`published ${label(entry)}  ${outcome.url}\n`);
+    published.push(entry);
+    pending = rest;
+    const { slug, head } = entry.source;
+    if (!rest.some((other) => other.source.slug === slug)) continue;
+    const next = releasesOf(replan());
+    const moved = next.filter((other) => other.source.slug === slug).every((other) => other.source.head !== head);
+    if (!moved || !sameReleases(rest, next)) {
+      system.err(
+        [
+          moved
+            ? `The plan changed after the release of ${label(entry)}. Read it with plan, then run go again.`
+            : `${slug} did not move after the release of ${label(entry)}. Fetch its checkout, then run go again.`,
+          `Published: ${list(published)}.`,
+          `Not published: ${list(rest)}.`,
+        ].join("\n"),
+      );
+      return 1;
+    }
+    pending = next;
   }
   const refused = plan.entries.filter((entry) => entry.status === "refused").map((entry) => entry.source.manifest.name);
-  system.out(`Published: ${list(releases)}.\n`);
+  system.out(`Published: ${list(published)}.\n`);
   if (refused.length > 0) system.out(`Refused, not published: ${refused.join(", ")}.\n`);
   return 0;
 }
@@ -154,7 +197,7 @@ export function main(argv: readonly string[], system: System): number {
     const command = parseCommand(argv);
     const plan = buildPlan(command, system);
     system.out(renderPlan(plan));
-    return command.action === "go" ? go(plan, system) : 0;
+    return command.action === "go" ? go(plan, () => buildPlan(command, system), system) : 0;
   } catch (error) {
     system.err(error instanceof Error ? error.message : String(error));
     return 1;

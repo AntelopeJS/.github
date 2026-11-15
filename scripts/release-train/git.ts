@@ -36,7 +36,7 @@ export interface Place {
 }
 
 const remotePattern = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
-const releaseSubjectPattern = /^(?:chore\(release\)|release): /;
+const releaseSubjectPattern = /^(?:(?:chore\(release\)|release): |fix\(deps\): depend on the stable )/;
 
 /** Clones or fetches the repository of a target, or reads a local checkout as it is. */
 export function openCheckout(target: Target, system: System): Checkout {

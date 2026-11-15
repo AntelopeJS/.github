@@ -103,7 +103,14 @@ function compare(range: string): string {
 
 type View = "fail" | "running";
 
-export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?: boolean; views?: Record<string, View[]> } = {}) {
+interface Fakes {
+  down?: boolean;
+  views?: Record<string, View[]>;
+  npm?: Record<string, string>;
+  dispatched?: (repo: string, fields: Record<string, string>) => void;
+}
+
+export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes = {}) {
   const calls: string[][] = [];
   const sleeps: number[] = [];
   const runs: Run[] = [];
@@ -118,6 +125,11 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
         return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
       }
       calls.push([...args]);
+      if (command === "npm") {
+        const held = gh.npm?.[args[1] ?? ""];
+        if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
+        return held === "error" ? answer("", 1) : answer(`${held}\n`);
+      }
       if (gh.down) return answer("", 1);
       if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
       if (args[0] === "api") return answer(`${compare(args[1] ?? "")}\n`);
@@ -125,6 +137,10 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);
         if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
+        const fields = Object.fromEntries(
+          args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
+        );
+        gh.dispatched?.(repo, fields);
         return answer("");
       }
       if (args[0] === "run" && args[1] === "list") {

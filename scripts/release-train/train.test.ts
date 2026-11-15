@@ -115,8 +115,8 @@ describe("plan", () => {
       ].join("\n"),
     );
     const offline = fakeSystem({}, { down: true });
-    assert.equal(main(["plan", promoted], offline.system), 0);
-    assert.match(offline.output(), /\(patch\)  \S+\n {5}fix\(io\): retry the reads \(#17\)\n {5}fix: promote next \(#16\)\n$/);
+    assert.equal(main(["plan", promoted], offline.system), 1);
+    assert.equal(offline.errors(), "gh pr list --repo AntelopeJS/promoted --base main failed, so the plan cannot read the commits of the cycle.\n");
   });
 
   test("a blob:none clone keeps the squash commit of a pull request whose head it lacks, and fetches nothing", () => {
@@ -163,9 +163,117 @@ describe("plan", () => {
     };
     const later = `     depends on preview @antelopejs/mongodb@1.8.7-next.41.g${short(commits.later)}, whose main does not contain commit ${short(commits.later)}`;
     const unknown = "     depends on preview @antelopejs/mongodb@1.8.7-next.9.gabc1234, whose main does not contain commit abc1234";
-    const squashed = `     depends on preview @antelopejs/mongodb@1.8.7-next.40.g${short(commits.feed)}, whose main does not contain commit ${short(commits.feed)}`;
     assert.deepEqual(reasons([]), [later, unknown]);
     assert.deepEqual(reasons(["--ref", "next"]), [unknown.replace("main", "next")]);
-    assert.deepEqual(reasons([], { down: true }), [later, unknown, squashed]);
+    const down = fakeSystem({}, { down: true });
+    assert.equal(main(["plan", interfaceDatabase, mongodb, pinning], down.system), 1);
+    assert.match(down.errors(), /^gh pr list --repo AntelopeJS\/interface-database --base main failed/);
+  });
+  test("a promotion releases at the level of the commits it brought, whatever its title", () => {
+    const promoted = (name: string, title: string) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "0.4.2") });
+        git(path, "tag", "v0.4.2");
+        git(path, "checkout", "--quiet", "-b", "next");
+        commit(path, "feat(query)!: rename ReadCursor.next to ReadCursor.read", { "src/cursor.ts": "export {};\n" });
+        const head = commit(path, "fix(query): batch reads", { "src/batch.ts": "export {};\n" });
+        git(path, "checkout", "--quiet", "main");
+        git(path, "merge", "--quiet", "--squash", "next");
+        git(path, "commit", "--quiet", "-m", title, "-m", "Batch reads and cursor fixes for the next cycle.");
+        pulls[`AntelopeJS/${name}`] = [{ number: 122, mergeCommit: { oid: git(path, "rev-parse", "HEAD") }, headRefOid: head }];
+      });
+    const plan = (path: string): string => {
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", path], system), 0);
+      return output().split("\n").slice(2, 6).join("\n");
+    };
+    const titled = promoted("promotion-titled", "feat(query): batch reads and cursor fixes (#122)");
+    assert.equal(
+      plan(titled),
+      [
+        `1. @antelopejs/promotion-titled 0.4.2 -> 0.5.0 (minor)  AntelopeJS/promotion-titled@${short(tip(titled))}`,
+        "     fix(query): batch reads",
+        "     feat(query)!: rename ReadCursor.next to ReadCursor.read",
+        "",
+      ].join("\n"),
+    );
+    const untitled = promoted("promotion-untitled", "Promote next to main (#122)");
+    assert.match(plan(untitled), /^1\. @antelopejs\/promotion-untitled 0\.4\.2 -> 0\.5\.0 \(minor\) /);
+
+    const firstHead = tip(untitled, "next");
+    commit(untitled, "chore(release): v0.5.0", { "package.json": manifest("promotion-untitled", "0.5.0") });
+    git(untitled, "tag", "v0.5.0");
+    git(untitled, "checkout", "--quiet", "next");
+    git(untitled, "merge", "--quiet", "--no-ff", "--no-edit", "main");
+    const secondHead = commit(untitled, "fix(query): close the cursor", { "src/close.ts": "export {};\n" });
+    git(untitled, "checkout", "--quiet", "main");
+    git(untitled, "merge", "--quiet", "--squash", "next");
+    git(untitled, "commit", "--quiet", "-m", "Promote next to main (#130)");
+    git(untitled, "update-ref", "refs/remotes/origin/main", "HEAD");
+    pulls["AntelopeJS/promotion-untitled"] = [
+      { number: 130, mergeCommit: { oid: tip(untitled) }, headRefOid: secondHead },
+      { number: 122, mergeCommit: { oid: git(untitled, "rev-parse", "v0.5.0^") }, headRefOid: firstHead },
+    ];
+    assert.equal(
+      plan(untitled),
+      [
+        `1. @antelopejs/promotion-untitled 0.5.0 -> 0.5.1 (patch)  AntelopeJS/promotion-untitled@${short(tip(untitled))}`,
+        "     fix(query): close the cursor",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a pin moves to an unchanged dependency's stable only when that stable tag holds the preview's commit", () => {
+    let cursor = "";
+    const dependency = repository("hotfixed", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("hotfixed", "0.4.1") });
+      git(path, "tag", "v0.4.1");
+      git(path, "checkout", "--quiet", "-b", "next");
+      cursor = commit(path, "chore(cursor): add the cursor", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "fix: hotfix", { "src/hotfix.ts": "export {};\n" });
+      commit(path, "chore(release): v0.4.2", { "package.json": manifest("hotfixed", "0.4.2") });
+      git(path, "tag", "v0.4.2");
+      git(path, "merge", "--quiet", "--squash", "next");
+      git(path, "commit", "--quiet", "-m", "chore: promote next (#9)");
+      pulls["AntelopeJS/hotfixed"] = [{ number: 9, mergeCommit: { oid: git(path, "rev-parse", "HEAD") }, headRefOid: cursor }];
+    });
+    const dependent = repository("pins-hotfixed", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("pins-hotfixed", "1.8.6", { dependencies: { "@antelopejs/hotfixed": `0.4.2-next.2.g${short(cursor)}` } }) });
+      git(path, "tag", "v1.8.6");
+      commit(path, "fix: x", { "x.ts": "export {};\n" });
+    });
+    const plan = (): string => {
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", dependency, dependent], system), 0);
+      return output();
+    };
+    assert.match(plan(), new RegExp(`\n     depends on preview @antelopejs/hotfixed@0\\.4\\.2-next\\.2\\.g${short(cursor)}, whose stable 0\\.4\\.2 does not contain commit ${short(cursor)}\n`));
+    commit(dependency, "chore(release): v0.4.3", { "package.json": manifest("hotfixed", "0.4.3") });
+    git(dependency, "tag", "v0.4.3");
+    git(dependency, "update-ref", "refs/remotes/origin/main", "HEAD");
+    assert.match(plan(), new RegExp(`\n     @antelopejs/hotfixed 0\\.4\\.2-next\\.2\\.g${short(cursor)} -> >=0\\.4\\.3 <0\\.5\\.0\n`));
+  });
+
+  test("the release commits of a nested package give the root package no release", () => {
+    const workspace = repository("nested-release", (path) => {
+      commit(path, "feat: first", {
+        "package.json": manifest("nested-root", "0.20.2"),
+        "packages/automation/package.json": manifest("nested-automation", "0.11.1", { dependencies: { "@antelopejs/x": "0.2.0-next.1.gabc1234" } }),
+        "packages/automation/.release-it.json": { git: { tagName: "automation-v${version}" } },
+      });
+      git(path, "tag", "v0.20.2");
+      git(path, "tag", "automation-v0.11.1");
+      commit(path, "fix(deps): depend on the stable @antelopejs/x", {
+        "packages/automation/package.json": manifest("nested-automation", "0.11.1", { dependencies: { "@antelopejs/x": ">=0.2.0 <0.3.0" } }),
+        "pnpm-lock.yaml": "x\n",
+      });
+      commit(path, "chore(release): v0.11.2", { "packages/automation/package.json": manifest("nested-automation", "0.11.2"), "packages/automation/CHANGELOG.md": "x\n" });
+      git(path, "tag", "automation-v0.11.2");
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", workspace, `${workspace}:packages/automation`], system), 0);
+    assert.equal(output(), "Release plan from main, nothing to release\n\nUnchanged: @antelopejs/nested-root, @antelopejs/nested-automation\n");
   });
 });

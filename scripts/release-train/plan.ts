@@ -9,6 +9,9 @@ export interface Commit {
   level: Level | null;
 }
 
+/** Where a dependency must hold a preview's commit: at its planned head, or at its last stable tag. */
+export type Holder = "head" | "stable";
+
 /** One of the four dependency fields of a `package.json`. */
 export type DependencyField =
   | "dependencies"
@@ -81,7 +84,7 @@ export interface Plan {
 export interface PlanOptions {
   ref: string;
   exclude: readonly string[];
-  contains: (name: string, sha: string) => boolean;
+  contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
 interface Version {
@@ -98,6 +101,13 @@ const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]);
+const versionPart = "(?:0|[1-9]\\d*|[xX*])";
+const identifiers = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`;
+const comparator = `(?:[<>]=?|=|~>?|\\^)?\\s*${partial}`;
+const comparatorSet = `(?:${partial}\\s+-\\s+${partial}|${comparator}(?:\\s+${comparator})*)`;
+const rangePattern = new RegExp(`^\\s*${comparatorSet}(?:\\s*\\|\\|\\s*${comparatorSet})*\\s*$`);
+const aliasPattern = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/;
 
 /** Parses `M.m.p` or `M.m.p-pre`, or returns null. */
 export function parseVersion(text: string): Version | null {
@@ -139,6 +149,14 @@ export function stableRange(version: string): string {
 /** Whether a dependency spec names a semver prerelease. */
 export function isPreviewSpec(spec: string): boolean {
   return previewPattern.test(spec);
+}
+
+/**
+ * Whether a dependency spec resolves from the registry: a semver range, or an `npm:` alias to one.
+ * A path, `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec does not.
+ */
+export function isRegistrySpec(spec: string): boolean {
+  return rangePattern.test(aliasPattern.exec(spec)?.[1] ?? spec);
 }
 
 interface Header {
@@ -236,7 +254,7 @@ interface Resolution {
   listed: ReadonlyMap<string, PackageSource>;
   exclude: ReadonlySet<string>;
   resolved: ReadonlyMap<string, Entry>;
-  contains: (name: string, sha: string) => boolean;
+  contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
 type PinOutcome = { range: string } | { reason: string };
@@ -256,7 +274,12 @@ function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome
   if (target === null) return { reason: "which has no stable release" };
   const base = `${version.major}.${version.minor}.${version.patch}`;
   if (compareCore(target, base) < 0) return { reason: `whose stable ${target} is older than ${base}` };
-  if (!context.contains(name, sha)) return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  if (planned.status === "release" && !context.contains(name, sha, "head")) {
+    return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  }
+  if (planned.status !== "release" && !context.contains(name, sha, "stable")) {
+    return { reason: `whose stable ${target} does not contain commit ${sha}` };
+  }
   return { range: stableRange(target) };
 }
 
@@ -266,6 +289,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const kept: KeptPin[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
     const { field, name, spec } = dependency;
+    if (field !== "devDependencies" && !isRegistrySpec(spec)) {
+      refusals.add(`depends on ${name}@${spec}, which is not a registry version range`);
+      continue;
+    }
     if (!isPreviewSpec(spec)) continue;
     const outcome = resolvePin(dependency, context);
     if ("range" in outcome) ranges[name] = outcome.range;

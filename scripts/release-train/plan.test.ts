@@ -4,12 +4,14 @@ import { describe, test } from "node:test";
 import {
   commitLevel,
   computePlan,
+  isRegistrySpec,
   renderPlan,
   type Commit,
   type Entry,
   type Manifest,
   type PackageSource,
 } from "./plan.ts";
+import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
 function commit(subject: string, body = "", author = "Antony Rizzitelli"): Commit {
   return { sha: subject.length.toString(16).padStart(40, "0"), subject, author, level: commitLevel(subject, body) };
@@ -81,7 +83,32 @@ describe("commitLevel", () => {
   });
 });
 
+describe("isRegistrySpec", () => {
+  test("accepts a semver range or an npm alias to one, and nothing that resolves outside the registry", () => {
+    for (const spec of registrySpecs) assert.equal(isRegistrySpec(spec), true, spec);
+    for (const spec of nonRegistrySpecs) assert.equal(isRegistrySpec(spec), false, spec);
+  });
+});
+
 describe("computePlan", () => {
+  test("refuses a runtime dependency that does not resolve from the registry, and lets a devDependency one through", () => {
+    const local = source("mongodb", "1.8.6", ["fix(database): use the local interface"], {
+      dependencies: { "@antelopejs/interface-database": "file:../interface-database" },
+      peerDependencies: { "@antelopejs/core": "workspace:*" },
+      optionalDependencies: { "@antelopejs/x": "github:AntelopeJS/x#next" },
+      devDependencies: { "@antelopejs/tooling-configs": "link:../tooling-configs" },
+    });
+    assert.deepEqual(entry(plan([local]).entries, "mongodb"), {
+      status: "refused",
+      source: local,
+      reasons: [
+        "depends on @antelopejs/interface-database@file:../interface-database, which is not a registry version range",
+        "depends on @antelopejs/core@workspace:*, which is not a registry version range",
+        "depends on @antelopejs/x@github:AntelopeJS/x#next, which is not a registry version range",
+      ],
+    });
+  });
+
   test("orders dependencies before their dependents whatever the input order", () => {
     const { entries } = plan([dmsDatabase, mongodb, interfaceDatabase]);
     assert.deepEqual(names(entries), ["interface-database", "mongodb", "dms-database"]);

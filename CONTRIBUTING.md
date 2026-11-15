@@ -255,11 +255,12 @@ release or a tarball.
 ### Promoting `next` to stable
 
 1. A pull request from `next` to `main` brings the work to `main` once a
-   maintainer approves it. Merge it with **Squash and merge**. The Next sync
+   maintainer approves it. Merge it with **Squash and merge**. Each stable
+   release that writes stable ranges pushes them to `next` too. The Next sync
    workflow then merges `main` back into `next`, so `next` holds the release
-   commits, the changelogs and the stable ranges. That merge publishes no
-   preview of a package whose release changed only its version and its
-   changelog.
+   commits and the changelogs, and the stable ranges merge without a conflict.
+   That merge publishes no preview of a package whose release changed only its
+   version and its changelog.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
