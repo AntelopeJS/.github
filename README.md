@@ -102,9 +102,9 @@ plan lists the commits of the cycle instead. It reads the last 100 pull
 requests merged into the default branch, for `--ref next` too. A pull request
 merged since the stable tag gives the commits of its head, in place of its
 squash commit. The heads of the pull requests merged before the tag mark where
-the cycle starts, on the default branch and on `next` alike. A pull request whose head the checkout lacks, such as a
-person's branch deleted after the merge, a reused branch name or a fork's
-branch, keeps its squash commit. When the checkout has that branch as
+the cycle starts, on the default branch and on `next` alike. A pull request
+whose head the checkout lacks, such as a person's branch deleted after the
+merge, a reused branch name or a fork's branch, keeps its squash commit. When the checkout has that branch as
 `origin/<branch>` and GitHub's branch still holds the head, the checkout is
 stale, and the plan stops and asks to fetch it. The plan also stops when
 GitHub cannot answer that question for a reason other than a 404. The train

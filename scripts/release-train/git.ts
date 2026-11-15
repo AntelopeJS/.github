@@ -213,7 +213,8 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     }
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
-  const stableManifest = stable === null ? null : readManifest(system, repository, `refs/tags/${stable.tag}`, directory, `${where} at ${stable.tag}`);
+  const base = stable === null ? null : exec(system, "git", ["-C", repository, "merge-base", `refs/tags/${stable.tag}`, revision]).trim();
+  const baseManifest = base === null ? null : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const shipped = (merged ?? [])
@@ -221,7 +222,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .map((pull) => pull.head);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, baseManifest, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

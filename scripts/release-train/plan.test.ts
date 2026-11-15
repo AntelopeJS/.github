@@ -33,7 +33,7 @@ function source(
     tagName: "v${version}",
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
-    stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
+    baseManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
     commits,
     notes: commits,
   };

@@ -41,8 +41,11 @@ export interface PackageSource {
   tagName: string;
   manifest: Manifest;
   stable: string | null;
-  /** The manifest at the stable tag, which npm published, or null when there is no stable tag or the tag has no `package.json` in the directory. */
-  stableManifest: Manifest | null;
+  /**
+   * The manifest where the branch read leaves the stable release: at the stable tag when the branch holds it, else at
+   * their merge base. Null when there is no stable tag or that commit has no `package.json` in the directory.
+   */
+  baseManifest: Manifest | null;
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -262,7 +265,7 @@ function highestLevel(commits: readonly Commit[]): Level | null {
 }
 
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const stable = source.stableManifest;
+  const stable = source.baseManifest;
   if (stable === null) return [];
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
