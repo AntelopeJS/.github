@@ -60,32 +60,115 @@ on:
         default: 360
         type: number
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services, pull request title check and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
+        type: boolean
+      windows-pull-requests:
+        description: With windows, also run the Windows jobs on ready pull requests and manual runs, not only in the nightly tier
+        default: false
         type: boolean
 
 jobs:
-  node:
-    name: Node ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    runs-on: ${{ matrix.os }}
+  tier:
+    name: Tier
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
-        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+      lint: ${{ steps.tier.outputs.lint }}
+      checks: ${{ steps.tier.outputs.checks }}
+      tests: ${{ steps.tier.outputs.tests }}
+      test-base: ${{ steps.tier.outputs.test-base }}
+      os: ${{ steps.tier.outputs.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Pick the tier from the event, the target branch and the draft flag
+        id: tier
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          WINDOWS: ${{ inputs.windows }}
+          WINDOWS_PULL_REQUESTS: ${{ inputs.windows-pull-requests }}
+        run: |
+          case "$EVENT" in
+            pull_request)
+              if [[ "$BASE_REF" == "$DEFAULT_BRANCH" && "$HEAD_REPOSITORY" == "$REPOSITORY" && "$HEAD_REF" =~ ^(next|develop)$ ]]; then
+                tier=none
+              elif [[ "$DRAFT" == true ]]; then
+                tier=draft
+              elif [[ "$BASE_REF" == "$DEFAULT_BRANCH" ]]; then
+                tier=full
+              else
+                tier=fast
+              fi
+              ;;
+            push)
+              if [[ "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then tier=none; else tier=full; fi
+              ;;
+            schedule) tier=nightly ;;
+            *) tier=full ;;
+          esac
+
+          lint=true checks=true tests=true test_base=""
+          case "$tier" in
+            none) lint=false checks=false tests=false ;;
+            draft) checks=false tests=false ;;
+            fast)
+              test_base=$(git rev-parse --verify HEAD^1)
+              tests=false
+              while IFS= read -r file; do
+                case "$file" in
+                  README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
+                  *) tests=true ;;
+                esac
+              done < <(git diff --name-only "$test_base" HEAD)
+              ;;
+          esac
+
+          os='["ubuntu-latest"]'
+          if [[ "$WINDOWS" == true && ( "$tier" == nightly || ( "$WINDOWS_PULL_REQUESTS" == true && "$EVENT" != push ) ) ]]; then
+            os='["ubuntu-latest","windows-latest"]'
+          fi
+
+          {
+            echo "tier=${tier}"
+            echo "lint=${lint}"
+            echo "checks=${checks}"
+            echo "tests=${tests}"
+            echo "test-base=${test_base}"
+            echo "os=${os}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tier \`${tier}\`: lint ${lint}, checks ${checks}, tests ${tests}, runners ${os}" >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Lint and typecheck
+    needs: tier
+    if: needs.tier.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
+      group: ci-node-lint-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    env:
-      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (!inputs.test-job || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
     steps:
       - name: Check pull request title
-        if: github.event_name == 'pull_request' && runner.os != 'Windows'
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
@@ -95,6 +178,56 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions || '[""]')[0] }}
+          node-version-file: ${{ fromJSON(inputs.node-versions || '[""]')[0] == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run setup commands
+        if: inputs.setup-commands != ''
+        env:
+          SETUP_COMMANDS: ${{ inputs.setup-commands }}
+        run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Typecheck and lint
+        run: |
+          pnpm run --if-present checks:prepare
+          pnpm run typecheck
+          pnpm run lint
+
+  node:
+    name: Node ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
+    needs: tier
+    if: needs.tier.outputs.checks == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.tier.outputs.os) }}
+        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && ((!inputs.test-job && needs.tier.outputs.tests == 'true') || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
+    steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
         run: |
@@ -194,7 +327,7 @@ jobs:
 
       - name: Run checks
         env:
-          ANTELOPEJS_CHECKS_SKIP: ${{ inputs.test-job && 'test' || '' }}
+          ANTELOPEJS_CHECKS_SKIP: ${{ (inputs.test-job || needs.tier.outputs.tests != 'true') && 'test' || '' }}
         run: pnpm run checks
 
       - name: Skill eval, offline
@@ -231,14 +364,15 @@ jobs:
 
   test:
     name: Test ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    if: inputs.test-job
+    needs: [tier, lint]
+    if: inputs.test-job && needs.tier.outputs.tests == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.tier.outputs.os) }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
     defaults:
       run:
@@ -247,6 +381,8 @@ jobs:
       group: ci-node-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
@@ -352,7 +488,8 @@ jobs:
 
   extra:
     name: Extra ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    if: inputs.extra-commands-job && inputs.extra-commands != ''
+    needs: [tier, lint]
+    if: inputs.extra-commands-job && inputs.extra-commands != '' && needs.tier.outputs.checks == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ inputs.extra-job-timeout-minutes }}
     permissions:
@@ -360,7 +497,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.windows && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.tier.outputs.os) }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
     defaults:
       run:
@@ -369,6 +506,8 @@ jobs:
       group: ci-node-extra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
+      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
     steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
@@ -472,46 +611,6 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
-  docs-only:
-    name: Docs only
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      docs-only: ${{ steps.scope.outputs.docs-only }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-
-      - name: Fetch pull request base
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
-          echo "::add-mask::${credentials}"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
-            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-
-      - name: Report whether the pull request touches only documentation
-        id: scope
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          docs_only=true
-          while IFS= read -r file; do
-            case "$file" in
-              README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
-              *) docs_only=false ;;
-            esac
-          done < <(git diff --name-only "origin/${BASE_REF}" HEAD)
-          echo "docs-only=${docs_only}" >> "$GITHUB_OUTPUT"
-          echo "docs-only: ${docs_only}" >> "$GITHUB_STEP_SUMMARY"
-
   gitleaks:
     name: Gitleaks
     if: github.event_name == 'pull_request'
@@ -548,10 +647,15 @@ jobs:
 
   checks:
     if: always()
-    needs: [node, test, extra, gitleaks, renovate-sync]
+    needs: [tier, lint, node, test, extra, gitleaks, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
-      - if: needs.node.result != 'success' || (needs.test.result != 'success' && needs.test.result != 'skipped') || (needs.extra.result != 'success' && needs.extra.result != 'skipped') || (needs.gitleaks.result != 'success' && needs.gitleaks.result != 'skipped') || needs.renovate-sync.result == 'failure' || needs.renovate-sync.result == 'cancelled'
+      - if: needs.tier.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
+
+      - if: needs.tier.outputs.tier == 'draft'
+        run: |
+          echo "::error::Draft pull request: only lint and typecheck ran. Mark it ready for review to run the tests."
+          exit 1

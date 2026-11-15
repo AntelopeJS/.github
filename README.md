@@ -74,7 +74,44 @@ continue to use npmjs with public access and provenance.
 The reusable `ci-node.yml` workflow installs dependencies with the frozen
 lockfile and runs `pnpm run checks`. By default, it reads Node.js from `.nvmrc`.
 Callers can pass `node-versions` to check several versions. It reads pnpm from
-`packageManager` in `package.json`. It accepts these optional inputs:
+`packageManager` in `package.json`.
+
+Its `Tier` job picks how much to run from the event, the target branch and the
+draft flag, so a caller only declares the triggers: `pull_request` with the
+types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
+`next` (`develop` in `cloud`), a nightly `schedule` and `workflow_dispatch`.
+"Next" below is a head branch named `next` or `develop` of the same repository.
+
+| Event | Tier | Jobs |
+| ----- | ---- | ---- |
+| Pull request from next into the default branch | `none` | none; `checks` succeeds |
+| Draft pull request | `draft` | `Lint and typecheck`; `checks` fails so a draft never shows a green gate |
+| Ready pull request into any other branch than the default one, such as `next` | `fast` | `Lint and typecheck`, the Node.js jobs, then the tests once `Lint and typecheck` passed. A pull request that changes only documentation skips the tests. |
+| Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
+| Push to the default branch | `none` | none; `checks` succeeds |
+| Push to any other branch, such as `next` | `full` | as above |
+| `schedule` | `nightly` | `full`, plus the Windows jobs |
+| `workflow_dispatch` and any other event | `full` | as above |
+
+The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
+the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
+also run on Windows in the `fast` and `full` tiers of a pull request or a manual
+run. The test and extra-commands jobs start once `Lint and typecheck` passed.
+`Lint and typecheck` runs `checks:prepare` when the repository defines it, then
+`typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
+
+Every Node.js, test and extra-commands job sets two variables for the commands
+it runs:
+
+- `ANTELOPEJS_CI_TIER` holds the tier, so a repository can run a browser smoke
+  test in `full` and its whole browser suite in `nightly`.
+- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the commit the pull
+  request is compared with: the first parent of the checked-out merge commit,
+  present in the checkout. A repository with several packages can restrict its
+  tests to the packages `git diff "$ANTELOPEJS_TEST_BASE" HEAD` touches and
+  their dependents. It is empty in every other tier, where all tests run.
+
+It accepts these optional inputs:
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
@@ -90,7 +127,8 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
-| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services, the pull request title check and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows-pull-requests` | `false` | With `windows`, also run the Windows jobs in the `fast` and `full` tiers of pull requests and manual runs. |
 
 On a pull request, the `gitleaks` job scans the commits the pull request adds,
 merge commits included, with gitleaks 8.30.1 and fails on any finding. It reads
@@ -103,9 +141,9 @@ file whose merge conflict was resolved by hand is reported as `b/<file>`. The
 job fails on an octopus merge, whose changes it cannot scan. On other events
 the job is skipped.
 
-The `checks` job stays the single required result. It succeeds only when every
-Node.js job, every test job and every extra-commands job, if enabled, succeeds, the `gitleaks` job, if run, succeeds and the Renovate sync run by this workflow, if any, did not
-fail or get cancelled.
+The `checks` job stays the single required result. It fails when the `Tier` job
+did not succeed, when any job it waits for failed or was cancelled, and in the
+`draft` tier. A job the tier skips does not fail it.
 
 Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands` in the Node.js job, the Node.js job does not start them. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
@@ -142,9 +180,11 @@ name: ci
 on:
   push:
     branches:
-      - main
       - next
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
