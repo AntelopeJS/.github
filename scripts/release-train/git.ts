@@ -204,13 +204,20 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const manifest = parseManifest(manifestText, where);
   const tagName = readTagName(system, repository, revision, directory);
   const pattern = tagPattern(tagName);
+  const ceiling = (readManifest(system, repository, releases, directory, `${where} on the default branch`) ?? manifest).version;
   let stable: { version: string; tag: string } | null = null;
+  const higher: string[] = [];
   const tags = new Set([revision, releases].flatMap((ref) => exec(system, "git", ["-C", repository, "tag", "--merged", ref]).split("\n")));
   for (const tag of tags) {
     const version = pattern.exec(tag.trim())?.[1];
-    if (version !== undefined && (stable === null || compareCore(version, stable.version) > 0)) {
-      stable = { version, tag: tag.trim() };
-    }
+    if (version === undefined) continue;
+    if (compareCore(version, ceiling) > 0) higher.push(tag.trim());
+    else if (stable === null || compareCore(version, stable.version) > 0) stable = { version, tag: tag.trim() };
+  }
+  if (stable === null && higher.length > 0) {
+    throw new Error(
+      `${manifest.name} has no release tag at or below ${ceiling}, the version of its package.json on the default branch, only the higher tags ${higher.sort().join(", ")}. Tag the release that version names, then plan again.`,
+    );
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
   const stableManifest = tag === null ? null : readManifest(system, repository, tag, directory, `${where} at ${stable?.tag}`);

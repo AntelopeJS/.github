@@ -89,8 +89,11 @@ you see what merging `next` would release. For each package it reads
 `package.json`, the last stable tag reachable from that branch or from the
 default branch (the `git.tagName` of `.release-it.json`, `v${version}` by
 default), so a `next` that has not merged a release back yet still counts
-from it, and the commits
-since that tag that touched the package directory. Release commits do not
+from it, and the commits since that tag that touched the package directory. A
+tag above the version of `package.json` on the default branch, such as an
+accidental major release, is never the stable tag. When every tag is above
+that version, the plan stops and names them. The plan does not read npm, so it
+cannot see a stable version that npm holds without a tag. Release commits do not
 count, and neither do the `fix(deps): depend on the stable` commits of a stable
 run. A directory inside the package that holds another listed package does
 not count either, so a root package beside `packages/*` gets only its own

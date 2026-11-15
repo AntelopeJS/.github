@@ -41,6 +41,41 @@ describe("plan", () => {
     );
   });
 
+  test("a tag above the version of package.json on the default branch is never the stable release", () => {
+    const accidental = repository("accidental-major", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("accidental-major", "1.24.0") });
+      git(path, "tag", "v2.0.1");
+      commit(path, "chore(release): v1.24.1", { "package.json": manifest("accidental-major", "1.24.1") });
+      git(path, "tag", "v1.24.1");
+      commit(path, "fix: close the socket (#512)", { "src/socket.ts": "export {};\n" });
+    });
+    const planned = fakeSystem();
+    assert.equal(main(["plan", accidental], planned.system), 0, planned.errors());
+    assert.equal(
+      planned.output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/accidental-major 1.24.1 -> 1.24.2 (patch)  AntelopeJS/accidental-major@${short(tip(accidental))}`,
+        "     fix: close the socket (#512)",
+        "",
+      ].join("\n"),
+    );
+
+    const untagged = repository("accidental-only", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("accidental-only", "1.24.1") });
+      git(path, "tag", "v2.0.0");
+      git(path, "tag", "v2.0.1");
+      commit(path, "fix: close the socket (#512)", { "src/socket.ts": "export {};\n" });
+    });
+    const stopped = fakeSystem();
+    assert.equal(main(["plan", untagged], stopped.system), 1);
+    assert.equal(
+      stopped.errors(),
+      "@antelopejs/accidental-only has no release tag at or below 1.24.1, the version of its package.json on the default branch, only the higher tags v2.0.0, v2.0.1. Tag the release that version names, then plan again.\n",
+    );
+  });
+
   test("an excluded package refuses the packages that pin its preview at runtime", () => {
     const { system, output } = fakeSystem();
     const status = main(["plan", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb, dmsDatabase], system);
