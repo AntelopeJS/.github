@@ -122,7 +122,7 @@ describe("computePlan", () => {
     const saas = {
       ...source("dms-saas", "0.12.1", ["fix: x"], {
         dependencies: { "@antelopejs/interface-dms-saas": "workspace:^", "@antelopejs/interface-dms-core": "workspace:~" },
-        peerDependencies: { "@antelopejs/interface-dms-saas": "workspace:*", "@antelopejs/interface-dms-core": "workspace:>=0.3.0 <0.4.0" },
+        peerDependencies: { "@antelopejs/interface-dms-saas": "workspace:*" },
       }),
       slug: "AntelopeJS/dms-saas",
       directory: "packages/dms-saas",
@@ -142,7 +142,6 @@ describe("computePlan", () => {
         { name: "@antelopejs/interface-dms-saas", spec: "workspace:^", range: "^0.11.0" },
         { name: "@antelopejs/interface-dms-core", spec: "workspace:~", range: "~0.3.1" },
         { name: "@antelopejs/interface-dms-saas", spec: "workspace:*", range: "0.11.0" },
-        { name: "@antelopejs/interface-dms-core", spec: "workspace:>=0.3.0 <0.4.0", range: ">=0.3.0 <0.4.0" },
       ],
     });
     assert.ok(
@@ -153,7 +152,6 @@ describe("computePlan", () => {
           "     @antelopejs/interface-dms-saas workspace:^ -> ^0.11.0",
           "     @antelopejs/interface-dms-core workspace:~ -> ~0.3.1",
           "     @antelopejs/interface-dms-saas workspace:* -> 0.11.0",
-          "     @antelopejs/interface-dms-core workspace:>=0.3.0 <0.4.0 -> >=0.3.0 <0.4.0",
         ].join("\n"),
       ),
     );
@@ -180,6 +178,7 @@ describe("computePlan", () => {
         "@antelopejs/unlisted": "workspace:^",
         "@antelopejs/path": "workspace:../path",
         "@antelopejs/alias": "workspace:@antelopejs/other@*",
+        "@antelopejs/range": "workspace:^0.10.0",
       },
     });
     const { entries } = plan([saas, unreleased, excluded, refused, bumped, elsewhere], ["@antelopejs/left"]);
@@ -192,8 +191,9 @@ describe("computePlan", () => {
         "depends on @antelopejs/bumped@workspace:^, whose package.json holds 0.5.0, not its stable 0.4.0",
         "depends on @antelopejs/other@workspace:^, which this train lists from AntelopeJS/other",
         "depends on @antelopejs/unlisted@workspace:^, which this train does not list",
-        "depends on @antelopejs/path@workspace:../path, which is not a workspace range",
-        "depends on @antelopejs/alias@workspace:@antelopejs/other@*, which is not a workspace range",
+        "depends on @antelopejs/path@workspace:../path, which is not workspace:*, workspace:^ or workspace:~",
+        "depends on @antelopejs/alias@workspace:@antelopejs/other@*, which is not workspace:*, workspace:^ or workspace:~",
+        "depends on @antelopejs/range@workspace:^0.10.0, which is not workspace:*, workspace:^ or workspace:~",
       ],
     });
     const kept = entry(entries, "left");

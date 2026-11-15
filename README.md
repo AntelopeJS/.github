@@ -165,12 +165,13 @@ in dependency order.
   packs to a registry range with `pnpm pack`. The plan shows that range, such
   as `@antelopejs/interface-dms-saas workspace:^ -> ^0.11.0`, from the version
   the plan releases for the sibling or its last stable release. `workspace:*`
-  packs to that exact version, `workspace:^` and `workspace:~` to a caret or
-  tilde range on it, and `workspace:<range>` to the range. The package is
-  refused when the sibling is not listed from the same repository, is refused
-  itself, has no stable release, or keeps a `package.json` version other than
-  its last stable release while the plan does not release it. Any other
-  `workspace:` form, such as a path or an alias, is refused too.
+  packs to that exact version, and `workspace:^` and `workspace:~` to a caret
+  or tilde range on it. The package is refused when the sibling is not listed
+  from the same repository, is refused itself, has no stable release, or keeps
+  a `package.json` version other than its last stable release while the plan
+  does not release it. Any other `workspace:` form is refused too, such as
+  `workspace:^0.10.0`, which the plan cannot check against the sibling's
+  version, a path or an alias.
 - A package is refused when a preview pin in `dependencies`,
   `peerDependencies` or `optionalDependencies` cannot move. That happens when
   the dependency is not listed, is left out, is refused itself, has no stable

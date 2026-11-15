@@ -323,8 +323,7 @@ type PinOutcome = { range: string } | { reason: string };
 
 function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): PinOutcome {
   const range = spec.slice(workspacePrefix.length);
-  const shorthand = range === "*" || range === "^" || range === "~";
-  if (!shorthand && (!isRegistrySpec(range) || range.startsWith("npm:"))) return { reason: "which is not a workspace range" };
+  if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
   const sibling = context.listed.get(name);
   if (sibling === undefined) return { reason: "which this train does not list" };
   if (sibling.slug !== source.slug) return { reason: `which this train lists from ${sibling.slug}` };
@@ -336,7 +335,6 @@ function resolveSibling(source: PackageSource, { name, spec }: Dependency, conte
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  if (!shorthand) return { range };
   return { range: range === "*" ? version : `${range}${version}` };
 }
 
