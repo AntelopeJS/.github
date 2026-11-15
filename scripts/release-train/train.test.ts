@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short, tip } from "./fixtures.ts";
+import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, pulls, repository, short, tip } from "./fixtures.ts";
 import { main } from "./train.ts";
 
 describe("plan", () => {
@@ -70,6 +70,50 @@ describe("plan", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("lists the tasks of the cycle from the heads of the pull requests merged since the stable tag", () => {
+    const promoted = repository("promoted", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("promoted", "0.3.0") });
+      git(path, "tag", "v0.3.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const earlier = commit(path, "feat(query): hand over rows in batches (#11)", { "src/batch.ts": "export {};\n" }, "Alice");
+      git(path, "checkout", "--quiet", "main");
+      const earlierSquash = commit(path, "feat(query): hand over rows in batches (#12)", { "src/batch.ts": "export {};\n" });
+      commit(path, "chore(release): v0.3.1", { "package.json": manifest("promoted", "0.3.1") }, "github-actions[bot]");
+      git(path, "tag", "v0.3.1");
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "Merge main into next", "main");
+      commit(path, "fix(cursor): close the cursor on error (#13)", { "src/cursor.ts": "export {};\n" }, "Bob");
+      commit(path, "chore: tidy the scripts (#14)", { "src/scripts.ts": "export {};\n" }, "Bob");
+      const head = commit(path, "feat(api)!: rename read to fetch (#15)", { "src/api.ts": "export {};\n" }, "Alice");
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: promote next (#16)", {});
+      const hotfix = commit(path, "fix(io): retry the reads (#17)", { "src/io.ts": "export {};\n" }, "Carol");
+      pulls["AntelopeJS/promoted"] = [
+        { number: 12, mergeCommit: { oid: earlierSquash }, headRefOid: earlier },
+        { number: 16, mergeCommit: { oid: squash }, headRefOid: head },
+        { number: 17, mergeCommit: { oid: hotfix }, headRefOid: "f".repeat(40) },
+      ];
+    });
+    const planned = fakeSystem();
+    assert.equal(main(["plan", promoted], planned.system), 0);
+    assert.equal(
+      planned.output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/promoted 0.3.1 -> 0.4.0 (minor)  AntelopeJS/promoted@${short(tip(promoted))}`,
+        "     fix(io): retry the reads (#17)",
+        "     feat(api)!: rename read to fetch (#15)",
+        "     fix(cursor): close the cursor on error (#13)",
+        "",
+      ].join("\n"),
+    );
+    const offline = fakeSystem({}, { down: true });
+    assert.equal(main(["plan", promoted], offline.system), 0);
+    assert.match(offline.output(), /\(patch\)  \S+\n {5}fix\(io\): retry the reads \(#17\)\n {5}fix: promote next \(#16\)\n$/);
   });
 
   test("moves a pin only when the branch of its dependency holds the preview's commit", () => {

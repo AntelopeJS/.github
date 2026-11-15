@@ -5,6 +5,7 @@ export type Level = "minor" | "patch";
 export interface Commit {
   sha: string;
   subject: string;
+  author: string;
   level: Level | null;
 }
 
@@ -34,9 +35,14 @@ export interface PackageSource {
   directory: string;
   branch: string;
   head: string;
+  /** The `git.tagName` of `.release-it.json`, such as `v${version}`. */
+  tagName: string;
   manifest: Manifest;
   stable: string | null;
+  /** The commits on the branch since the stable tag. */
   commits: Commit[];
+  /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
+  notes: Commit[];
 }
 
 /** A devDependency preview pin that a release keeps, with the reason it cannot move to a stable range. */
@@ -253,7 +259,7 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
 
   const reasons: string[] = [];
-  let level = highestLevel(source.commits);
+  let level = highestLevel([...source.commits, ...source.notes]);
   if (level === null) {
     if (Object.keys(ranges).length === 0) return { status: "unchanged", source };
     level = "patch";
@@ -318,7 +324,7 @@ function renderEntry(entry: Entry, position: number): string[] {
   if (entry.status !== "release") return [];
   return [
     `${position}. ${manifest.name} ${entry.from ?? "unreleased"} -> ${entry.to} (${entry.level})  ${location(entry.source)}`,
-    ...entry.source.commits
+    ...entry.source.notes
       .filter((commit) => commit.level !== null)
       .map((commit) => `     ${commit.subject}`),
     ...entry.reasons.map((reason) => `     ${reason}`),

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
-import { commitSearch, releaseRun, type RunOutcome } from "./github.ts";
+import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
 import { computePlan, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
 import type { System } from "./system.ts";
 
@@ -76,6 +76,7 @@ function buildPlan(command: Command, system: System): Plan {
   const sources: PackageSource[] = [];
   const places = new Map<string, { from: Checkout; revision: Revision }>();
   const checkouts = new Map<string, Checkout>();
+  const pulls = mergedPulls(system);
   for (const target of command.targets) {
     const from = checkouts.get(location(target)) ?? openCheckout(target, system);
     checkouts.set(location(target), from);
@@ -83,7 +84,8 @@ function buildPlan(command: Command, system: System): Plan {
     const nested = command.targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
-    const source = readSource(system, from, revision, target.directory, nested);
+    const merged = pulls(from.slug, resolveRevision(system, from, null).branch);
+    const source = readSource(system, from, revision, { directory: target.directory, nested, merged });
     sources.push(source);
     places.set(source.manifest.name, { from, revision });
   }
@@ -93,7 +95,7 @@ function buildPlan(command: Command, system: System): Plan {
   const unknown = command.exclude.find((name) => !names.includes(name));
   if (unknown !== undefined) throw new Error(`--exclude ${unknown} names no listed package.`);
   const ref = command.ref ?? [...new Set(sources.map((source) => source.branch))].join(", ");
-  const search = commitSearch(system);
+  const search = commitSearch(system, pulls);
   const contains = (name: string, sha: string): boolean => {
     const place = places.get(name);
     return place !== undefined && search(place.from, place.revision, sha);
