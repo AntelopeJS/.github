@@ -1,14 +1,32 @@
 import { isAncestor, type Checkout, type Revision } from "./git.ts";
 import type { Entry } from "./plan.ts";
-import { exec, isRecord, type System } from "./system.ts";
+import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
+const runViewRetries = 8;
 const dispatchPollMilliseconds = 5_000;
 const dispatchPollAttempts = 24;
 
-function parseRuns(text: string): { id: number; branch: string }[] {
-  const value: unknown = JSON.parse(text);
-  if (!Array.isArray(value)) throw new Error(`gh run list answered ${text}`);
+/**
+ * How a dispatched release ended. `failed` means nothing was published. `unknown` means the dispatch was
+ * accepted but the train could not see how its run ended, so the package may be published.
+ */
+export type RunOutcome =
+  | { kind: "success"; url: string }
+  | { kind: "failed"; detail: string }
+  | { kind: "unknown"; detail: string; url: string };
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function parseRuns(text: string): { id: number; branch: string }[] | null {
+  const value = parseJson(text);
+  if (!Array.isArray(value)) return null;
   return value.flatMap((run: unknown) =>
     isRecord(run) && typeof run.databaseId === "number" && typeof run.headBranch === "string"
       ? [{ id: run.databaseId, branch: run.headBranch }]
@@ -16,46 +34,63 @@ function parseRuns(text: string): { id: number; branch: string }[] {
   );
 }
 
-/** Dispatches the `release.yml` run of a release entry and returns the id of the run it started. */
-export function dispatch(system: System, entry: Extract<Entry, { status: "release" }>): number {
-  const { slug, directory, branch } = entry.source;
-  const list = (): { id: number; branch: string }[] =>
-    parseRuns(
-      exec(system, "gh", [
-        "run", "list", "--repo", slug, "--workflow", "release.yml", "--event", "workflow_dispatch",
-        "--json", "databaseId,headBranch", "--limit", "20",
-      ]),
-    );
-  const before = new Set(list().map((run) => run.id));
-  exec(system, "gh", [
-    "workflow", "run", "release.yml", "--repo", slug, "--ref", branch,
-    "-f", `release-version=${entry.to}`,
-    "-f", `release-commit=${entry.source.head}`,
-    "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
-    ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
+function listRuns(system: System, slug: string): { id: number; branch: string }[] | null {
+  const result = system.run("gh", [
+    "run", "list", "--repo", slug, "--workflow", "release.yml", "--event", "workflow_dispatch",
+    "--json", "databaseId,headBranch", "--limit", "20",
   ]);
-  for (let attempt = 0; attempt < dispatchPollAttempts; attempt += 1) {
-    system.sleep(dispatchPollMilliseconds);
-    const created = list()
-      .filter((run) => !before.has(run.id) && run.branch === branch)
-      .sort((left, right) => left.id - right.id)[0];
-    if (created !== undefined) return created.id;
-  }
-  throw new Error(`No release.yml run appeared in ${slug} after the dispatch of ${entry.to}.`);
+  return result.status === 0 ? parseRuns(result.stdout) : null;
 }
 
-/** Polls a workflow run until it completes and returns its conclusion and URL. */
-export function awaitRun(system: System, slug: string, id: number): { conclusion: string; url: string } {
+function viewRun(system: System, slug: string, id: number): { status: string; conclusion: string; url: string } | null {
+  const result = system.run("gh", ["run", "view", String(id), "--repo", slug, "--json", "status,conclusion,url"]);
+  const value = result.status === 0 ? parseJson(result.stdout) : null;
+  if (!isRecord(value) || typeof value.status !== "string") return null;
+  return { status: value.status, conclusion: String(value.conclusion ?? ""), url: String(value.url ?? "") };
+}
+
+function awaitRun(system: System, slug: string, id: number): RunOutcome {
+  const url = `https://github.com/${slug}/actions/runs/${id}`;
+  let failures = 0;
   for (;;) {
-    const value: unknown = JSON.parse(
-      exec(system, "gh", ["run", "view", String(id), "--repo", slug, "--json", "status,conclusion,url"]),
-    );
-    if (!isRecord(value)) throw new Error(`gh run view ${id} answered ${String(value)}`);
-    if (value.status === "completed") {
-      return { conclusion: String(value.conclusion ?? ""), url: String(value.url ?? "") };
+    const run = viewRun(system, slug, id);
+    failures = run === null ? failures + 1 : 0;
+    if (failures > runViewRetries) {
+      return { kind: "unknown", detail: `gh run view failed ${failures} times in a row`, url };
+    }
+    if (run?.status === "completed") {
+      return run.conclusion === "success"
+        ? { kind: "success", url: run.url || url }
+        : { kind: "failed", detail: `(${run.conclusion})  ${run.url || url}` };
     }
     system.sleep(runPollMilliseconds);
   }
+}
+
+/** Dispatches the `release.yml` run of a release entry and waits until the train knows how it ended. */
+export function releaseRun(system: System, entry: Extract<Entry, { status: "release" }>): RunOutcome {
+  const { slug, directory, branch, head } = entry.source;
+  const before = listRuns(system, slug);
+  if (before === null) return { kind: "failed", detail: `gh run list --repo ${slug} failed, so nothing was dispatched` };
+  const known = new Set(before.map((run) => run.id));
+  const dispatched = system.run("gh", [
+    "workflow", "run", "release.yml", "--repo", slug, "--ref", branch,
+    "-f", `release-version=${entry.to}`,
+    "-f", `release-commit=${head}`,
+    "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
+    ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
+  ]);
+  if (dispatched.status !== 0) {
+    return { kind: "failed", detail: `gh workflow run release.yml --repo ${slug} failed\n${dispatched.stderr.trim()}` };
+  }
+  for (let attempt = 0; attempt < dispatchPollAttempts; attempt += 1) {
+    system.sleep(dispatchPollMilliseconds);
+    const created = (listRuns(system, slug) ?? [])
+      .filter((run) => !known.has(run.id) && run.branch === branch)
+      .sort((left, right) => left.id - right.id)[0];
+    if (created !== undefined) return awaitRun(system, slug, created.id);
+  }
+  return { kind: "unknown", detail: "no release.yml run appeared after the dispatch", url: `https://github.com/${slug}/actions` };
 }
 
 interface MergedPull {
@@ -65,12 +100,7 @@ interface MergedPull {
 }
 
 function parsePulls(text: string): MergedPull[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return [];
-  }
+  const value = parseJson(text);
   if (!Array.isArray(value)) return [];
   return value
     .flatMap((pull: unknown) =>

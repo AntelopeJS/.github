@@ -96,8 +96,11 @@ function compare(range: string): string {
   return base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged";
 }
 
-export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?: boolean } = {}) {
+type View = "fail" | "running";
+
+export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?: boolean; views?: Record<string, View[]> } = {}) {
   const calls: string[][] = [];
+  const sleeps: number[] = [];
   const runs: Run[] = [];
   let out = "";
   let err = "";
@@ -116,7 +119,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);
-        runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
+        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
         return answer("");
       }
       if (args[0] === "run" && args[1] === "list") {
@@ -125,12 +128,16 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
       }
       const run = runs.find((candidate) => String(candidate.id) === args[2]);
       assert.ok(run, `no run ${args[2]}`);
+      const view = gh.views?.[repo]?.shift() ?? (run.views === 0 ? "running" : "done");
       run.views += 1;
-      const status = run.views < 2 ? "in_progress" : "completed";
+      if (view === "fail") return answer("", 1);
+      const status = view === "running" ? "in_progress" : "completed";
       const conclusion = status === "completed" ? (conclusions[repo] ?? "success") : "";
       return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
     },
-    sleep: () => {},
+    sleep: (milliseconds) => {
+      sleeps.push(milliseconds);
+    },
     out: (text) => {
       out += text;
     },
@@ -139,7 +146,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
     },
     cacheDirectory: join(root, "cache"),
   };
-  return { system, calls, output: () => out, errors: () => err };
+  return { system, calls, sleeps, output: () => out, errors: () => err };
 }
 
 export function dispatches(calls: string[][]): string[][] {

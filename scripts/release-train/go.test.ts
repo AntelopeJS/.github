@@ -54,6 +54,46 @@ describe("go", () => {
     assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
   });
 
+  test("retries a run gh cannot read up to 8 times in a row", () => {
+    const fails = (count: number): "fail"[] => Array.from({ length: count }, () => "fail" as const);
+    const { system, output } = fakeSystem({}, { views: { "AntelopeJS/interface-database": [...fails(8), "running", ...fails(8)] } });
+    assert.equal(main(["go", interfaceDatabase], system), 0);
+    assert.match(output(), /\npublished @antelopejs\/interface-database 0\.5\.0  https:\/\/github\.com\/AntelopeJS\/interface-database\/actions\/runs\/100\n/);
+  });
+
+  test("a run gh cannot read 9 times in a row is unknown, and so is a dispatch with no run", () => {
+    const fails = Array.from({ length: 9 }, () => "fail" as const);
+    const unread = fakeSystem({}, { views: { "AntelopeJS/interface-database": fails } });
+    assert.equal(main(["go", interfaceDatabase, mongodb], unread.system), 1);
+    assert.equal(unread.sleeps.filter((milliseconds) => milliseconds === 15_000).length, 8);
+    assert.deepEqual(dispatches(unread.calls).map(([repo]) => repo), ["AntelopeJS/interface-database"]);
+    assert.equal(
+      unread.errors(),
+      [
+        "unknown @antelopejs/interface-database 0.5.0, gh run view failed 9 times in a row",
+        "Published: nothing.",
+        "Not published: @antelopejs/mongodb 1.8.7.",
+        "Unknown: @antelopejs/interface-database 0.5.0 (https://github.com/AntelopeJS/interface-database/actions/runs/100).",
+        "Check that run before you run go again.",
+        "",
+      ].join("\n"),
+    );
+
+    const lost = fakeSystem({ "AntelopeJS/mongodb": "lost" });
+    assert.equal(main(["go", interfaceDatabase, mongodb], lost.system), 1);
+    assert.equal(
+      lost.errors(),
+      [
+        "unknown @antelopejs/mongodb 1.8.7, no release.yml run appeared after the dispatch",
+        "Published: @antelopejs/interface-database 0.5.0.",
+        "Not published: nothing.",
+        "Unknown: @antelopejs/mongodb 1.8.7 (https://github.com/AntelopeJS/mongodb/actions).",
+        "Check that run before you run go again.",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("stops before a second package of a repository that an earlier release of the run changed", () => {
     const workspace = repository("go-workspace", (path) => {
       commit(path, "feat: first", {

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
-import { awaitRun, commitSearch, dispatch } from "./github.ts";
+import { commitSearch, releaseRun, type RunOutcome } from "./github.ts";
 import { computePlan, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
 import type { System } from "./system.ts";
 
@@ -105,16 +105,15 @@ function label(entry: Release): string {
   return `${entry.source.manifest.name} ${entry.to}`;
 }
 
-function release(system: System, entry: Release, earlier: Release | undefined): { url: string } | { failure: string } {
+function release(system: System, entry: Release, earlier: Release | undefined): RunOutcome {
   if (earlier !== undefined) {
-    return { failure: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
+    return { kind: "failed", detail: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
   }
-  try {
-    const { conclusion, url } = awaitRun(system, entry.source.slug, dispatch(system, entry));
-    return conclusion === "success" ? { url } : { failure: `(${conclusion})  ${url}` };
-  } catch (error) {
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
+  return releaseRun(system, entry);
+}
+
+function list(releases: readonly Release[]): string {
+  return releases.length === 0 ? "nothing" : releases.map(label).join(", ");
 }
 
 function go(plan: Plan, system: System): number {
@@ -122,18 +121,26 @@ function go(plan: Plan, system: System): number {
   for (const [position, entry] of releases.entries()) {
     const published = releases.slice(0, position);
     const outcome = release(system, entry, published.find((other) => other.source.slug === entry.source.slug));
-    if ("url" in outcome) {
+    if (outcome.kind === "success") {
       system.out(`published ${label(entry)}  ${outcome.url}\n`);
       continue;
     }
-    system.err(
-      [
-        `failed ${label(entry)} ${outcome.failure}`,
-        `Published: ${published.length === 0 ? "nothing" : published.map(label).join(", ")}.`,
-        `Not published: ${releases.slice(position).map(label).join(", ")}.`,
-        "Fix the failure, then run go again to continue.",
-      ].join("\n"),
-    );
+    const lines =
+      outcome.kind === "failed"
+        ? [
+            `failed ${label(entry)} ${outcome.detail}`,
+            `Published: ${list(published)}.`,
+            `Not published: ${list(releases.slice(position))}.`,
+            "Fix the failure, then run go again to continue.",
+          ]
+        : [
+            `unknown ${label(entry)}, ${outcome.detail}`,
+            `Published: ${list(published)}.`,
+            `Not published: ${list(releases.slice(position + 1))}.`,
+            `Unknown: ${label(entry)} (${outcome.url}).`,
+            "Check that run before you run go again.",
+          ];
+    system.err(lines.join("\n"));
     return 1;
   }
   return 0;
