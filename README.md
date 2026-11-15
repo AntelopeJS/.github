@@ -76,10 +76,15 @@ node scripts/release-train/train.ts plan AntelopeJS/interface-database AntelopeJ
 node scripts/release-train/train.ts plan --ref next AntelopeJS/interface-database AntelopeJS/mongodb
 node scripts/release-train/train.ts plan --exclude @antelopejs/mongodb AntelopeJS/interface-database AntelopeJS/mongodb
 node scripts/release-train/train.ts go AntelopeJS/interface-database AntelopeJS/mongodb AntelopeJS/dms-database
+node scripts/release-train/train.ts plan AntelopeJS/dms-saas
 ```
 
 A package is `owner/repo` or a path to a git checkout, followed by
-`:<directory>` when the package is not at the repository root. The train clones
+`:<directory>` when the package is not at the repository root. A workspace
+root whose `package.json` has no name or version is not a package. The train
+reads it as every directory under it that holds a `package.json` beside a
+`.release-it.json`, such as `packages/dms-saas` and
+`packages/interface-dms-saas` for `AntelopeJS/dms-saas`. The train clones
 each `owner/repo` into `~/.cache/antelopejs-release-train` with blobs on demand
 and fetches it again on the next run. It reads a local checkout as it is.
 
@@ -154,8 +159,19 @@ in dependency order.
   comparison counts as not found.
 - A package is refused when a spec in `dependencies`, `peerDependencies` or
   `optionalDependencies` does not resolve from the registry, such as a path,
-  `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec. Only a semver
+  `file:`, `link:`, `catalog:`, git, tarball or dist-tag spec. Only a semver
   range, or an `npm:` alias to one, resolves from the registry.
+- A `workspace:` spec in those fields names a sibling, which the stable run
+  packs to a registry range with `pnpm pack`. The plan shows that range, such
+  as `@antelopejs/interface-dms-saas workspace:^ -> ^0.11.0`, from the version
+  the plan releases for the sibling or its last stable release. `workspace:*`
+  packs to that exact version, and `workspace:^` and `workspace:~` to a caret
+  or tilde range on it. The package is refused when the sibling is not listed
+  from the same repository, is refused itself, has no stable release, or keeps
+  a `package.json` version other than its last stable release while the plan
+  does not release it. Any other `workspace:` form is refused too, such as
+  `workspace:^0.10.0`, which the plan cannot check against the sibling's
+  version, a path or an alias.
 - A package is refused when a preview pin in `dependencies`,
   `peerDependencies` or `optionalDependencies` cannot move. That happens when
   the dependency is not listed, is left out, is refused itself, has no stable
@@ -225,7 +241,8 @@ A stable run then does the following.
    stays as it is. It fails when no field holds a preview of the name.
 4. It fails when `dependencies`, `peerDependencies` or `optionalDependencies`
    still hold a prerelease spec, or a spec that does not resolve from the
-   registry. A `devDependencies` preview gives a warning and stays.
+   registry other than `workspace:`. A `devDependencies` preview gives a
+   warning and stays.
 5. When it wrote ranges, it updates the lockfile with
    `pnpm install --no-frozen-lockfile` and stages `package.json` and the
    lockfile, so the release commit holds them and npm records `release-commit`
@@ -250,10 +267,17 @@ A stable run then does the following.
    `release-it-changelogen` plugin and with the notes as the GitHub release
    notes.
 7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
-   config, which publishes to npm, then writes the release commit with the
-   changelog, the tag and the GitHub release. A resumed run passes
-   `--no-npm.publish`. It never runs the repository's `release` script, so no
-   tests run.
+   config. release-it bumps `package.json`. In place of release-it's own
+   `npm publish`, a `before:npm:release` hook packs the package with
+   `pnpm pack`, which resolves each `workspace:` and `catalog:` spec, and
+   publishes the tarball under `latest`, as a preview does under `next`. The
+   hook refuses a tarball whose `dependencies`, `peerDependencies` or
+   `optionalDependencies` still hold a spec that resolves only inside the
+   repository, and records `release-commit` as its `gitHead`. release-it then
+   writes the release commit with the changelog, the tag and the GitHub
+   release. A resumed run, and a package whose `.release-it.json` sets
+   `npm.publish` to `false` because it publishes itself, get no hook. It never
+   runs the repository's `release` script, so no tests run.
 
 ### Workflow inputs
 

@@ -182,6 +182,42 @@ describe("go", () => {
     assert.match(released.output(), /\nPublished: @antelopejs\/go-inner 0\.2\.1, @antelopejs\/go-root 1\.0\.1\.\n$/);
   });
 
+  test("stops when the version a workspace sibling packs to moved since the plan", () => {
+    const workspace = repository("go-siblings", (path) => {
+      commit(path, "feat: first", {
+        "package.json": { name: "go-siblings", private: true },
+        "packages/a/package.json": manifest("go-a", "1.0.0"),
+        "packages/a/.release-it.json": { git: { tagName: "a-v${version}" } },
+        "packages/c/package.json": manifest("go-c", "1.0.0"),
+        "packages/c/.release-it.json": { git: { tagName: "c-v${version}" } },
+        "packages/b/package.json": manifest("go-b", "1.0.0", { dependencies: { "@antelopejs/go-a": "workspace:^", "@antelopejs/go-c": "workspace:^" } }),
+        "packages/b/.release-it.json": { git: { tagName: "b-v${version}" } },
+      });
+      for (const name of ["a", "b", "c"]) git(path, "tag", `${name}-v1.0.0`);
+      commit(path, "fix(c): trim the input", { "packages/c/index.ts": "export {};\n" });
+      commit(path, "fix(b): log the start", { "packages/b/index.ts": "export {};\n" });
+    });
+    const { system, errors } = fakeSystem({}, {
+      dispatched: () => {
+        commit(workspace, "chore(release): c v1.0.1", { "packages/c/package.json": manifest("go-c", "1.0.1") });
+        git(workspace, "tag", "c-v1.0.1");
+        commit(workspace, "chore(release): a v1.1.0", { "packages/a/package.json": manifest("go-a", "1.1.0") });
+        git(workspace, "tag", "a-v1.1.0");
+        git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");
+      },
+    });
+    assert.equal(main(["go", workspace], system), 1);
+    assert.equal(
+      errors(),
+      [
+        "The plan changed after the release of @antelopejs/go-c 1.0.1. Read it with plan, then run go again.",
+        "Published: @antelopejs/go-c 1.0.1.",
+        "Not published: @antelopejs/go-b 1.0.1.",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("refuses --ref and dispatches nothing", () => {
     const { system, calls, errors } = fakeSystem();
     assert.equal(main(["go", "--ref", "next", mongodb], system), 1);

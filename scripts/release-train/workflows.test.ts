@@ -138,6 +138,11 @@ writeFileSync(
   `#!/bin/sh\nif [ "$1" = publish ]; then printf '%s\\n' "$PWD" "$@" > "$NPM_PUBLISH_LOG"; exit 0; fi\nexec '${realNpm}' "$@"\n`,
 );
 chmodSync(join(recordingNpm, "npm"), 0o755);
+const ghOnly = join(root, "gh-only");
+mkdirSync(ghOnly);
+symlinkSync(join(fakeNpm, "gh"), join(ghOnly, "gh"));
+const releaseIt = process.env.RELEASE_IT ?? "";
+assert.ok(existsSync(releaseIt), "RELEASE_IT names the bin/release-it.js of release-it 19, which the stable run tests drive");
 
 interface Publication {
   manifest: unknown;
@@ -148,6 +153,7 @@ let previews = 0;
 function publishPreview(text: string, cwd: string, version: string, env: Record<string, string> = {}): StepResult & { publication: Publication | null } {
   previews += 1;
   const log = join(root, `npm-publish-${previews}.log`);
+  assert.equal(runStep(text, "Write the publish script", cwd).status, 0);
   const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
   if (!existsSync(log)) return { ...result, publication: null };
   const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
@@ -202,7 +208,7 @@ function promotedOrigin(): string {
 
 for (const { file, text } of workflows) {
   describe(file, () => {
-    test("Apply dependency ranges refuses every runtime preview or non-registry spec and warns on a devDependency preview", () => {
+    test("Apply dependency ranges refuses every runtime preview or non-registry spec but a workspace: one, and warns on a devDependency preview", () => {
       const pinned = packageDirectory(`${file}-pinned`, {
         name: "@antelopejs/x",
         dependencies: { "@antelopejs/a": "0.5.0-next.12.g3f9a2c1", "@antelopejs/b": ">=1.0.0 <1.1.0" },
@@ -216,9 +222,10 @@ for (const { file, text } of workflows) {
         "A stable release depends only on stable registry version ranges. Give each preview a stable range in dependency-ranges, and replace each other spec:\n" +
           "dependencies @antelopejs/a 0.5.0-next.12.g3f9a2c1\noptionalDependencies @antelopejs/d 1.0.1-next.3.gabc1234\n",
       );
+      const unpacked = nonRegistrySpecs.filter((spec) => !spec.startsWith("workspace:"));
       const local = packageDirectory(`${file}-local`, {
         name: "@antelopejs/x",
-        dependencies: Object.fromEntries(nonRegistrySpecs.map((spec, index) => [`@antelopejs/d${index}`, spec])),
+        dependencies: { ...Object.fromEntries(unpacked.map((spec, index) => [`@antelopejs/d${index}`, spec])), "@antelopejs/w": "workspace:^" },
         peerDependencies: { "@antelopejs/p": "file:../p" },
         optionalDependencies: { "@antelopejs/o": "link:../o" },
         devDependencies: { "@antelopejs/dev": "file:../dev" },
@@ -226,7 +233,7 @@ for (const { file, text } of workflows) {
       const unpublishable = runStep(text, "Apply dependency ranges", local);
       assert.equal(unpublishable.status, 1);
       assert.deepEqual(unpublishable.stderr.trim().split("\n").slice(1), [
-        ...nonRegistrySpecs.map((spec, index) => `dependencies @antelopejs/d${index} ${spec}`),
+        ...unpacked.map((spec, index) => `dependencies @antelopejs/d${index} ${spec}`),
         "peerDependencies @antelopejs/p file:../p",
         "optionalDependencies @antelopejs/o link:../o",
       ]);
@@ -352,6 +359,8 @@ for (const { file, text } of workflows) {
         git: { tagName: "v${version}", requireCommits: true, requireCleanWorkingDir: false },
         github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
         plugins: { "@release-it/bumper": {} },
+        npm: { publish: false },
+        hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
       });
 
       const fresh = write("fresh", {});
@@ -360,6 +369,8 @@ for (const { file, text } of workflows) {
       assert.deepEqual(fresh.config, {
         git: { requireCleanWorkingDir: false },
         github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+        npm: { publish: false },
+        hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
       });
 
       const custom = write("custom", {
@@ -372,6 +383,8 @@ for (const { file, text } of workflows) {
       assert.deepEqual(custom.config, {
         git: { requireCleanWorkingDir: false },
         github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+        npm: { publish: false },
+        hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
       });
     });
 
@@ -517,6 +530,69 @@ for (const { file, text } of workflows) {
         published.stdout,
         `exec release-it --config ${join(root, "release-it.json")} --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
       );
+    });
+
+    test("a stable run of a workspace package publishes it packed after release-it's bump, with each sibling's released range", () => {
+      const bare = join(root, `${file}-workspace.git`);
+      git(root, "init", "--quiet", "--bare", "--initial-branch=main", bare);
+      const seed = join(root, `${file}-workspace-seed`);
+      git(root, "clone", "--quiet", bare, seed);
+      const manifest = {
+        name: "@antelopejs/x",
+        version: "0.12.1",
+        license: "Apache-2.0",
+        dependencies: { "@antelopejs/interface-x": "workspace:^" },
+        peerDependencies: { "@antelopejs/interface-x": "workspace:*" },
+      };
+      commitFiles(seed, "feat: first", {
+        ".gitignore": "node_modules\npnpm-lock.yaml\n",
+        "package.json": JSON.stringify({ name: "workspace", private: true }),
+        "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+        "packages/interface-x/package.json": JSON.stringify({ name: "@antelopejs/interface-x", version: "0.11.0" }),
+        "packages/x/package.json": `${JSON.stringify(manifest, null, 2)}\n`,
+        "packages/x/.release-it.json": JSON.stringify({ git: { tagName: "v${version}" }, github: { release: false } }),
+      });
+      git(seed, "tag", "v0.12.1");
+      commitFiles(seed, "fix: x", { "packages/x/index.js": "x\n" });
+      git(seed, "push", "--quiet", "origin", "main", "--tags");
+      const runner = join(root, `${file}-workspace-runner`);
+      git(root, "clone", "--quiet", bare, runner);
+      const planned = git(runner, "rev-parse", "HEAD");
+      const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: runner, encoding: "utf8" });
+      assert.equal(installed.status, 0, installed.stderr);
+      const x = join(runner, "packages", "x");
+      mkdirSync(join(x, "node_modules", ".bin"), { recursive: true });
+      symlinkSync(releaseIt, join(x, "node_modules", ".bin", "release-it"));
+      const log = join(root, `${file}-workspace-publish.log`);
+      const env = { ...hermeticGit, PATH: `${recordingNpm}:${ghOnly}:${process.env.PATH ?? ""}`, NPM_PUBLISH_LOG: log, RELEASE_VERSION: "0.13.0" };
+      for (const [step, cwd, extra] of [
+        ["Configure release identity", runner, {}],
+        ["Apply dependency ranges", x, {}],
+        ["Write the publish script", x, {}],
+        ["Write release notes", x, { FAKE_PULLS: "[]", GITHUB_REPOSITORY: "AntelopeJS/x", DEFAULT_BRANCH: "main" }],
+        ["Publish stable release", x, { GITHUB_TOKEN: "token", GITHUB_REF_NAME: "main" }],
+      ] as const) {
+        const result = runStep(text, step, cwd, { ...env, ...extra });
+        assert.equal(result.status, 0, `${step}\n${result.stdout}${result.stderr}`);
+      }
+      const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
+      const tarball = args.find((arg) => arg.endsWith(".tgz")) ?? join(directory, "package.json");
+      const published = tarball.endsWith(".tgz") ? spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout : readFileSync(tarball, "utf8");
+      assert.deepEqual(
+        { manifest: JSON.parse(published), args: args.filter((arg) => arg !== tarball) },
+        {
+          manifest: {
+            ...manifest,
+            version: "0.13.0",
+            dependencies: { "@antelopejs/interface-x": "^0.11.0" },
+            peerDependencies: { "@antelopejs/interface-x": "0.11.0" },
+            gitHead: planned,
+          },
+          args: ["publish", "--tag", "latest"],
+        },
+      );
+      assert.deepEqual(JSON.parse(git(bare, "show", "v0.13.0:packages/x/package.json")), { ...manifest, version: "0.13.0" });
+      assert.equal(git(runner, "status", "--porcelain"), "");
     });
 
     test("Publish preview publishes the packed package, with each workspace: spec resolved and the commit as gitHead", () => {
@@ -765,19 +841,38 @@ for (const { file, text } of workflows) {
       assert.deepEqual([released.status, released.stderr], [1, "@antelopejs/x 0.4.2 is released: npm holds it and the tag v0.4.2 exists.\n"]);
     });
 
-    test("Publish stable release leaves npm out of a resumed run", () => {
-      const publish = (resume: string) =>
-        runStep(text, "Publish stable release", packagePath, {
-          PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
-          RELEASE_VERSION: "0.4.2",
-          RESUME: resume,
-          GITHUB_TOKEN: "token",
-          GITHUB_REF_NAME: "main",
-          ...hermeticGit,
-        });
-      const releaseIt = `pnpm exec release-it --config ${root}/release-it.json --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.4.2`;
-      assert.equal(publish("").stdout, `${releaseIt}\n`);
-      assert.equal(publish("true").stdout, `${releaseIt} --no-npm.publish\n`);
+    test("Write release notes leaves npm out of a resumed run and of a package that publishes itself", () => {
+      const config = (name: string, releaseIt: object, resume: string): unknown => {
+        const { directory } = repository(`${file}-${name}`, { "package.json": "{}\n", ".release-it.json": JSON.stringify(releaseIt) });
+        const env = { PATH: `${fakeNpm}:${process.env.PATH ?? ""}`, FAKE_PULLS: "[]", GITHUB_REPOSITORY: "AntelopeJS/x", DEFAULT_BRANCH: "main", RELEASE_VERSION: "0.4.3", RESUME: resume, ...hermeticGit };
+        const result = runStep(text, "Write release notes", directory, env);
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
+      };
+      const notes = `cat '${join(root, "release-notes.md")}'`;
+      assert.deepEqual(config("resumed", { hooks: { "before:npm:release": "echo before" } }, "true"), {
+        hooks: { "before:npm:release": "echo before" },
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: notes },
+        npm: { publish: false },
+      });
+      assert.deepEqual(config("self-published", { npm: { publish: false, skipChecks: true }, hooks: { "after:bump": ["node scripts/publish.mjs"] } }, ""), {
+        npm: { publish: false, skipChecks: true },
+        hooks: { "after:bump": ["node scripts/publish.mjs"] },
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: notes },
+      });
+      assert.deepEqual(config("no-npm", { npm: false }, ""), {
+        npm: false,
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: notes },
+      });
+      assert.deepEqual(config("own-hook",{ hooks: { "before:npm:release": "echo before" } }, ""), {
+        hooks: { "before:npm:release": ["echo before", `bash '${join(root, "publish.sh")}' latest`] },
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: notes },
+        npm: { publish: false },
+      });
     });
 
     test("Validate package publication metadata refuses a package of another repository", () => {

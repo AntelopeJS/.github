@@ -106,6 +106,22 @@ function readManifest(system: System, repository: string, revision: string, dire
   return listed === "" ? null : parseManifest(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]), where);
 }
 
+/**
+ * The directories under a workspace root that hold a released package, a `package.json` beside a `.release-it.json`.
+ * Null when the directory's own `package.json` names a package, or when no released package is under it.
+ */
+export function workspacePackages(system: System, { repository }: Checkout, { name: revision }: Revision, directory: string): string[] | null {
+  const value: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]));
+  if (isRecord(value) && typeof value.name === "string" && typeof value.version === "string") return null;
+  const files = exec(system, "git", ["-C", repository, "ls-tree", "-r", "-z", "--name-only", revision, "--", directory]).split("\0");
+  const tracked = new Set(files);
+  const released = files
+    .filter((file) => posix.basename(file) === ".release-it.json")
+    .map((file) => posix.dirname(file))
+    .filter((inner) => inner !== directory && tracked.has(posix.join(inner, "package.json")));
+  return released.length === 0 ? null : released.sort();
+}
+
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
   const file = posix.join(directory, ".release-it.json");
   const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();

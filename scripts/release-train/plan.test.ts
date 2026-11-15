@@ -101,7 +101,7 @@ describe("computePlan", () => {
   test("refuses a runtime dependency that does not resolve from the registry, and lets a devDependency one through", () => {
     const local = source("mongodb", "1.8.6", ["fix(database): use the local interface"], {
       dependencies: { "@antelopejs/interface-database": "file:../interface-database" },
-      peerDependencies: { "@antelopejs/core": "workspace:*" },
+      peerDependencies: { "@antelopejs/core": "catalog:" },
       optionalDependencies: { "@antelopejs/x": "github:AntelopeJS/x#next" },
       devDependencies: { "@antelopejs/tooling-configs": "link:../tooling-configs" },
     });
@@ -110,10 +110,94 @@ describe("computePlan", () => {
       source: local,
       reasons: [
         "depends on @antelopejs/interface-database@file:../interface-database, which is not a registry version range",
-        "depends on @antelopejs/core@workspace:*, which is not a registry version range",
+        "depends on @antelopejs/core@catalog:, which is not a registry version range",
         "depends on @antelopejs/x@github:AntelopeJS/x#next, which is not a registry version range",
       ],
     });
+  });
+
+  test("lists a package after the workspace siblings it depends on, with the range pnpm packs each spec to", () => {
+    const sibling = { ...source("interface-dms-saas", "0.10.0", ["feat!: rename the plans"]), slug: "AntelopeJS/dms-saas", directory: "packages/interface-dms-saas" };
+    const quiet = { ...source("interface-dms-core", "0.3.1", []), slug: "AntelopeJS/dms-saas", directory: "packages/interface-dms-core" };
+    const saas = {
+      ...source("dms-saas", "0.12.1", ["fix: x"], {
+        dependencies: { "@antelopejs/interface-dms-saas": "workspace:^", "@antelopejs/interface-dms-core": "workspace:~" },
+        peerDependencies: { "@antelopejs/interface-dms-saas": "workspace:*" },
+      }),
+      slug: "AntelopeJS/dms-saas",
+      directory: "packages/dms-saas",
+    };
+    const { entries } = plan([saas, sibling, quiet]);
+    assert.deepEqual(names(entries), ["interface-dms-saas", "interface-dms-core", "dms-saas"]);
+    assert.deepEqual(entry(entries, "dms-saas"), {
+      status: "release",
+      source: saas,
+      from: "0.12.1",
+      to: "0.12.2",
+      level: "patch",
+      reasons: [],
+      ranges: {},
+      kept: [],
+      siblings: [
+        { name: "@antelopejs/interface-dms-saas", spec: "workspace:^", range: "^0.11.0" },
+        { name: "@antelopejs/interface-dms-core", spec: "workspace:~", range: "~0.3.1" },
+        { name: "@antelopejs/interface-dms-saas", spec: "workspace:*", range: "0.11.0" },
+      ],
+    });
+    assert.ok(
+      renderPlan(plan([saas, sibling, quiet])).includes(
+        [
+          `2. @antelopejs/dms-saas 0.12.1 -> 0.12.2 (patch)  AntelopeJS/dms-saas:packages/dms-saas@${at("dms-saas")}`,
+          "     fix: x",
+          "     @antelopejs/interface-dms-saas workspace:^ -> ^0.11.0",
+          "     @antelopejs/interface-dms-core workspace:~ -> ~0.3.1",
+          "     @antelopejs/interface-dms-saas workspace:* -> 0.11.0",
+        ].join("\n"),
+      ),
+    );
+  });
+
+  test("refuses a workspace spec on a sibling the plan cannot pack to a version npm holds", () => {
+    const inRepo = (name: string, stable: string | null, subjects: string[], fields: Partial<Manifest> = {}) => ({
+      ...source(name, stable, subjects, fields),
+      slug: "AntelopeJS/dms-saas",
+      directory: `packages/${name}`,
+    });
+    const unreleased = inRepo("fresh", null, []);
+    const excluded = inRepo("left", "0.2.0", ["fix: y"]);
+    const refused = inRepo("broken", "0.1.0", ["fix: z"], { dependencies: { "@antelopejs/a": "file:../a" } });
+    const bumped = inRepo("bumped", "0.4.0", [], { version: "0.5.0" });
+    const elsewhere = source("other", "1.0.0", []);
+    const saas = inRepo("dms-saas", "0.12.1", ["fix: x"], {
+      dependencies: {
+        "@antelopejs/fresh": "workspace:^",
+        "@antelopejs/left": "workspace:^",
+        "@antelopejs/broken": "workspace:^",
+        "@antelopejs/bumped": "workspace:^",
+        "@antelopejs/other": "workspace:^",
+        "@antelopejs/unlisted": "workspace:^",
+        "@antelopejs/path": "workspace:../path",
+        "@antelopejs/alias": "workspace:@antelopejs/other@*",
+        "@antelopejs/range": "workspace:^0.10.0",
+      },
+    });
+    const { entries } = plan([saas, unreleased, excluded, refused, bumped, elsewhere], ["@antelopejs/left"]);
+    assert.deepEqual(entry(entries, "dms-saas"), {
+      status: "refused",
+      source: saas,
+      reasons: [
+        "depends on @antelopejs/fresh@workspace:^, which has no stable release",
+        "depends on @antelopejs/broken@workspace:^, which is refused",
+        "depends on @antelopejs/bumped@workspace:^, whose package.json holds 0.5.0, not its stable 0.4.0",
+        "depends on @antelopejs/other@workspace:^, which this train lists from AntelopeJS/other",
+        "depends on @antelopejs/unlisted@workspace:^, which this train does not list",
+        "depends on @antelopejs/path@workspace:../path, which is not workspace:*, workspace:^ or workspace:~",
+        "depends on @antelopejs/alias@workspace:@antelopejs/other@*, which is not workspace:*, workspace:^ or workspace:~",
+        "depends on @antelopejs/range@workspace:^0.10.0, which is not workspace:*, workspace:^ or workspace:~",
+      ],
+    });
+    const kept = entry(entries, "left");
+    assert.equal(kept.status, "excluded");
   });
 
   test("orders dependencies before their dependents whatever the input order", () => {
@@ -167,6 +251,7 @@ describe("computePlan", () => {
       reasons: ["replaces preview pins"],
       ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
       kept: [],
+      siblings: [],
     });
   });
 
@@ -276,6 +361,7 @@ describe("computePlan", () => {
         { name: "@antelopejs/a", spec: "0.1.1-next.1.gabc1234", reason: "which releases after it" },
         { name: "@antelopejs/z", spec: "0.3.0-next.2.gabc1234", reason: "which this train does not list" },
       ],
+      siblings: [],
     });
     assert.equal(entry(result.entries, "a").status, "release");
     assert.equal(

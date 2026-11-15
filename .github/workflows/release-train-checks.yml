@@ -38,15 +38,15 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install the type checker
-        run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1
+      - name: Install the type checker and release-it
+        run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1 release-it@19.2.4
 
       - name: Typecheck
         run: |
           "$RUNNER_TEMP/tools/node_modules/.bin/tsc" -p scripts/release-train/tsconfig.json --typeRoots "$RUNNER_TEMP/tools/node_modules/@types"
 
       - name: Test
-        run: node --test 'scripts/release-train/*.test.ts'
+        run: RELEASE_IT="$RUNNER_TEMP/tools/node_modules/release-it/bin/release-it.js" node --test 'scripts/release-train/*.test.ts'
 
       - name: Lint the release workflows
         env:

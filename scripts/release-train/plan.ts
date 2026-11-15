@@ -61,6 +61,13 @@ export interface KeptPin {
   reason: string;
 }
 
+/** A `workspace:` spec on a sibling of the same repository, with the registry range `pnpm pack` writes for it. */
+export interface Sibling {
+  name: string;
+  spec: string;
+  range: string;
+}
+
 /** The release decision for one package. */
 export type Entry =
   | {
@@ -72,6 +79,7 @@ export type Entry =
       reasons: string[];
       ranges: Record<string, string>;
       kept: KeptPin[];
+      siblings: Sibling[];
     }
   | {
       status: "unchanged";
@@ -119,6 +127,7 @@ const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${i
 const partialPattern = new RegExp(`^${partial}$`);
 const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`);
 const aliasPattern = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/;
+const workspacePrefix = "workspace:";
 
 /** Parses `M.m.p` or `M.m.p-pre`, or returns null. */
 export function parseVersion(text: string): Version | null {
@@ -312,6 +321,23 @@ interface Resolution {
 
 type PinOutcome = { range: string } | { reason: string };
 
+function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): PinOutcome {
+  const range = spec.slice(workspacePrefix.length);
+  if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
+  const sibling = context.listed.get(name);
+  if (sibling === undefined) return { reason: "which this train does not list" };
+  if (sibling.slug !== source.slug) return { reason: `which this train lists from ${sibling.slug}` };
+  const planned = context.resolved.get(name);
+  if (planned === undefined && !context.exclude.has(name)) return { reason: "which releases after it" };
+  if (planned?.status === "refused") return { reason: "which is refused" };
+  const version = planned?.status === "release" ? planned.to : sibling.stable;
+  if (version === null) return { reason: "which has no stable release" };
+  if (planned?.status !== "release" && sibling.manifest.version !== version) {
+    return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
+  }
+  return { range: range === "*" ? version : `${range}${version}` };
+}
+
 function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome {
   const version = parseVersion(spec);
   if (version === null) return { reason: "which is not an exact version" };
@@ -340,8 +366,15 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const refusals = new Set<string>();
   const ranges: Record<string, string> = {};
   const kept: KeptPin[] = [];
+  const siblings: Sibling[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
     const { field, name, spec } = dependency;
+    if (field !== "devDependencies" && spec.startsWith(workspacePrefix)) {
+      const outcome = resolveSibling(source, dependency, context);
+      if ("range" in outcome) siblings.push({ name, spec, range: outcome.range });
+      else refusals.add(`depends on ${name}@${spec}, ${outcome.reason}`);
+      continue;
+    }
     if (field !== "devDependencies" && !isRegistrySpec(spec)) {
       refusals.add(`depends on ${name}@${spec}, which is not a registry version range`);
       continue;
@@ -369,7 +402,7 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     source.stable === null
       ? source.manifest.version.replace(/-.*$/, "")
       : bumpVersion(source.stable, level);
-  return { status: "release", source, from: source.stable, to, level, reasons, ranges, kept };
+  return { status: "release", source, from: source.stable, to, level, reasons, ranges, kept, siblings };
 }
 
 function awaitedPins(sources: readonly PackageSource[], listed: ReadonlyMap<string, PackageSource>, exclude: ReadonlySet<string>): Map<string, AwaitedPin[]> {
@@ -449,6 +482,7 @@ function renderEntry(entry: Entry, position: number): string[] {
     ...Object.entries(entry.ranges).map(
       ([name, range]) => `     ${name} ${specOf(manifest, name)} -> ${range}`,
     ),
+    ...entry.siblings.map(({ name, spec, range }) => `     ${name} ${spec} -> ${range}`),
     ...entry.kept.map(({ name, spec, reason }) => `     keeps devDependency ${name}@${spec}, ${reason}`),
   ];
 }

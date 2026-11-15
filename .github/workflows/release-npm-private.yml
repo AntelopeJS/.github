@@ -432,7 +432,7 @@ jobs:
             console.log(`::warning::The stable release keeps the devDependency preview ${name} ${spec}.`)
           }
           const refused = fields.slice(0, 3).flatMap((field) =>
-            specsOf(field).filter(([, spec]) => isPreview(spec) || !isRegistrySpec(spec)).map(([name, spec]) => `${field} ${name} ${spec}`),
+            specsOf(field).filter(([, spec]) => isPreview(spec) || (!isRegistrySpec(spec) && !spec.startsWith('workspace:'))).map(([name, spec]) => `${field} ${name} ${spec}`),
           )
           if (refused.length) {
             console.error(`A stable release depends only on stable registry version ranges. Give each preview a stable range in dependency-ranges, and replace each other spec:\n${refused.join('\n')}`)
@@ -507,6 +507,7 @@ jobs:
           DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
           GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RESUME: ${{ steps.version.outputs.resume }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
@@ -522,7 +523,7 @@ jobs:
             }
           }
           const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
-          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RUNNER_TEMP } = process.env
+          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RESUME, RUNNER_TEMP } = process.env
           const config = readJson('.release-it.json')
           const [prefix = 'v', suffix = ''] = (config.git?.tagName || 'v${version}').split('${version}')
           const tag = (version) => `${prefix}${version}${suffix}`
@@ -599,30 +600,28 @@ jobs:
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
+          if (config.npm !== false) {
+            if (config.npm?.publish !== false && RESUME !== 'true') {
+              const hooks = config.hooks ?? {}
+              config.hooks = { ...hooks, 'before:npm:release': [hooks['before:npm:release'] ?? []].flat().concat(`bash '${RUNNER_TEMP}/publish.sh' latest`) }
+            }
+            config.npm = { ...config.npm, publish: false }
+          }
           fs.writeFileSync(`${RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
           NODE
 
-      - name: Publish preview
-        if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
-        working-directory: ${{ inputs.package-directory }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          PINS: ${{ steps.version.outputs.pins }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
+      - name: Write the publish script
+        if: steps.version.outputs.version != ''
         run: |
+          cat > "$RUNNER_TEMP/publish.sh" <<'SCRIPT'
           set -euo pipefail
-          node <<'NODE'
+          manifest=$(mktemp "$RUNNER_TEMP/package.XXXXXX")
+          cp package.json "$manifest"
+          trap 'cp "$manifest" package.json' EXIT
+          GIT_HEAD=$(git rev-parse HEAD) node <<'NODE'
           const fs = require('node:fs')
-          const { execFileSync } = require('node:child_process')
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const pins = JSON.parse(process.env.PINS || '{}')
-          for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
-            for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
-              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = pins[name]
-            }
-          }
-          const gitHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
-          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION, gitHead }, null, 2)}\n`)
+          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, gitHead: process.env.GIT_HEAD }, null, 2)}\n`)
           NODE
           destination=$(mktemp -d "$RUNNER_TEMP/pack.XXXXXX")
           pnpm pack --pack-destination "$destination" > /dev/null
@@ -647,14 +646,36 @@ jobs:
             process.exit(1)
           }
           NODE
-          npm publish "$tarball" --tag next
+          npm publish "$tarball" --tag "$1"
+          SCRIPT
+
+      - name: Publish preview
+        if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PINS: ${{ steps.version.outputs.pins }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const pins = JSON.parse(process.env.PINS || '{}')
+          for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+            for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
+              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = pins[name]
+            }
+          }
+          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
+          NODE
+          bash "$RUNNER_TEMP/publish.sh" next
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'
         working-directory: ${{ inputs.package-directory }}
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RESUME: ${{ steps.version.outputs.resume }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
@@ -663,8 +684,4 @@ jobs:
           trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
 
           prerelease_tags='*.*.*-*'
-          args=(--config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION")
-          if [ "$RESUME" = true ]; then
-            args+=(--no-npm.publish)
-          fi
-          pnpm exec release-it "${args[@]}"
+          pnpm exec release-it --config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION"
