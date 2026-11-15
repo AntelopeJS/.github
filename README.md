@@ -124,10 +124,10 @@ in dependency order.
   `package.json` of its last stable tag, which npm published. It also gets a
   patch when a listed package pins a preview of it in `dependencies`,
   `peerDependencies` or `optionalDependencies` that is newer than its last
-  stable release. The plan names each change and each pin. Otherwise the plan lists the package as unchanged with the
-  types of its commits, such as `only build commits since 0.4.2`. Those
-  commits stay in the cycle, so the release notes of the next release list
-  them.
+  stable release. The plan names each change and each pin. Otherwise the plan
+  lists the package as unchanged with the types of its commits, such as
+  `only build commits since 0.4.2`. Those commits stay in the cycle, so the
+  release notes of the next release list them.
 - Each preview pin moves to the stable range of the version its dependency
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The

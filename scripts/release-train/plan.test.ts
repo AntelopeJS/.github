@@ -367,7 +367,8 @@ describe("computePlan", () => {
 
   test("a tooling-only dependency releases a patch when a dependent pins its newer preview at runtime, and only then", () => {
     const dependency = source("interface-database", "0.4.2", ["build: move to 0.8"]);
-    const runtime = source("mongodb", "1.8.6", ["fix: x"], { dependencies: { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" } });
+    const pin = { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" };
+    const runtime = source("mongodb", "1.8.6", ["fix: x"], { dependencies: pin, peerDependencies: pin });
     const { entries } = plan([dependency, runtime]);
     const released = entry(entries, "interface-database");
     assert.deepEqual(released.status === "release" && [released.to, released.reasons], ["0.4.3", ["@antelopejs/mongodb pins the preview 0.4.3-next.2.g3f9a2c1"]]);

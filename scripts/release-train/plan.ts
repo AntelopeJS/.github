@@ -354,7 +354,7 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     reasons.push(...dependencyChanges(source, ranges));
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
-    reasons.push(...held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`));
+    reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
     if (Object.keys(ranges).length > 0) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
