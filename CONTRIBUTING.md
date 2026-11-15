@@ -267,16 +267,16 @@ release or a tarball.
 
 ### Releasing `next`
 
-1. Open a pull request from `next` to `main` and merge it with a merge commit,
-   so every commit of `next` lands on `main` with its own type.
+1. A pull request from `next` to `main` brings the work to `main` once a
+   maintainer approves it. The plan reads the commit types that land on `main`.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
-3. Run `go` once a maintainer approves the plan. Each stable run replaces the preview
-   pins with stable ranges and refuses to publish a version that still depends
-   on a preview.
-4. Merge `main` back into `next`, so `next` holds the release commits, the
-   changelogs and the stable ranges.
+3. Run `go` once a maintainer approves the plan. Each stable run replaces the
+   preview pins with stable ranges and refuses to publish a version that still
+   depends on a preview.
+4. `main` is merged back into `next`, so `next` holds the release commits,
+   the changelogs and the stable ranges.
 
 A fix that cannot wait for the next release opens against `main` and ships with
-the release train like any other change. Merge `main` into `next` afterwards.
+the release train like any other change.
