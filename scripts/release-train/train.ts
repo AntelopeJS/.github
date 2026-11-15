@@ -134,7 +134,7 @@ function releasesOf(plan: Plan): Release[] {
 
 function sameReleases(left: readonly Release[], right: readonly Release[]): boolean {
   const keys = (entries: readonly Release[]): string =>
-    entries.map((entry) => `${label(entry)} ${JSON.stringify(entry.ranges)}`).join("\n");
+    entries.map((entry) => `${label(entry)} ${JSON.stringify(entry.ranges)} ${JSON.stringify(entry.siblings)}`).join("\n");
   return keys(left) === keys(right);
 }
 

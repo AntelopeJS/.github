@@ -113,7 +113,7 @@ function readManifest(system: System, repository: string, revision: string, dire
 export function workspacePackages(system: System, { repository }: Checkout, { name: revision }: Revision, directory: string): string[] | null {
   const value: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]));
   if (isRecord(value) && typeof value.name === "string" && typeof value.version === "string") return null;
-  const files = exec(system, "git", ["-C", repository, "ls-tree", "-r", "--name-only", revision, "--", directory]).split("\n");
+  const files = exec(system, "git", ["-C", repository, "ls-tree", "-r", "-z", "--name-only", revision, "--", directory]).split("\0");
   const tracked = new Set(files);
   const released = files
     .filter((file) => posix.basename(file) === ".release-it.json")

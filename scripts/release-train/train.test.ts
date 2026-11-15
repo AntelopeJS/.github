@@ -50,9 +50,12 @@ describe("plan", () => {
         "packages/x/package.json": manifest("x", "0.12.1", { dependencies: { "@antelopejs/interface-x": "workspace:^" } }),
         "packages/x/.release-it.json": {},
         "packages/x/frontend-vue/package.json": { name: "frontend", private: true },
+        "packages/é/package.json": manifest("accent", "0.1.0"),
+        "packages/é/.release-it.json": { git: { tagName: "accent-v${version}" } },
       });
       git(path, "tag", "interface-v0.10.0");
       git(path, "tag", "v0.12.1");
+      git(path, "tag", "accent-v0.1.0");
       commit(path, "fix(x): close the feed", { "packages/x/index.ts": "export {};\n" });
       git(path, "checkout", "--quiet", "-b", "next");
       commit(path, "feat(interface)!: rename the plans", { "packages/interface-x/index.ts": "export {};\n" });
@@ -70,7 +73,7 @@ describe("plan", () => {
         `1. @antelopejs/x 0.12.1 -> 0.12.2 (patch)  AntelopeJS/workspace-root:packages/x@${at("main")}`,
         "     fix(x): close the feed",
         "     @antelopejs/interface-x workspace:^ -> ^0.10.0",
-        "Unchanged: @antelopejs/interface-x",
+        "Unchanged: @antelopejs/interface-x, @antelopejs/accent",
         "",
       ].join("\n"),
     );
@@ -86,6 +89,7 @@ describe("plan", () => {
         `2. @antelopejs/x 0.12.1 -> 0.12.2 (patch)  AntelopeJS/workspace-root:packages/x@${at("next")}`,
         "     fix(x): close the feed",
         "     @antelopejs/interface-x workspace:^ -> ^0.11.0",
+        "Unchanged: @antelopejs/accent",
         "",
       ].join("\n"),
     );
