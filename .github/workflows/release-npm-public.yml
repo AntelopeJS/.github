@@ -520,7 +520,7 @@ jobs:
           const from = git('tag', '--merged', 'HEAD').split('\n')
             .filter((name) => name.length > prefix.length + suffix.length && name.startsWith(prefix) && name.endsWith(suffix))
             .map((name) => name.slice(prefix.length, name.length - suffix.length))
-            .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+            .filter((version) => /^\d+\.\d+\.\d+$/.test(version) && order(version, RELEASE_VERSION) < 0)
             .sort(order)
             .at(-1)
           const nested = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean)

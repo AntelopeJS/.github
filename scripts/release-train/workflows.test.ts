@@ -375,6 +375,27 @@ for (const { file, text } of workflows) {
       });
     });
 
+    test("Write release notes start from the highest tag below the released version, never from a stray tag above it", () => {
+      const { directory } = repository(`${file}-stray-major`, { "package.json": "{}\n" });
+      git(directory, "tag", "v1.24.1");
+      commitFiles(directory, "feat: accidental major", { "major.js": "x\n" });
+      git(directory, "tag", "v2.0.1");
+      const fix = commitFiles(directory, "fix: close the feed", { "feed.js": "x\n" });
+      const result = runStep(text, "Write release notes", directory, {
+        PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+        FAKE_PULLS: "[]",
+        GITHUB_REPOSITORY: "AntelopeJS/x",
+        DEFAULT_BRANCH: "main",
+        RELEASE_VERSION: "1.24.2",
+        ...hermeticGit,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const notes = readFileSync(join(root, "release-notes.md"), "utf8").split("\n\n");
+      assert.equal(notes[0], "[compare changes](https://github.com/AntelopeJS/x/compare/v1.24.1...v1.24.2)");
+      assert.ok(notes.includes(`- Close the feed ([${fix.slice(0, 7)}](https://github.com/AntelopeJS/x/commit/${fix}))`), notes.join("\n\n"));
+      assert.ok(notes.some((line) => line.startsWith("- Accidental major")), notes.join("\n\n"));
+    });
+
     test("Write release notes lists one line per task of the cycle from the promotion's head, with breaking changes and contributors", () => {
       const repo = join(root, `${file}-cycle`);
       mkdirSync(repo);
