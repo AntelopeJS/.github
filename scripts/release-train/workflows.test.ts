@@ -687,9 +687,9 @@ for (const { file, text } of workflows) {
   });
 }
 
-test("the starter workflow grants no write access to the repository", () => {
+test("the starter workflow is the frozen caller that antelopejs-sync writes", () => {
   const template = readFileSync(new URL("../../workflow-templates/npm-release.yml", import.meta.url), "utf8");
-  assert.match(template, /^permissions:\n {2}contents: read\n {2}id-token: write\n/m);
+  assert.equal(template, readFileSync(new URL("./frozen-caller.yml", import.meta.url), "utf8"));
 });
 
 test("the README caller example is the starter workflow", () => {

@@ -156,12 +156,9 @@ in dependency order.
 
 `go` takes no `--ref`. It prints the plan, then dispatches `release.yml` on the
 default branch of each package to release, one at a time, with the planned
-`release-version`, `release-commit`, `dependency-ranges` and `release-notes`.
-The release notes are the changelog section of the cycle in changelogen's
-format. They hold the compare link, one block per commit type with the oldest
-commit first, the breaking changes and the contributors. A subject that is not
-conventional is left out. When the release writes stable ranges, the notes
-also list its `fix(deps)` commit under Fixes. It waits for each
+`release-version`, `release-commit` and `dependency-ranges`, plus
+`package-directory` for a package not at the root. Those are the only inputs a
+caller declares. It waits for each
 run to finish before it dispatches the next one, so a dependent installs a
 dependency that is already published. After the last one it prints what it
 published and, when the plan refused a package, what it did not publish.
@@ -213,11 +210,19 @@ A stable run then does the following.
    that branch changed the same lines since the plan, it keeps them and the run
    warns that the Next sync will conflict. Otherwise it installs with
    `pnpm install --frozen-lockfile`.
-6. It writes `release-notes` under a `## v<version>` heading on top of the
-   changelog, the `output` of `changelogen.config.json` or `CHANGELOG.md`, and
-   stages it. It writes a release-it config from the repository's
-   `.release-it.json`, without the `release-it-changelogen` plugin and with the
-   notes as the GitHub release notes.
+6. It writes the release notes of the cycle in changelogen's format: the
+   compare link, one line per task with one block per commit type and the
+   oldest first, the breaking changes and the contributors. It reads the tasks
+   the way the plan does, from the heads of the pull requests merged into the
+   default branch since the last stable tag (`gh pr list` with
+   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. A subject that is not
+   conventional is left out. When the release writes stable ranges, the notes
+   also list its `fix(deps)` commit under Fixes. It writes them under a
+   `## v<version>` heading on top of the changelog, the `output` of
+   `changelogen.config.json` or `CHANGELOG.md`, and stages it. It writes a
+   release-it config from the repository's `.release-it.json`, without the
+   `release-it-changelogen` plugin and with the notes as the GitHub release
+   notes.
 7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
    config, which publishes to npm, then writes the release commit with the
    changelog, the tag and the GitHub release. A resumed run passes
@@ -233,7 +238,6 @@ A stable run then does the following.
 | `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. A preview ignores it. |
 | `release-commit` | `""` | Commit SHA a `workflow_dispatch` run releases, 40 hexadecimal characters. The release train sets it to the commit it planned. A stable run fails when the branch moved past it. A preview ignores it. |
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
-| `release-notes` | `""` | Markdown changelog section a `workflow_dispatch` run writes into the changelog and publishes as the GitHub release notes. The release train renders it from the commits of the cycle. A stable run fails without it. A preview ignores it. |
 | `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
 | `integration-branch` | `next` | Branch that receives the `fix(deps)` commit of a stable run. A repository without it gets nothing. |
@@ -263,11 +267,18 @@ different groups, so a queued preview never cancels a pending stable release.
   file, and the release train dispatches it.
 - **Triggers.** `push` to `next` (`develop` in `cloud`) for previews, and
   `workflow_dispatch` for stable releases.
-- **Dispatch inputs.** `release-version`, `release-commit`, `dependency-ranges`
-  (default `"{}"`) and `release-notes`, all optional strings that the release
+- **Dispatch inputs.** `release-version`, `release-commit` and
+  `dependency-ranges` (default `"{}"`), all optional strings that the release
   train sets. A repository whose package is not at its root adds
-  `package-directory`.
-- **Permissions.** `contents: write` and `id-token: write`.
+  `package-directory`. A repository with several packages has one job per
+  package, and a dispatch runs only the job whose `package-directory` it names.
+  The release train sends nothing else.
+- **Permissions.** `contents: write`, and `id-token: write` when a package is
+  public. The release jobs ask only `contents: read`, because they write with
+  `RELEASE_GITHUB_TOKEN`.
+- **Optional inputs.** Every other input of the shared workflows has a default
+  that fits this caller, such as `integration-branch`, `next` by default, which
+  `cloud` sets to `develop`.
 - **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
   `NPM_ANTELOPE_TOKEN` for the private one.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
@@ -285,8 +296,7 @@ name: Release
 
 on:
   push:
-    branches:
-      - next
+    branches: [next]
   workflow_dispatch:
     inputs:
       release-version:
@@ -302,13 +312,9 @@ on:
         required: false
         default: "{}"
         type: string
-      release-notes:
-        description: Changelog section of the release, set by the release train
-        required: false
-        type: string
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -318,7 +324,6 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
-      release-notes: ${{ inputs.release-notes }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
 ```
@@ -586,7 +591,6 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
-      release-notes: ${{ inputs.release-notes }}
       package-directory: packages/dms-automation
     secrets: inherit
 ```
