@@ -134,7 +134,7 @@ jobs:
                   README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
                   *) tests=true ;;
                 esac
-              done < <(git diff --name-only "$test_base" HEAD)
+              done < <(git diff --name-only --no-renames "$test_base" HEAD)
               ;;
           esac
 
@@ -207,7 +207,7 @@ jobs:
 
   node:
     name: Node ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    needs: tier
+    needs: [tier, lint]
     if: needs.tier.outputs.checks == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
@@ -327,7 +327,7 @@ jobs:
 
       - name: Run checks
         env:
-          ANTELOPEJS_CHECKS_SKIP: ${{ (inputs.test-job || needs.tier.outputs.tests != 'true') && 'test' || '' }}
+          ANTELOPEJS_CHECKS_SKIP: ${{ (inputs.test-job || needs.tier.outputs.tests != 'true') && 'lint,test' || 'lint' }}
         run: pnpm run checks
 
       - name: Skill eval, offline

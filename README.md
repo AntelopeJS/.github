@@ -86,7 +86,7 @@ types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
 | ----- | ---- | ---- |
 | Pull request from next into the default branch | `none` | none; `checks` succeeds |
 | Draft pull request | `draft` | `Lint and typecheck`; `checks` fails so a draft never shows a green gate |
-| Ready pull request into any other branch than the default one, such as `next` | `fast` | `Lint and typecheck`, the Node.js jobs, then the tests once `Lint and typecheck` passed. A pull request that changes only documentation skips the tests. |
+| Ready pull request into any other branch than the default one, such as `next` | `fast` | `Lint and typecheck`, then the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
 | Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
 | Push to the default branch | `none` | none; `checks` succeeds |
 | Push to any other branch, such as `next` | `full` | as above |
@@ -96,7 +96,11 @@ types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
 The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
 the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
 also run on Windows in the `fast` and `full` tiers of a pull request or a manual
-run. The test and extra-commands jobs start once `Lint and typecheck` passed.
+run. The Node.js, test and extra-commands jobs start once `Lint and typecheck`
+passed, so tests never start before it, whether they run in the test job or
+inside `pnpm run checks`. The Node.js jobs run `pnpm run checks` with `lint` in
+`ANTELOPEJS_CHECKS_SKIP`, since `Lint and typecheck` already ran it. They keep
+`typecheck`, whose build output later steps may read.
 `Lint and typecheck` runs `checks:prepare` when the repository defines it, then
 `typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
 
@@ -124,7 +128,7 @@ It accepts these optional inputs:
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
-| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
+| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job then adds `test` to `ANTELOPEJS_CHECKS_SKIP` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
 | `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
