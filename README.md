@@ -24,6 +24,12 @@ starts the run decides what it publishes. A caller only declares the triggers.
 Any other event or branch fails the run with the reason. A release runs no
 tests. The checks of the pull request that brought each commit are the gate.
 
+Both runs use the `npm-publish` environment of the repository. Its deployment
+branches must allow the preview branch, `next`, beside the default branch.
+Otherwise GitHub refuses the preview run before any step. Today the three
+pilot repositories, `interface-database`, `mongodb` and `dms-database`, allow
+only `main`.
+
 ### Preview versions
 
 Every push to `next` publishes a preview of the package when its directory
@@ -44,7 +50,7 @@ A dependent pins the exact preview it needs:
 
 ```sh
 npm view @antelopejs/interface-database dist-tags.next
-pnpm add @antelopejs/interface-database@0.5.0-next.12.g3f9a2c1 --save-exact
+pnpm add @antelopejs/interface-database@0.4.3-next.161.g3f9a2c1 --save-exact
 ```
 
 Commit that pin on the dependent's `next` branch. The release train replaces it
@@ -74,47 +80,88 @@ you see what merging `next` would release. For each package it reads
 `package.json`, the last stable tag reachable from that branch (the
 `git.tagName` of `.release-it.json`, `v${version}` by default) and the commits
 since that tag that touched the package directory. Release commits do not
-count. The plan then decides each package in dependency order.
+count. A directory inside the package that holds another listed package does
+not count either, so a root package beside `packages/*` gets only its own
+commits. Each numbered line of the plan names the repository and the commit it
+read, such as `AntelopeJS/mongodb@3f9a2c1`. The plan then decides each package
+in dependency order.
 
 - A commit with `!` or a `BREAKING CHANGE:` footer asks for a minor release.
   `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `types` and `revert` ask
   for a patch. Other types ask for nothing. A release never changes the major
   version.
-- Each preview pin moves to the stable range of the version the plan releases
-  for that dependency, such as `>=0.5.0 <0.6.0`. A dependency the plan does not
-  release moves to its `latest` version on npm. A pin alone makes a patch
+- Each preview pin moves to the stable range of the version its dependency
+  gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
+  last stable release of a dependency the plan leaves unchanged. The
+  dependency must be one of the listed packages. A pin alone makes a patch
   release.
-- A package is refused when one of its preview pins has no stable version to
-  move to. That happens when the dependency is left out, is refused itself, has
-  no stable release, or has a stable release older than the preview's base, or
-  when the pin is not an exact version. A refusal reaches every package that
-  pins a preview of the refused one.
+- A pin moves only to a stable release that holds the pinned code. The last
+  part of a preview version, `g<short sha>`, names its commit, and the branch
+  the plan read must contain that commit. It does when the commit is an
+  ancestor of the branch head, which covers `--ref next`. `next` reaches the
+  default branch by a squash merge, so there the train looks in the merged
+  pull requests instead. It reads the last 100 pull requests merged into the
+  branch, newest first. One counts when its merge commit is in the branch and
+  its head contains the pinned commit. A `gh` failure counts as not found.
+- A package is refused when a preview pin in `dependencies`,
+  `peerDependencies` or `optionalDependencies` cannot move. That happens when
+  the dependency is not listed, is left out, is refused itself, has no stable
+  release, has a stable release older than the preview's base, or does not
+  hold the pinned commit. It also happens when the pin is not an exact version
+  or names no commit. A refusal reaches every package that pins a preview of
+  the refused one in those fields.
+- A `devDependencies` preview never blocks a release. It moves like any other
+  pin when it can. Otherwise the package keeps it, and the plan gives the
+  reason on a line such as
+  `keeps devDependency @antelopejs/a@0.1.1-next.1.gabc1234, which releases after it`.
+- The order follows `dependencies`, `peerDependencies`,
+  `optionalDependencies` and the `devDependencies` that pin a preview. When
+  they form a cycle, the plan orders its packages again on the first three
+  fields alone. A cycle that remains is refused, and the plan names its
+  packages. A left-out package is never part of a cycle.
 - A package with no releasable commit and no preview pin is unchanged.
 - `--exclude <name>` leaves a package out of this release. It is listed under
   "Not now". Its commits stay unreleased, so the next plan includes them.
 
 `go` takes no `--ref`. It prints the plan, then dispatches `release.yml` on the
 default branch of each package to release, one at a time, with the planned
-`release-version` and `dependency-ranges`. It waits for each run to finish
-before it dispatches the next one, so a dependent installs a dependency that is
-already published. It stops at the first run that does not succeed and names
-what was published and what was not. Fix the failure and run `go` again. The
-plan is read again from the tags, so the train continues where it stopped.
+`release-version`, `release-commit` and `dependency-ranges`. It waits for each
+run to finish before it dispatches the next one, so a dependent installs a
+dependency that is already published. After the last one it prints what it
+published and, when the plan refused a package, what it did not publish.
+
+`go` stops at the first release that does not succeed. A run that concluded
+with anything but success published nothing, and neither did a dispatch that
+GitHub refused. A run whose end `go` cannot see is unknown. That happens when
+no run appears after the dispatch, or when `gh run view` fails more than 8
+times in a row, 15 seconds apart. The stop message lists what was published,
+what was not, and the unknown package with its run. Check an unknown run before
+you run `go` again. After a failure, fix it and run `go` again. The plan is
+read again from the tags, so the train continues where it stopped.
+
+A stable run commits to the default branch of its repository. So `go`
+releases one package per repository in a run, and stops before the next
+package of a repository it already released. Run `go` again to release it from
+the new head.
 
 A stable run then does the following.
 
-1. It refuses a `release-version` that changes the major version of the `latest`
+1. It refuses to release when the branch moved past `release-commit`, the
+   commit the plan read. Run the release train again to plan the new commits.
+2. It refuses a `release-version` that changes the major version of the `latest`
    version on npm, or that is not greater than it.
-2. It writes each range of `dependency-ranges` into every dependency field of
-   `package.json` that names the package. It fails when a name is in no field.
-3. It fails when `package.json` still holds a prerelease spec in
-   `dependencies`, `peerDependencies`, `optionalDependencies` or
-   `devDependencies`.
-4. When it wrote ranges, it updates the lockfile with
+3. It writes each range of `dependency-ranges` into the dependency fields of
+   `package.json` where that name holds a preview. A stable spec of the same
+   name in another field stays as it is. It fails when no field holds a preview
+   of the name.
+4. It fails when `dependencies`, `peerDependencies` or `optionalDependencies`
+   still hold a prerelease spec. A `devDependencies` preview gives a warning
+   and stays.
+5. When it wrote ranges, it updates the lockfile with
    `pnpm install --no-frozen-lockfile` and commits `package.json` and the
    lockfile as `fix(deps): depend on the stable <names>`. Otherwise it installs
    with `pnpm install --frozen-lockfile`.
-5. It runs `pnpm exec release-it --ci --increment=<release-version>`, which
+6. It runs `pnpm exec release-it --ci --increment=<release-version>`, which
    writes the changelog since the last stable tag, the release commit, the tag
    and the GitHub release, and publishes to npm. It never runs the
    repository's `release` script, so no tests run.

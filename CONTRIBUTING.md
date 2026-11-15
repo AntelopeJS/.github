@@ -272,9 +272,10 @@ release or a tarball.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
-3. Run `go` once a maintainer approves the plan. Each stable run replaces the
-   preview pins with stable ranges and refuses to publish a version that still
-   depends on a preview.
+3. Run `go` once a maintainer approves the plan. Each stable run releases the
+   commit the plan read, replaces the preview pins with stable ranges and
+   refuses to publish a version whose `dependencies`, `peerDependencies` or
+   `optionalDependencies` still hold a preview.
 4. `main` is merged back into `next`, so `next` holds the release commits,
    the changelogs and the stable ranges.
 
