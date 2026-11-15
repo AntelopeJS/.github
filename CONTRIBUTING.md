@@ -268,7 +268,9 @@ release or a tarball.
 ### Releasing `next`
 
 1. A pull request from `next` to `main` brings the work to `main` once a
-   maintainer approves it. The plan reads the commit types that land on `main`.
+   maintainer approves it. The promotion is a squash merge, so its title is the
+   one commit type the plan reads. Give it the highest type of the cycle, with
+   `!` when the cycle holds a breaking change. A `chore` title releases nothing.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
