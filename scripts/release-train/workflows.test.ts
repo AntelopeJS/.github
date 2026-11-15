@@ -429,6 +429,23 @@ for (const { file, text } of workflows) {
       assert.equal(down.status, 1);
     });
 
+    test("Write release notes lists the tooling commits of a cycle that released nothing in the next release", () => {
+      const repo = join(root, `${file}-tooling`);
+      mkdirSync(repo);
+      git(repo, "init", "--quiet", "--initial-branch=main");
+      commitFiles(repo, "feat: first", { "package.json": "{}\n" });
+      git(repo, "tag", "v0.4.2");
+      const build = commitFiles(repo, "build: move to @antelopejs/tooling-configs 0.8", { "tsconfig.json": "{}\n" });
+      const fix = commitFiles(repo, "fix: close the feed", { "index.js": "\n" });
+      const env = { PATH: `${fakeNpm}:${process.env.PATH ?? ""}`, FAKE_PULLS: "[]", GITHUB_REPOSITORY: "AntelopeJS/interface-database", DEFAULT_BRANCH: "main", RELEASE_VERSION: "0.4.3", ...hermeticGit };
+      const result = runStep(text, "Write release notes", repo, env);
+      assert.equal(result.status, 0, result.stderr);
+      const link = (sha: string): string => `[${sha.slice(0, 7)}](https://github.com/AntelopeJS/interface-database/commit/${sha})`;
+      const notes = readFileSync(join(root, "release-notes.md"), "utf8");
+      const sections = ["### 🩹 Fixes", "", `- Close the feed (${link(fix)})`, "", "### 📦 Build", "", `- Move to @antelopejs/tooling-configs 0.8 (${link(build)})`].join("\n");
+      assert.ok(notes.includes(sections), notes);
+    });
+
     test("Publish stable release runs release-it with the written config", () => {
       const bin = join(root, `${file}-pnpm`);
       mkdirSync(bin);

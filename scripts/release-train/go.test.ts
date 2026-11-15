@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short, tip } from "./fixtures.ts";
 import { main } from "./train.ts";
@@ -165,7 +167,8 @@ describe("go", () => {
         const directory = fields["package-directory"] ?? ".";
         const prefix = directory === "." ? "" : `${directory}/`;
         commit(workspace, "fix(deps): depend on the stable @antelopejs/x", { "pnpm-lock.yaml": `${fields["release-version"]}\n` });
-        commit(workspace, `chore(release): v${fields["release-version"]}`, { [`${prefix}CHANGELOG.md`]: `${fields["release-version"]}\n` });
+        const bumped = { ...JSON.parse(readFileSync(join(workspace, `${prefix}package.json`), "utf8")), version: fields["release-version"] };
+        commit(workspace, `chore(release): v${fields["release-version"]}`, { [`${prefix}CHANGELOG.md`]: `${fields["release-version"]}\n`, [`${prefix}package.json`]: bumped });
         git(workspace, "tag", `${directory === "." ? "v" : "inner-v"}${fields["release-version"]}`);
         git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");
       },

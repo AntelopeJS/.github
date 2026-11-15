@@ -86,9 +86,14 @@ and fetches it again on the next run. It reads a local checkout as it is.
 `plan` prints the release plan and changes nothing. It reads each package at
 the head of its default branch. `--ref next` reads the `next` branch instead, so
 you see what merging `next` would release. For each package it reads
-`package.json`, the last stable tag reachable from that branch (the
-`git.tagName` of `.release-it.json`, `v${version}` by default) and the commits
-since that tag that touched the package directory. Release commits do not
+`package.json`, the last stable tag reachable from that branch or from the
+default branch (the `git.tagName` of `.release-it.json`, `v${version}` by
+default), so a `next` that has not merged a release back yet still counts
+from it, and the commits since that tag that touched the package directory. A
+tag above the version of `package.json` on the default branch, such as an
+accidental major release, is never the stable tag. When every tag is above
+that version, the plan stops and names them. The plan does not read npm, so it
+cannot see a stable version that npm holds without a tag. Release commits do not
 count, and neither do the `fix(deps): depend on the stable` commits of a stable
 run. A directory inside the package that holds another listed package does
 not count either, so a root package beside `packages/*` gets only its own
@@ -100,9 +105,9 @@ plan lists the commits of the cycle instead. It reads the last 100 pull
 requests merged into the default branch, for `--ref next` too. A pull request
 merged since the stable tag gives the commits of its head, in place of its
 squash commit. The heads of the pull requests merged before the tag mark where
-the cycle starts. A pull request whose head the checkout lacks, such as a
-person's branch deleted after the merge, a reused branch name or a fork's
-branch, keeps its squash commit. When the checkout has that branch as
+the cycle starts, on the default branch and on `next` alike. A pull request
+whose head the checkout lacks, such as a person's branch deleted after the
+merge, a reused branch name or a fork's branch, keeps its squash commit. When the checkout has that branch as
 `origin/<branch>` and GitHub's branch still holds the head, the checkout is
 stale, and the plan stops and asks to fetch it. The plan also stops when
 GitHub cannot answer that question for a reason other than a 404. The train
@@ -114,10 +119,22 @@ plan then decides each package
 in dependency order.
 
 - A commit with `!` or a `BREAKING CHANGE:` footer asks for a minor release.
-  `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `types` and `revert` ask
-  for a patch. Other types ask for nothing. The level is the highest one over
-  the branch's commits and the cycle's commits, so a promotion titled too low
-  never releases too little. A release never changes the major version.
+  `feat`, `fix`, `perf`, `refactor`, `types` and `revert` ask for a patch.
+  Tooling types (`build`, `ci`, `chore`, `test`, `docs`, `style`) and other
+  types ask for nothing. The level is the highest one over the branch's
+  commits and the cycle's commits, so a promotion titled too low never
+  releases too little. A release never changes the major version.
+- A package whose commits ask for nothing still gets a patch when its
+  `dependencies`, `peerDependencies` or `optionalDependencies` hold a spec
+  that differs from the `package.json` of its last stable tag, which npm
+  published, and that the branch changed since it forked from that tag. A
+  branch that holds the tag forked at the tag itself. It also gets a
+  patch when a listed package pins a preview of it in `dependencies`,
+  `peerDependencies` or `optionalDependencies` that is newer than its last
+  stable release. The plan names each change and each pin. Otherwise the plan
+  lists the package as unchanged with the types of its commits, such as
+  `only build commits since 0.4.2`. Those commits stay in the cycle, so the
+  release notes of the next release list them.
 - Each preview pin moves to the stable range of the version its dependency
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The
@@ -131,7 +148,8 @@ in dependency order.
   contains the commit when the commit is an ancestor of it, which covers
   `--ref next`. `next` reaches the default branch by a squash merge, so the
   train also looks in the merged pull requests. It reads the last 100 pull
-  requests merged into the branch, newest first. One counts when the ref holds
+  requests merged into the branch read for the head, and into the default
+  branch for a stable tag, newest first. One counts when the ref holds
   its merge commit and its head contains the pinned commit. A failed
   comparison counts as not found.
 - A package is refused when a spec in `dependencies`, `peerDependencies` or
@@ -154,7 +172,9 @@ in dependency order.
   they form a cycle, the plan orders its packages again on the first three
   fields alone. A cycle that remains is refused, and the plan names its
   packages. A left-out package is never part of a cycle.
-- A package with no releasable commit and no preview pin is unchanged.
+- A package with no releasable commit, no preview pin, no change to its
+  runtime dependencies and no dependent that pins a newer preview of it is
+  unchanged.
 - `--exclude <name>` leaves a package out of this release. It is listed under
   "Not now". Its commits stay unreleased, so the next plan includes them.
 

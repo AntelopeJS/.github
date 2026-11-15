@@ -74,7 +74,7 @@ function isInside(outer: string, inner: string): boolean {
 
 function buildPlan(command: Command, system: System): Plan {
   const sources: PackageSource[] = [];
-  const places = new Map<string, { from: Checkout; revision: Revision; source: PackageSource }>();
+  const places = new Map<string, { from: Checkout; revision: Revision; releases: Revision; source: PackageSource }>();
   const checkouts = new Map<string, Checkout>();
   const pulls = mergedPulls(system);
   for (const target of command.targets) {
@@ -84,14 +84,15 @@ function buildPlan(command: Command, system: System): Plan {
     const nested = command.targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
-    const defaultBranch = resolveRevision(system, from, null).branch;
+    const releases = resolveRevision(system, from, null);
+    const defaultBranch = releases.branch;
     const merged = pulls(from.slug, defaultBranch);
     if (merged === null) {
       throw new Error(`gh pr list --repo ${from.slug} --base ${defaultBranch} failed, so the plan cannot read the commits of the cycle.`);
     }
-    const source = readSource(system, from, revision, { directory: target.directory, nested, merged });
+    const source = readSource(system, from, revision, { directory: target.directory, nested, merged, releases: releases.name });
     sources.push(source);
-    places.set(source.manifest.name, { from, revision, source });
+    places.set(source.manifest.name, { from, revision, releases, source });
   }
   const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
@@ -105,7 +106,7 @@ function buildPlan(command: Command, system: System): Plan {
     if (place === undefined) return false;
     if (holder === "head") return search(place.from, place.revision, sha);
     const { stable, tagName } = place.source;
-    return stable !== null && search(place.from, { ...place.revision, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
+    return stable !== null && search(place.from, { ...place.releases, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
   };
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }

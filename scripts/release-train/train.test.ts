@@ -15,6 +15,67 @@ describe("plan", () => {
     assert.deepEqual(dispatches(calls), []);
   });
 
+  test("a tooling-only cycle plans a patch only when it changes a runtime dependency of the published package.json", () => {
+    const tooling = (name: string, dependencies: Record<string, string>) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "0.4.2", { dependencies: { mongodb: "^6.21.0" }, devDependencies: { "@antelopejs/tooling-configs": "^0.7.0" } }) });
+        git(path, "tag", "v0.4.2");
+        commit(path, "build: move to @antelopejs/tooling-configs 0.8", {
+          "package.json": manifest(name, "0.4.2", { dependencies, devDependencies: { "@antelopejs/tooling-configs": "^0.8.0" } }),
+        });
+      });
+    const kept = tooling("tooling-kept", { mongodb: "^6.21.0" });
+    const moved = tooling("tooling-moved", { mongodb: "^7.0.0" });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", kept, moved], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/tooling-moved 0.4.2 -> 0.4.3 (patch)  AntelopeJS/tooling-moved@${short(tip(moved))}`,
+        "     moves dependencies mongodb ^6.21.0 -> ^7.0.0",
+        "Unchanged: @antelopejs/tooling-kept, only build commits since 0.4.2",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a tag above the version of package.json on the default branch is never the stable release", () => {
+    const accidental = repository("accidental-major", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("accidental-major", "1.24.0") });
+      git(path, "tag", "v2.0.1");
+      commit(path, "chore(release): v1.24.1", { "package.json": manifest("accidental-major", "1.24.1") });
+      git(path, "tag", "v1.24.1");
+      commit(path, "fix: close the socket (#512)", { "src/socket.ts": "export {};\n" });
+    });
+    const planned = fakeSystem();
+    assert.equal(main(["plan", accidental], planned.system), 0, planned.errors());
+    assert.equal(
+      planned.output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/accidental-major 1.24.1 -> 1.24.2 (patch)  AntelopeJS/accidental-major@${short(tip(accidental))}`,
+        "     fix: close the socket (#512)",
+        "",
+      ].join("\n"),
+    );
+
+    const untagged = repository("accidental-only", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("accidental-only", "1.24.1") });
+      git(path, "tag", "v2.0.0");
+      git(path, "tag", "v2.0.1");
+      commit(path, "fix: close the socket (#512)", { "src/socket.ts": "export {};\n" });
+    });
+    const stopped = fakeSystem();
+    assert.equal(main(["plan", untagged], stopped.system), 1);
+    assert.equal(
+      stopped.errors(),
+      "@antelopejs/accidental-only has no release tag at or below 1.24.1, the version of its package.json on the default branch, only the higher tags v2.0.0, v2.0.1. Tag the release that version names, then plan again.\n",
+    );
+  });
+
   test("an excluded package refuses the packages that pin its preview at runtime", () => {
     const { system, output } = fakeSystem();
     const status = main(["plan", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb, dmsDatabase], system);
@@ -26,7 +87,7 @@ describe("plan", () => {
         "",
         `1. @antelopejs/mongodb refused  AntelopeJS/mongodb@${short(tip(mongodb))}`,
         `     depends on preview @antelopejs/interface-database@0.4.3-next.12.g${short(commits.cursor)}, which is not in this release`,
-        "Unchanged: @antelopejs/dms-database",
+        "Unchanged: @antelopejs/dms-database, only chore commits since 0.5.3",
         "Not now: @antelopejs/interface-database",
         "",
       ].join("\n"),
@@ -119,6 +180,110 @@ describe("plan", () => {
     assert.equal(offline.errors(), "gh pr list --repo AntelopeJS/promoted --base main failed, so the plan cannot read the commits of the cycle.\n");
   });
 
+  test("--ref next leaves out the tasks the stable release shipped, whether or not next merged main back", () => {
+    const released = (name: string, synced: boolean) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "1.0.0") });
+        git(path, "tag", "v1.0.0");
+        git(path, "checkout", "--quiet", "-b", "next");
+        const task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+        git(path, "checkout", "--quiet", "main");
+        git(path, "merge", "--quiet", "--squash", "next");
+        const squash = commit(path, "feat: add the cursor (#3)", {});
+        commit(path, "chore(release): v1.0.1", { "package.json": manifest(name, "1.0.1"), "CHANGELOG.md": "## v1.0.1\n" });
+        git(path, "tag", "v1.0.1");
+        git(path, "checkout", "--quiet", "next");
+        if (synced) git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+        commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+        git(path, "checkout", "--quiet", "main");
+        pulls[`AntelopeJS/${name}`] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+      });
+    for (const [name, synced] of [["next-unsynced", false], ["next-synced", true]] as const) {
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", "--ref", "next", released(name, synced)], system), 0);
+      assert.equal(output(), `Release plan from next, nothing to release\n\nUnchanged: @antelopejs/${name}, only ci commits since 1.0.1\n`, name);
+    }
+  });
+
+  test("--ref next reads a dependency move a hotfix released on main as main's, not as next's", () => {
+    const hotfixed = repository("next-hotfixed", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-hotfixed", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "branch", "next");
+      commit(path, "fix(deps): move to foo 1.0.1 (#3)", { "package.json": manifest("next-hotfixed", "1.0.0", { dependencies: { foo: "^1.0.1" } }) });
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-hotfixed", "1.0.1", { dependencies: { foo: "^1.0.1" } }) });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", hotfixed], system), 0);
+    assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-hotfixed, only ci commits since 1.0.1\n");
+  });
+
+  test("--ref next reads a dependency move the stable release shipped through a promotion as shipped", () => {
+    const promoted = repository("next-moved", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-moved", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "chore(deps): move to foo 2 (#2)", { "package.json": manifest("next-moved", "1.0.0", { dependencies: { foo: "^2.0.0" } }) });
+      const task = commit(path, "fix: read with foo 2 (#2)", { "src/foo.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with foo 2 (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-moved", "1.0.1", { dependencies: { foo: "^2.0.0" } }) });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-moved"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", promoted], system), 0);
+    assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-moved, only ci commits since 1.0.1\n");
+  });
+
+  test("--ref next moves a pin to the stable release that shipped the pinned commit through a promotion", () => {
+    const ids = { task: "" };
+    const dependency = repository("next-shipped", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-shipped", "1.0.0") });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      ids.task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "feat: add the cursor (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-shipped", "1.0.1") });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-shipped"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: ids.task }];
+    });
+    const dependent = repository("next-pinning", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-pinning", "2.0.0") });
+      git(path, "tag", "v2.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "fix: read with the cursor (#5)", { "package.json": manifest("next-pinning", "2.0.0", { dependencies: { "@antelopejs/next-shipped": `1.0.1-next.3.g${short(ids.task)}` } }) });
+      git(path, "checkout", "--quiet", "main");
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/next-pinning 2.0.0 -> 2.0.1 (patch)  AntelopeJS/next-pinning@${short(tip(dependent, "next"))}`,
+        "     fix: read with the cursor (#5)",
+        `     @antelopejs/next-shipped 1.0.1-next.3.g${short(ids.task)} -> >=1.0.1 <1.1.0`,
+        "Unchanged: @antelopejs/next-shipped, only ci commits since 1.0.1",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("a blob:none clone keeps the squash commit of a pull request whose head it lacks, and fetches nothing", () => {
     const ids = { squash: "", head: "" };
     const remote = repository("partial-remote", (path) => {
@@ -138,7 +303,8 @@ describe("plan", () => {
     const { system } = fakeSystem();
     const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
     const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head, branch: "" }];
-    const source = readSource(system, from, resolveRevision(system, from, null), { directory: ".", nested: [], merged });
+    const revision = resolveRevision(system, from, null);
+    const source = readSource(system, from, revision, { directory: ".", nested: [], merged, releases: revision.name });
     assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
     assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
   });

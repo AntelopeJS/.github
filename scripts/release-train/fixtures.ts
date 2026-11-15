@@ -135,7 +135,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
         return held === "error" ? answer("", 1) : answer(`${held}\n`);
       }
       if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
-      if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
+      if (args[0] === "pr") return answer(JSON.stringify(flag(args, "--base") === "main" ? (pulls[flag(args, "--repo")] ?? []) : []));
       if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
