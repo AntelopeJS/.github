@@ -20,7 +20,8 @@ describe("go", () => {
       `${expectedPlan()}published @antelopejs/interface-database 0.5.0  https://github.com/AntelopeJS/interface-database/actions/runs/100\n` +
         "published @antelopejs/mongodb 1.8.7  https://github.com/AntelopeJS/mongodb/actions/runs/101\n" +
         "published @antelopejs/dms-database 0.5.4  https://github.com/AntelopeJS/dms-database/actions/runs/102\n" +
-        "published @antelopejs/dms-automation 0.11.2  https://github.com/AntelopeJS/dms/actions/runs/103\n",
+        "published @antelopejs/dms-automation 0.11.2  https://github.com/AntelopeJS/dms/actions/runs/103\n" +
+        "Published: @antelopejs/interface-database 0.5.0, @antelopejs/mongodb 1.8.7, @antelopejs/dms-database 0.5.4, @antelopejs/dms-automation 0.11.2.\n",
     );
   });
 
@@ -52,6 +53,15 @@ describe("go", () => {
       ["AntelopeJS/interface-database"],
     );
     assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
+  });
+
+  test("ends with what it published and what the plan refused", () => {
+    const { system, output } = fakeSystem();
+    assert.equal(main(["go", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb, `${dms}:packages/automation`], system), 0);
+    assert.match(
+      output(),
+      /\npublished @antelopejs\/dms-automation 0\.11\.2  \S+\nPublished: @antelopejs\/dms-automation 0\.11\.2\.\nRefused, not published: @antelopejs\/mongodb\.\n$/,
+    );
   });
 
   test("retries a run gh cannot read up to 8 times in a row", () => {

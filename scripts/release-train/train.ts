@@ -143,6 +143,9 @@ function go(plan: Plan, system: System): number {
     system.err(lines.join("\n"));
     return 1;
   }
+  const refused = plan.entries.filter((entry) => entry.status === "refused").map((entry) => entry.source.manifest.name);
+  system.out(`Published: ${list(releases)}.\n`);
+  if (refused.length > 0) system.out(`Refused, not published: ${refused.join(", ")}.\n`);
   return 0;
 }
 
