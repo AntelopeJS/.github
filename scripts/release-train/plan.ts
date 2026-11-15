@@ -8,16 +8,20 @@ export interface Commit {
   level: Level | null;
 }
 
+/** One of the four dependency fields of a `package.json`. */
+export type DependencyField =
+  | "dependencies"
+  | "peerDependencies"
+  | "optionalDependencies"
+  | "devDependencies";
+
 /** The four `package.json` fields that hold dependency specs. */
-export const dependencyFields = [
+export const dependencyFields: readonly DependencyField[] = [
   "dependencies",
   "peerDependencies",
   "optionalDependencies",
   "devDependencies",
-] as const;
-
-/** One of the four dependency fields of a `package.json`. */
-export type DependencyField = (typeof dependencyFields)[number];
+];
 
 /** The part of a `package.json` the release train reads. */
 export type Manifest = { name: string; version: string } & Partial<

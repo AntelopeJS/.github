@@ -314,17 +314,23 @@ function label(entry: Extract<Entry, { status: "release" }>): string {
 function go(plan: Plan, branches: ReadonlyMap<PackageSource, string>, system: System): number {
   const releases = plan.entries.filter((entry) => entry.status === "release");
   for (const [position, entry] of releases.entries()) {
-    const id = dispatch(system, entry, branches.get(entry.source) ?? "");
-    const { conclusion, url } = awaitRun(system, entry.source.slug, id);
-    if (conclusion === "success") {
-      system.out(`published ${label(entry)}  ${url}\n`);
-      continue;
+    let failure: string;
+    try {
+      const id = dispatch(system, entry, branches.get(entry.source) ?? "");
+      const { conclusion, url } = awaitRun(system, entry.source.slug, id);
+      if (conclusion === "success") {
+        system.out(`published ${label(entry)}  ${url}\n`);
+        continue;
+      }
+      failure = `(${conclusion})  ${url}`;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
     }
     const published = releases.slice(0, position).map(label);
     const left = releases.slice(position).map(label);
     system.err(
       [
-        `failed ${label(entry)} (${conclusion})  ${url}`,
+        `failed ${label(entry)} ${failure}`,
         `Published: ${published.length === 0 ? "nothing" : published.join(", ")}.`,
         `Not published: ${left.join(", ")}.`,
         "Fix the failure, then run go again to continue.",

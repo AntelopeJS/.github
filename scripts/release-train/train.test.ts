@@ -101,6 +101,7 @@ function fakeSystem(conclusions: Record<string, string> = {}) {
       calls.push([...args]);
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
+        if (conclusions[repo] === "rejected") return answer("", 1);
         runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
         return answer("");
       }
@@ -224,6 +225,16 @@ describe("go", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("a dispatch that fails stops the train the same way", () => {
+    const { system, calls, errors } = fakeSystem({ "AntelopeJS/interface-database": "rejected" });
+    assert.equal(main(["go", interfaceDatabase, mongodb], system), 1);
+    assert.deepEqual(
+      calls.filter((args) => args[0] === "workflow").map((args) => args[4]),
+      ["AntelopeJS/interface-database"],
+    );
+    assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
   });
 
   test("refuses --ref and dispatches nothing", () => {
