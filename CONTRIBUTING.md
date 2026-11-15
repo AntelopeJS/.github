@@ -98,11 +98,12 @@ the default branch.
 
 ## Shared CI and maintenance workflows
 
-Repositories call `ci-node.yml`, `stale.yml`, and `triage.yml` through the same moving `v1`
+Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
 tag as the [release workflows](#reusable-release-workflows), so the same
-backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`,
-with the [Renovate sync](README.md#renovate-sync) in its own job so that only
-that job, and only on Renovate pull requests, holds a write token:
+backward-compatibility rule applies. Call Node CI on the triggers its
+[tiers](README.md#node-ci) read, with the [Renovate sync](README.md#renovate-sync)
+in its own job so that only that job, and only on Renovate pull requests, holds
+a write token:
 
 ```yaml
 name: ci
@@ -110,9 +111,11 @@ name: ci
 on:
   push:
     branches:
-      - main
       - next
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -175,43 +178,26 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/stale.yml@v1
 ```
 
-Call `triage.yml` when an issue is opened, so every new issue gets the
-`needs-triage` label:
+A repository with a [`next` branch](README.md#next-branch) calls
+`next-sync.yml` on each push to `main`. The job must grant `issues: write`,
+which the sync uses to open and close the conflict issue when no `NOTION_TOKEN`
+secret exists:
 
 ```yaml
-name: Issue triage
+name: Next sync
 on:
-  issues:
-    types: [opened]
+  push:
+    branches:
+      - main
 permissions: {}
 jobs:
-  triage:
+  next-sync:
     permissions:
       issues: write
-    uses: AntelopeJS/.github/.github/workflows/triage.yml@v1
-```
-
-A repository that commits `antelope-lock/` calls `modules-update.yml` once a
-day, and on demand. A module passes the command that records its locks, as
-described in the [module locks update](README.md#module-locks-update); a project
-omits `with`:
-
-```yaml
-name: Modules update
-on:
-  schedule:
-    - cron: "23 5 * * *"
-  workflow_dispatch:
-permissions: {}
-jobs:
-  modules-update:
-    permissions:
-      contents: write
-      pull-requests: write
-      actions: write
-    uses: AntelopeJS/.github/.github/workflows/modules-update.yml@v1
-    with:
-      refresh-command: rm -rf antelope-lock && pnpm run test
+    uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v1
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
 ```
 
 Use the shared Renovate preset in `renovate.json5`:
@@ -255,7 +241,8 @@ passes `channel` fails from then on, so every caller replaces its
 
 ### Working on `next`
 
-1. Create `next` from `main` if it does not exist yet.
+1. If the repository has no `next`, set it up with
+   `scripts/next-branch-setup.sh` of this repository.
 2. Open the pull request against `next`.
 3. After the merge, the push publishes a preview of each package it changed.
 4. A repository that needs the change pins the exact preview on its own `next`
@@ -265,12 +252,12 @@ A preview writes nothing to git, so `next` keeps the version of the last stable
 release in its `package.json`. Cross-repository work never waits for a stable
 release or a tarball.
 
-### Releasing `next`
+### Promoting `next` to stable
 
 1. A pull request from `next` to `main` brings the work to `main` once a
-   maintainer approves it. The promotion is a squash merge, so its title is the
-   one commit type the plan reads. Give it the highest type of the cycle, with
-   `!` when the cycle holds a breaking change. A `chore` title releases nothing.
+   maintainer approves it. Merge it with **Squash and merge**. The Next sync
+   workflow then merges `main` back into `next`, so `next` holds the release
+   commits, the changelogs and the stable ranges.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
@@ -278,8 +265,24 @@ release or a tarball.
    commit the plan read, replaces the preview pins with stable ranges and
    refuses to publish a version whose `dependencies`, `peerDependencies` or
    `optionalDependencies` still hold a preview.
-4. `main` is merged back into `next`, so `next` holds the release commits,
-   the changelogs and the stable ranges.
 
-A fix that cannot wait for the next release opens against `main` and ships with
-the release train like any other change.
+`next` stays: the `next history` ruleset forbids deleting it and
+force-pushing to it.
+
+The squash commit is the only commit of the cycle on `main`, so the release
+train reads its title alone. Title the pull request with the highest change
+type of the cycle, `feat!:` when it holds a breaking change, then `feat:`,
+then `fix:`. A breaking change gives a minor release, never a major one. A
+`chore` title releases nothing. Keep the list of the cycle's commits that
+GitHub puts in the squash commit body, so the changelog shows them.
+
+### Stable fixes during a cycle
+
+1. Open the fix against `main`. It ships with the next release train like any
+   other change.
+2. The Next sync workflow merges `main` into `next`, so the cycle includes the
+   fix. When the merge conflicts, it files a task in the Inbox, or opens an
+   issue when the repository has no `NOTION_TOKEN` secret. A repository
+   admin merges `origin/main` into `next`, resolves the conflicts and pushes
+   the merge commit straight to `next`, not through a pull request, which
+   would squash it and bring the same conflict back.

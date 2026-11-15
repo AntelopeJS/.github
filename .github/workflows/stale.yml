@@ -6,7 +6,27 @@ on:
 permissions: {}
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      run: ${{ steps.day.outputs.run }}
+    steps:
+      - id: day
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != schedule ] || [ "$(date -u +%u)" = 1 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Stale check runs."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Stale check skipped: it runs on Mondays (UTC) and on demand."
+          fi
+
   stale:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write

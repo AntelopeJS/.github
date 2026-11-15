@@ -243,7 +243,48 @@ not at its root also declares a `package-directory` input in
 The reusable `ci-node.yml` workflow installs dependencies with the frozen
 lockfile and runs `pnpm run checks`. By default, it reads Node.js from `.nvmrc`.
 Callers can pass `node-versions` to check several versions. It reads pnpm from
-`packageManager` in `package.json`. It accepts these optional inputs:
+`packageManager` in `package.json`.
+
+Its `Tier` job picks how much to run from the event, the target branch and the
+draft flag, so a caller only declares the triggers: `pull_request` with the
+types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
+`next` (`develop` in `cloud`), a nightly `schedule` and `workflow_dispatch`.
+"Next" below is a head branch named `next` or `develop` of the same repository.
+
+| Event | Tier | Jobs |
+| ----- | ---- | ---- |
+| Pull request from next into the default branch | `none` | none; `checks` succeeds |
+| Draft pull request | `draft` | `Lint and typecheck`; `checks` fails so a draft never shows a green gate |
+| Ready pull request into any other branch than the default one, such as `next` | `fast` | `Lint and typecheck`, then the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
+| Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
+| Push to the default branch | `none` | none; `checks` succeeds |
+| Push to any other branch, such as `next` | `full` | as above |
+| `schedule` | `nightly` | `full`, plus the Windows jobs |
+| `workflow_dispatch` and any other event | `full` | as above |
+
+The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
+the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
+also run on Windows in the `fast` and `full` tiers of a pull request or a manual
+run. The Node.js, test and extra-commands jobs start once `Lint and typecheck`
+passed, so tests never start before it, whether they run in the test job or
+inside `pnpm run checks`. The Node.js jobs run `pnpm run checks` with `lint` in
+`ANTELOPEJS_CHECKS_SKIP`, since `Lint and typecheck` already ran it. They keep
+`typecheck`, whose build output later steps may read.
+`Lint and typecheck` runs `checks:prepare` when the repository defines it, then
+`typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
+
+Every Node.js, test and extra-commands job sets two variables for the commands
+it runs:
+
+- `ANTELOPEJS_CI_TIER` holds the tier, so a repository can run a browser smoke
+  test in `full` and its whole browser suite in `nightly`.
+- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the commit the pull
+  request is compared with: the first parent of the checked-out merge commit,
+  present in the checkout. A repository with several packages can restrict its
+  tests to the packages `git diff "$ANTELOPEJS_TEST_BASE" HEAD` touches and
+  their dependents. It is empty in every other tier, where all tests run.
+
+It accepts these optional inputs:
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
@@ -256,10 +297,11 @@ Callers can pass `node-versions` to check several versions. It reads pnpm from
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
-| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job sets `ANTELOPEJS_CHECKS_SKIP=test` for `pnpm run checks`. |
+| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job then adds `test` to `ANTELOPEJS_CHECKS_SKIP` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
-| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services, the pull request title check and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows-pull-requests` | `false` | With `windows`, also run the Windows jobs in the `fast` and `full` tiers of pull requests and manual runs. |
 
 On a pull request, the `gitleaks` job scans the commits the pull request adds,
 merge commits included, with gitleaks 8.30.1 and fails on any finding. It reads
@@ -272,9 +314,9 @@ file whose merge conflict was resolved by hand is reported as `b/<file>`. The
 job fails on an octopus merge, whose changes it cannot scan. On other events
 the job is skipped.
 
-The `checks` job stays the single required result. It succeeds only when every
-Node.js job, every test job and every extra-commands job, if enabled, succeeds, the `gitleaks` job, if run, succeeds and the Renovate sync run by this workflow, if any, did not
-fail or get cancelled.
+The `checks` job stays the single required result. It fails when the `Tier` job
+did not succeed, when any job it waits for failed or was cancelled, and in the
+`draft` tier. A job the tier skips does not fail it.
 
 Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands` in the Node.js job, the Node.js job does not start them. After a successful start,
 cleanup runs with `docker compose down -v` even if checks or extra commands
@@ -311,9 +353,11 @@ name: ci
 on:
   push:
     branches:
-      - main
       - next
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -350,57 +394,63 @@ its failure or cancellation still fails `ci / checks`.
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
-## Module locks update
+## Next branch
 
-A repository that commits `antelope-lock/` installs each npm module from its
-recorded lock, so a module and its dependencies move only when the locks are
-recorded again. Renovate cannot do that: it does not read `antelope-lock/`, and
-the hosted Renovate app runs no `ajs` command. The reusable
-`modules-update.yml` workflow records the locks again and opens or updates one
-pull request per base branch, from the `antelopejs/modules-update/<base>`
-branch.
+A repository with a `next` branch takes agents' pull requests on `next`, where
+each one merges on its own green checks, and reaches `main` through one pull
+request from `next` that Antony merges.
 
-It accepts these inputs and one secret:
+`scripts/next-branch-setup.sh <owner>/<repo>` sets a repository up. It prints
+the changes it would make; with `--apply` it makes them and prints only
+failures. It can run again at any time and changes only what differs:
+
+- it creates `next` from the default branch when `next` does not exist, and
+  never moves an existing `next`;
+- it allows auto-merge in the repository;
+- it creates or updates the repository ruleset `next`: changes through pull
+  requests only, no approval, squash merges, the status checks the default
+  branch requires (`ci / checks`, plus `ubuntu` in the DMS repositories)
+  without the up-to-date requirement. Repository admins may push to `next`;
+- it creates or updates the repository ruleset `next history`, which nobody
+  bypasses: `next` cannot be deleted, not even by the automatic deletion of
+  a merged pull request's head branch, and cannot be force-pushed.
+
+It never changes the default branch's rulesets, and it refuses
+`k8s-gitops-infra`, `antelope-hardening` and `antelope-compliance`, whose pull
+requests always target `main`. `--branch develop` sets up `develop` instead,
+for `cloud`.
+
+The reusable `next-sync.yml` workflow merges the default branch into `next`
+after each push to it, a merged pull request or a release commit alike, so
+that `next` always contains `main` and its pull request to `main` stays up to
+date. It pushes the merge commit with `RELEASE_GITHUB_TOKEN`, whose push starts
+the `next` checks. When the merge conflicts, it pushes nothing and fails with
+a message that names the conflicting files. With the `NOTION_TOKEN` secret, it
+also files one task in the Tasks Inbox, or adds the new run to the open task it
+filed before. Without it, it opens one issue in the repository with the
+default token, or comments on the one it opened before, and the next
+successful sync closes that issue. A repository admin resolves the conflict by
+merging `main` into `next` and pushing the merge commit straight to `next`: a
+pull request would squash it, and the same conflict would come back.
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
-| `refresh-command` | `pnpm exec ajs project modules update` | Shell command, run with `bash -euo pipefail` after `pnpm install --frozen-lockfile`, that records every lock again. |
-| `base` | `""` | Branch whose locks are refreshed and that the pull request targets. Empty uses the branch the run started on. |
-| `weekday` | `1` | Day of the week, 1 for Monday to 7 for Sunday in UTC, on which a scheduled run refreshes the locks. |
-| `ci-workflow` | `ci.yml` | Workflow file dispatched on the branch after a push made with the default token. |
-| `token` (secret) | `GITHUB_TOKEN` | Token that pushes the branch and opens the pull request. |
+| `branch` | `next` | Branch that receives the default branch. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the `next` ruleset lets push. |
+| `NOTION_TOKEN` (secret) | | Optional. Notion integration token allowed to read, insert and update content in the Tasks database. Without it, a conflict opens a GitHub issue. |
 
-A project passes no input: `ajs project modules update` moves each npm module
-to its latest version in `antelope.config.ts`, then records every lock again.
-A module records its locks while its tests install the modules of its test
-configuration, so it passes `rm -rf antelope-lock && pnpm run test`: each range
-then resolves to its latest version.
+The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
+called workflow cannot ask for more than its caller grants, so GitHub refuses
+to start the sync otherwise.
 
-Every run first reads every package version in `antelope-lock/` and asks the
-npm advisory API for the advisories that affect them. A manual run and a
-scheduled run on `weekday` refresh the locks. A scheduled run on any other day
-refreshes them only when an advisory appeared since the last successful run on
-the same base, so call the workflow once a day. A failed run leaves the
-advisory new, and the next day retries it.
-
-When nothing changed, the run ends. It closes the open pull request if the base
-branch already holds the same locks. Otherwise it commits `antelope-lock/` and
-`antelope.config.ts`, and nothing else. The pull request body lists the modules
-that moved and from which version to which, the direct dependencies of each
-module that moved, and the advisories the change fixes or leaves.
-
-When the refresh command fails after recording as many locks for every module
-as the base holds, the pull request still opens with a warning, so its checks
-show the failure. When it records fewer, or changes no lock, the run fails,
-pushes nothing and leaves the open pull request alone.
-
-A push made with `GITHUB_TOKEN` starts no workflow run. So after it pushes, the
-workflow dispatches `ci-workflow` on the branch, which runs `checks` on the new
-head. With a `token` secret, the push starts the pull request checks itself and
-nothing is dispatched. GitHub Actions can open a pull request with
-`GITHUB_TOKEN` only when the repository allows GitHub Actions to create pull
-requests. Otherwise pass a `token` that may open them. When neither works, the
-branch is pushed and the run fails with a link to open the pull request by hand.
+Merge the pull request from `next` to `main` with **Squash and merge**. `main`
+requires a linear history, so a merge commit cannot land there, and the merge
+of `main` back into `next` keeps the next pull request's diff to the work done
+since. The squash commit is the only commit the stable release sees, so title
+the pull request as described in
+[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its
+checks are those `next` already ran on the same commit: `ci-node.yml` gives the
+pull request the `none` tier, so `ci / checks` succeeds without running again.
 See the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ## Link rot
@@ -417,20 +467,10 @@ and file.
 
 The reusable `stale.yml` workflow takes no inputs. Call it once a day with job
 permissions `actions: write`, `issues: write`, and `pull-requests: write`.
-Issues become stale after 60 inactive days and close after 30 more; the
-`pending` label exempts issues. Pull requests never become stale. See the [daily
-caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
-
-## Issue triage labels
-
-The bug and feature issue forms apply `bug` or `feature`, plus `needs-triage`.
-The reusable `triage.yml` workflow takes no inputs. Call it on `issues: opened`
-with the job permission `issues: write`. It creates `bug`, `feature`, and
-`needs-triage` in the repository when they are missing, then adds
-`needs-triage` to the new issue, so issues opened without a form, through the
-API or the CLI, are labelled too. GitHub drops a form label that does not exist
-yet, so the first form issue in a repository may miss `bug` or `feature`. See
-the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+A scheduled run does its work on Mondays (UTC) only and ends at once on other
+days; a manual run always works. Issues become stale after 60 inactive days and
+close after 30 more; the `pending` label exempts issues. Pull requests never
+become stale. See the [daily caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ## pnpm workspaces
 
