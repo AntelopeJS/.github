@@ -34,6 +34,8 @@ export interface Place {
   directory: string;
   nested: readonly string[];
   merged: readonly MergedPull[] | null;
+  /** The ref of the default branch. Its tags are the stable releases of any branch the train reads. */
+  releases: string;
 }
 
 const remotePattern = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
@@ -163,6 +165,7 @@ function cycleNotes(
   tag: string | null,
   paths: readonly string[],
   merged: readonly MergedPull[],
+  shipped: readonly string[],
 ): Commit[] {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
@@ -181,9 +184,8 @@ function cycleNotes(
     );
   }
   const current = landed.filter((pull) => !released(pull) && present(pull));
-  const previous = landed.filter((pull) => released(pull) && present(pull));
   const include = [head, ...current.map((pull) => pull.head)];
-  const exclude = [...(tag === null ? [] : [tag]), ...previous.map((pull) => pull.head)];
+  const exclude = [...(tag === null ? [] : [tag]), ...shipped];
   const log = exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, ...include, "--not", ...exclude, "--", ...paths]);
   const replaced = new Set(current.map((pull) => pull.mergeCommit));
   return parseCommits(log).filter((commit) => !replaced.has(commit.sha));
@@ -195,7 +197,7 @@ function cycleNotes(
  * directories, which hold other listed packages. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
-  const { directory, nested, merged } = place;
+  const { directory, nested, merged, releases } = place;
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
@@ -203,7 +205,8 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const tagName = readTagName(system, repository, revision, directory);
   const pattern = tagPattern(tagName);
   let stable: { version: string; tag: string } | null = null;
-  for (const tag of exec(system, "git", ["-C", repository, "tag", "--merged", revision]).split("\n")) {
+  const tags = new Set([revision, releases].flatMap((ref) => exec(system, "git", ["-C", repository, "tag", "--merged", ref]).split("\n")));
+  for (const tag of tags) {
     const version = pattern.exec(tag.trim())?.[1];
     if (version !== undefined && (stable === null || compareCore(version, stable.version) > 0)) {
       stable = { version, tag: tag.trim() };
@@ -211,11 +214,13 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
   const stableManifest = stable === null ? null : readManifest(system, repository, `refs/tags/${stable.tag}`, directory, `${where} at ${stable.tag}`);
-  const range = tag === null ? revision : `${tag}..${revision}`;
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
-  const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, range, "--", ...paths]));
-  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged);
+  const shipped = (merged ?? [])
+    .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
+    .map((pull) => pull.head);
+  const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
+  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, commits, notes };
 }
 

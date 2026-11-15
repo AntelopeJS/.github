@@ -145,6 +145,31 @@ describe("plan", () => {
     assert.equal(offline.errors(), "gh pr list --repo AntelopeJS/promoted --base main failed, so the plan cannot read the commits of the cycle.\n");
   });
 
+  test("--ref next leaves out the tasks the stable release shipped, whether or not next merged main back", () => {
+    const released = (name: string, synced: boolean) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "1.0.0") });
+        git(path, "tag", "v1.0.0");
+        git(path, "checkout", "--quiet", "-b", "next");
+        const task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+        git(path, "checkout", "--quiet", "main");
+        git(path, "merge", "--quiet", "--squash", "next");
+        const squash = commit(path, "feat: add the cursor (#3)", {});
+        commit(path, "chore(release): v1.0.1", { "package.json": manifest(name, "1.0.1"), "CHANGELOG.md": "## v1.0.1\n" });
+        git(path, "tag", "v1.0.1");
+        git(path, "checkout", "--quiet", "next");
+        if (synced) git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+        commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+        git(path, "checkout", "--quiet", "main");
+        pulls[`AntelopeJS/${name}`] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+      });
+    for (const [name, synced] of [["next-unsynced", false], ["next-synced", true]] as const) {
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", "--ref", "next", released(name, synced)], system), 0);
+      assert.equal(output(), `Release plan from next, nothing to release\n\nUnchanged: @antelopejs/${name}, only ci commits since 1.0.1\n`, name);
+    }
+  });
+
   test("a blob:none clone keeps the squash commit of a pull request whose head it lacks, and fetches nothing", () => {
     const ids = { squash: "", head: "" };
     const remote = repository("partial-remote", (path) => {
@@ -164,7 +189,8 @@ describe("plan", () => {
     const { system } = fakeSystem();
     const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
     const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head, branch: "" }];
-    const source = readSource(system, from, resolveRevision(system, from, null), { directory: ".", nested: [], merged });
+    const revision = resolveRevision(system, from, null);
+    const source = readSource(system, from, revision, { directory: ".", nested: [], merged, releases: revision.name });
     assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
     assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
   });

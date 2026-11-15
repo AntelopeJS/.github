@@ -86,8 +86,10 @@ and fetches it again on the next run. It reads a local checkout as it is.
 `plan` prints the release plan and changes nothing. It reads each package at
 the head of its default branch. `--ref next` reads the `next` branch instead, so
 you see what merging `next` would release. For each package it reads
-`package.json`, the last stable tag reachable from that branch (the
-`git.tagName` of `.release-it.json`, `v${version}` by default) and the commits
+`package.json`, the last stable tag reachable from that branch or from the
+default branch (the `git.tagName` of `.release-it.json`, `v${version}` by
+default), so a `next` that has not merged a release back yet still counts
+from it, and the commits
 since that tag that touched the package directory. Release commits do not
 count, and neither do the `fix(deps): depend on the stable` commits of a stable
 run. A directory inside the package that holds another listed package does
@@ -100,7 +102,7 @@ plan lists the commits of the cycle instead. It reads the last 100 pull
 requests merged into the default branch, for `--ref next` too. A pull request
 merged since the stable tag gives the commits of its head, in place of its
 squash commit. The heads of the pull requests merged before the tag mark where
-the cycle starts. A pull request whose head the checkout lacks, such as a
+the cycle starts, on the default branch and on `next` alike. A pull request whose head the checkout lacks, such as a
 person's branch deleted after the merge, a reused branch name or a fork's
 branch, keeps its squash commit. When the checkout has that branch as
 `origin/<branch>` and GitHub's branch still holds the head, the checkout is
