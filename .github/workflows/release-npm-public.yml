@@ -3,13 +3,13 @@ name: Release public npm package
 on:
   workflow_call:
     inputs:
-      channel:
-        description: npm distribution channel
-        required: true
-        type: string
       release-version:
-        description: Exact stable version; empty uses the automatic increment
+        description: Stable version a workflow_dispatch run releases; a preview ignores it
         default: ""
+        type: string
+      dependency-ranges:
+        description: JSON object mapping each dependency name to the stable range that replaces its preview pin
+        default: "{}"
         type: string
       install-core:
         description: Install the AntelopeJS CLI before releasing
@@ -18,10 +18,6 @@ on:
       package-directory:
         description: Relative path to the package directory to release
         default: .
-        type: string
-      services-compose-file:
-        description: Relative path to a docker compose file whose services must run during the release
-        default: ""
         type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
@@ -39,39 +35,37 @@ jobs:
       contents: write
       id-token: write
     concurrency:
-      group: npm-release-${{ github.repository }}
+      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ inputs.package-directory }}
       cancel-in-progress: false
     steps:
-      - name: Validate release source and channel
+      - name: Resolve release mode
+        id: mode
         env:
-          CHANNEL: ${{ inputs.channel }}
           RELEASE_VERSION: ${{ inputs.release-version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ -n "$RELEASE_VERSION" ]; then
-            test "$CHANNEL" = latest && [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-              echo "release-version must be a stable version on the latest channel." >&2
+          if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "mode=preview" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+              echo "A stable release needs release-version as M.m.p, got '$RELEASE_VERSION'." >&2
               exit 1
             }
-          fi
-          case "$CHANNEL" in
-            latest) release_branch=$DEFAULT_BRANCH ;;
-            next) release_branch=next ;;
-            *) echo "Unsupported npm channel: $CHANNEL" >&2; exit 1 ;;
-          esac
-          test "$GITHUB_REF" = "refs/heads/$release_branch" || {
-            echo "The $CHANNEL channel must be released from the $release_branch branch, not $GITHUB_REF." >&2
+            echo "mode=stable" >> "$GITHUB_OUTPUT"
+          else
+            echo "A push to a branch other than $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
-          }
+          fi
 
       - name: Validate release credential
         env:
+          MODE: ${{ steps.mode.outputs.mode }}
           RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         run: |
-          test -n "$RELEASE_GITHUB_TOKEN" || {
+          if [ "$MODE" = stable ] && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
             echo "RELEASE_GITHUB_TOKEN is not configured." >&2
             exit 1
-          }
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -123,50 +117,6 @@ jobs:
             console.error(`package.json was not found in package-directory: ${input}`)
             process.exit(1)
           }
-          NODE
-
-      - name: Validate services compose file
-        id: services
-        if: inputs.services-compose-file != ''
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const path = require('node:path')
-
-          const workspace = fs.realpathSync(process.env.GITHUB_WORKSPACE)
-          const input = process.env.SERVICES_COMPOSE_FILE
-          if (path.isAbsolute(input)) {
-            console.error('services-compose-file must be a relative file path inside the repository')
-            process.exit(1)
-          }
-
-          const file = path.resolve(workspace, input)
-          const relativeFile = path.relative(workspace, file)
-          if (relativeFile === '..' || relativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFile)) {
-            console.error('services-compose-file must stay inside the repository')
-            process.exit(1)
-          }
-
-          let realFile
-          try {
-            realFile = fs.realpathSync(file)
-          } catch {
-            console.error(`services-compose-file does not exist: ${input}`)
-            process.exit(1)
-          }
-          const realRelativeFile = path.relative(workspace, realFile)
-          if (realRelativeFile === '..' || realRelativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(realRelativeFile)) {
-            console.error('services-compose-file must resolve inside the repository')
-            process.exit(1)
-          }
-          if (!fs.statSync(realFile).isFile()) {
-            console.error(`services-compose-file is not a regular file: ${input}`)
-            process.exit(1)
-          }
-
           NODE
 
       - name: Resolve pnpm lockfile
@@ -251,72 +201,171 @@ jobs:
           }
           NODE
 
+      - name: Resolve release version
+        id: version
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          if [ "$MODE" = preview ] && [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null && git diff --quiet "$BEFORE" "$GITHUB_SHA" -- .; then
+            echo "::notice::$name did not change in this push, so it gets no preview."
+            exit 0
+          fi
+          if latest=$(npm view "$name" version 2>"$RUNNER_TEMP/npm-view.log"); then
+            :
+          elif grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
+            latest=""
+          else
+            cat "$RUNNER_TEMP/npm-view.log" >&2
+            exit 1
+          fi
+          IFS=. read -r major minor patch <<< "${latest:-0.0.0}"
+          if [ "$MODE" = preview ]; then
+            if [ -n "$latest" ]; then
+              base="$major.$minor.$((patch + 1))"
+            else
+              base=$(node -p "require('./package.json').version.split('-')[0]")
+            fi
+            version="$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
+              echo "::notice::$name@$version is already published."
+              exit 0
+            fi
+          else
+            version=$RELEASE_VERSION
+            IFS=. read -r new_major new_minor new_patch <<< "$version"
+            if [ -n "$latest" ] && [ "$new_major" != "$major" ]; then
+              echo "$version changes the major version of $name $latest, which a release never does." >&2
+              exit 1
+            fi
+            if [ -n "$latest" ] && (( new_minor < minor || (new_minor == minor && new_patch <= patch) )); then
+              echo "$version is not greater than $name $latest on npm." >&2
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Apply dependency ranges
+        id: ranges
+        if: steps.mode.outputs.mode == 'stable'
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies']
+          let ranges = null
+          try {
+            ranges = JSON.parse(process.env.DEPENDENCY_RANGES || '{}')
+          } catch {}
+          if (ranges === null || typeof ranges !== 'object' || Array.isArray(ranges) || !Object.values(ranges).every((range) => typeof range === 'string')) {
+            console.error('dependency-ranges must be a JSON object mapping each dependency name to a range')
+            process.exit(1)
+          }
+          const names = Object.keys(ranges)
+          if (names.length === 0) process.exit(0)
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const missing = names.filter((name) => !fields.some((field) => Object.hasOwn(pkg[field] ?? {}, name)))
+          if (missing.length) {
+            console.error(`dependency-ranges names packages that package.json does not depend on: ${missing.join(', ')}`)
+            process.exit(1)
+          }
+          for (const name of names) {
+            for (const field of fields) {
+              if (Object.hasOwn(pkg[field] ?? {}, name)) pkg[field][name] = ranges[name]
+            }
+          }
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
+          const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `message=fix(deps): depend on the stable ${list}\n`)
+          NODE
+
+      - name: Refuse preview dependencies
+        if: steps.mode.outputs.mode == 'stable'
+        working-directory: ${{ inputs.package-directory }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const previews = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies'].flatMap((field) =>
+            Object.entries(pkg[field] ?? {})
+              .filter(([, spec]) => /\d+\.\d+\.\d+-/.test(spec))
+              .map(([name, spec]) => `${field} ${name} ${spec}`),
+          )
+          if (previews.length) {
+            console.error(`A stable release cannot depend on a preview. Give each a stable range in dependency-ranges:\n${previews.join('\n')}`)
+            process.exit(1)
+          }
+          NODE
+
       - name: Install dependencies
+        if: steps.version.outputs.version != ''
         working-directory: ${{ steps.workspace.outputs.install-directory }}
-        run: pnpm install --frozen-lockfile
+        env:
+          RANGES_APPLIED: ${{ steps.ranges.outputs.message != '' }}
+        run: |
+          if [ "$RANGES_APPLIED" = true ]; then
+            pnpm install --no-frozen-lockfile
+          else
+            pnpm install --frozen-lockfile
+          fi
 
       - name: Install AntelopeJS CLI
-        if: inputs.install-core
+        if: inputs.install-core && steps.version.outputs.version != ''
         run: pnpm add --global @antelopejs/core
 
       - name: Configure release identity
+        if: steps.mode.outputs.mode == 'stable'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Start services
-        if: steps.services.outcome == 'success'
+      - name: Commit stable dependencies
+        if: steps.ranges.outputs.message != ''
         env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
-        run: docker compose -f "$SERVICES_COMPOSE_FILE" up -d --wait
+          MESSAGE: ${{ steps.ranges.outputs.message }}
+          PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
+          LOCKFILE: ${{ steps.lockfile.outputs.path }}
+        run: |
+          git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
+          git commit --quiet -m "$MESSAGE"
 
-      - name: Publish release
+      - name: Publish preview
+        if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
+        working-directory: ${{ inputs.package-directory }}
         env:
-          CHANNEL: ${{ inputs.channel }}
-          RELEASE_VERSION: ${{ inputs.release-version }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm pkg set "version=$VERSION"
+          npm publish --tag next
+
+      - name: Publish stable release
+        if: steps.mode.outputs.mode == 'stable'
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         run: |
           auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
           git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
           trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
 
-          args=(--ci "--git.requireBranch=$GITHUB_REF_NAME")
-          if [ "$CHANNEL" = latest ]; then
-            # Stable releases ignore prerelease tags, so requireCommits and the
-            # changelog compare against the last stable release.
-            prerelease_tags='*.*.*-*'
-            args+=("--git.tagExclude=$prerelease_tags")
-            tag_match=$(node <<'NODE'
+          prerelease_tags='*.*.*-*'
+          args=(--ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION")
+          tag_match=$(node <<'NODE'
           const fs = require('node:fs')
           const config = fs.existsSync('.release-it.json') ? JSON.parse(fs.readFileSync('.release-it.json', 'utf8')) : {}
           const git = config.git ?? {}
           console.log((git.tagMatch || git.tagName || 'v${version}').replace('${version}', '*'))
           NODE
-            )
-            stable_tag=$(git describe --tags --abbrev=0 --match "$tag_match" --exclude "$prerelease_tags" 2>/dev/null || true)
-            if [ -n "$stable_tag" ]; then
-              args+=("--plugins.release-it-changelogen.from=$stable_tag")
-            fi
-            # Promoting a prerelease ships its base version (1.9.0-next.4 -> 1.9.0).
-            version=$(node -p "require('./package.json').version")
-            if [ -n "$RELEASE_VERSION" ]; then
-              args+=("--increment=$RELEASE_VERSION")
-            else
-              case "$version" in
-                *-*) args+=("--increment=${version%%-*}") ;;
-              esac
-            fi
-          else
-            # Prerelease commits use a type that changelogen ignores, so they
-            # stay out of the next stable changelog.
-            # shellcheck disable=SC2016 # ${version} is expanded by release-it.
-            args+=(--preRelease=next '--git.commitMessage=release: v${version}')
+          )
+          stable_tag=$(git describe --tags --abbrev=0 --match "$tag_match" --exclude "$prerelease_tags" 2>/dev/null || true)
+          if [ -n "$stable_tag" ]; then
+            args+=("--plugins.release-it-changelogen.from=$stable_tag")
           fi
-          pnpm release "${args[@]}"
-        working-directory: ${{ inputs.package-directory }}
-
-      - name: Stop services
-        if: always() && steps.services.outcome == 'success'
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
-        run: docker compose -f "$SERVICES_COMPOSE_FILE" down -v
+          pnpm exec release-it "${args[@]}"
