@@ -53,6 +53,8 @@ export interface PackageSource {
    * release and the hotfixes released after it, before the Next sync. A spec one of them holds shipped already.
    */
   shippedManifests: Manifest[];
+  /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
+  stableSiblings: Record<string, string>;
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -333,7 +335,7 @@ type PinOutcome = { range: string } | { reason: string };
 type SiblingOutcome =
   | {
       range: string;
-      /** The range packed from the sibling's last stable release when the version the plan gives it falls outside it, else null. */
+      /** The range the stable release packed for the sibling when the version the plan gives it falls outside it, else null. */
       published: string | null;
     }
   | { reason: string };
@@ -364,7 +366,8 @@ function resolveSibling(source: PackageSource, { name, spec }: Dependency, conte
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  const published = sibling.stable === null || admits(range, sibling.stable, version) ? null : packedRange(range, sibling.stable);
+  const packed = source.stableSiblings[name];
+  const published = packed === undefined || admits(range, packed, version) ? null : packedRange(range, packed);
   return { range: packedRange(range, version), published };
 }
 

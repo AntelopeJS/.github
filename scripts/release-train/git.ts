@@ -33,6 +33,8 @@ export interface MergedPull {
 export interface Place {
   directory: string;
   nested: readonly string[];
+  /** The directories of the other listed packages of the same checkout. */
+  siblings: readonly string[];
   merged: readonly MergedPull[] | null;
   /** The ref of the default branch. Its tags are the stable releases of any branch the train reads. */
   releases: string;
@@ -213,7 +215,7 @@ function cycleNotes(
  * directories, which hold other listed packages. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
-  const { directory, nested, merged, releases } = place;
+  const { directory, nested, siblings, merged, releases } = place;
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
@@ -249,6 +251,12 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     if (version === undefined || compareCore(version, ceiling) > 0) return [];
     return readManifest(system, repository, `refs/tags/${name}`, directory, `${where} at ${name}`) ?? [];
   });
+  const stableSiblings = Object.fromEntries(
+    siblings.flatMap((inner) => {
+      const sibling = tag === null ? null : readManifest(system, repository, tag, inner, `${from.slug}:${posix.join(inner, "package.json")} at ${stable?.tag}`);
+      return sibling === null ? [] : [[sibling.name, sibling.version]];
+    }),
+  );
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const shipped = (merged ?? [])
@@ -256,7 +264,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .map((pull) => pull.head);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, shippedManifests, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, shippedManifests, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

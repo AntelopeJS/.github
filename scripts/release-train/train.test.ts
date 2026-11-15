@@ -436,7 +436,7 @@ describe("plan", () => {
     const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
     const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head, branch: "" }];
     const revision = resolveRevision(system, from, null);
-    const source = readSource(system, from, revision, { directory: ".", nested: [], merged, releases: revision.name });
+    const source = readSource(system, from, revision, { directory: ".", nested: [], siblings: [], merged, releases: revision.name });
     assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
     assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
   });

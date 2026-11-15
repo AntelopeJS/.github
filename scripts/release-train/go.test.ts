@@ -218,6 +218,43 @@ describe("go", () => {
     );
   });
 
+  test("releases a tooling-only dependent after the sibling whose release moved its workspace range out of the published one", () => {
+    const workspace = repository("go-moves", (path) => {
+      commit(path, "feat: first", {
+        "package.json": { name: "go-moves", private: true },
+        "packages/a/package.json": manifest("moves-a", "0.10.0"),
+        "packages/a/.release-it.json": { git: { tagName: "a-v${version}" } },
+        "packages/b/package.json": manifest("moves-b", "0.12.1", { dependencies: { "@antelopejs/moves-a": "workspace:^" } }),
+        "packages/b/.release-it.json": { git: { tagName: "b-v${version}" } },
+      });
+      git(path, "tag", "a-v0.10.0");
+      git(path, "tag", "b-v0.12.1");
+      commit(path, "feat(a)!: rename the plans", { "packages/a/index.ts": "export {};\n" });
+      commit(path, "build(b): move to 0.8", { "packages/b/tsconfig.json": "{}\n" });
+    });
+    const { system, calls, errors, output } = fakeSystem({}, {
+      dispatched: (_repo, fields) => {
+        const directory = fields["package-directory"] ?? "";
+        const name = directory === "packages/a" ? "a" : "b";
+        const file = `${directory}/package.json`;
+        const bumped = { ...JSON.parse(readFileSync(join(workspace, file), "utf8")), version: fields["release-version"] };
+        commit(workspace, `chore(release): ${name} v${fields["release-version"]}`, { [file]: bumped });
+        git(workspace, "tag", `${name}-v${fields["release-version"]}`);
+        git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");
+      },
+    });
+    assert.equal(main(["go", workspace], system), 0, errors());
+    assert.deepEqual(
+      dispatches(calls).map((fields) => fields.filter((field) => field.startsWith("release-version=") || field.startsWith("package-directory="))),
+      [
+        ["release-version=0.11.0", "package-directory=packages/a"],
+        ["release-version=0.12.2", "package-directory=packages/b"],
+      ],
+    );
+    assert.ok(output().includes("     moves dependencies @antelopejs/moves-a ^0.10.0 -> ^0.11.0\n"), output());
+    assert.ok(output().endsWith("Published: @antelopejs/moves-a 0.11.0, @antelopejs/moves-b 0.12.2.\n"), output());
+  });
+
   test("refuses --ref and dispatches nothing", () => {
     const { system, calls, errors } = fakeSystem();
     assert.equal(main(["go", "--ref", "next", mongodb], system), 1);

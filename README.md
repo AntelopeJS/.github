@@ -137,8 +137,9 @@ in dependency order.
   tag of the default branch published counts as shipped when the branch does
   not hold that tag yet, such as a `next` before the Next sync after a
   promotion and a hotfix. It also gets a patch when a listed sibling's
-  release moves the range a `workspace:` spec packs to outside the range of
-  the sibling's last stable release, such as
+  release moves the range a `workspace:` spec packs to outside the range the
+  package's own last stable release packed, read from the sibling's
+  `package.json` at that tag, such as
   `moves dependencies @antelopejs/interface-dms-saas ^0.10.0 -> ^0.11.0`, and
   when a listed package pins a preview of it in `dependencies`,
   `peerDependencies` or `optionalDependencies` that is newer than its last
