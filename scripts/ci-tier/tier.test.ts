@@ -117,7 +117,11 @@ function tierJobOutputs(github: Context, inputs: Context, cwd: string): Record<s
   const pick = step(tierJob, tierStep);
   assert.equal(pick.uses, "AntelopeJS/.github/.github/actions/ci-tier@v2");
   const steps: Context = { [pick.id]: { outputs: { tier } } };
-  const jobs = step(tierJob, "Pick the jobs and runners from the tier");
+  const jobsStep = "Pick the jobs and runners from the tier";
+  const jobs = step(tierJob, jobsStep);
+  assert.equal(jobs.shell ?? "bash", "bash");
+  const position = (name: string): number => tierJob.findIndex((line) => line.trim() === `- name: ${name}`);
+  assert.ok(position(tierStep) < position(jobsStep), "the tier is picked before the jobs read it");
   steps[jobs.id] = { outputs: runStep(jobs, cwd, evaluate(jobs.env, { github, inputs, steps })) };
   return evaluate(expressions(keyed(tierJob, "outputs")), { steps });
 }
