@@ -138,8 +138,15 @@ function hasCommit(system: System, repository: string, sha: string): boolean {
   return system.run("git", ["-C", repository, "--no-lazy-fetch", "cat-file", "-e", `${sha}^{commit}`]).status === 0;
 }
 
+function branchHolds(system: System, slug: string, sha: string, branch: string): boolean {
+  const result = system.run("gh", ["api", `repos/${slug}/compare/${sha}...${branch}`, "--jq", ".status"]);
+  const status = result.stdout.trim();
+  return result.status === 0 && (status === "ahead" || status === "identical");
+}
+
 function cycleNotes(
   system: System,
+  slug: string,
   repository: string,
   head: string,
   tag: string | null,
@@ -150,7 +157,12 @@ function cycleNotes(
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
   const stale = landed.find(
-    (pull) => !released(pull) && !present(pull) && pull.branch !== "" && hasRef(system, repository, `refs/remotes/origin/${pull.branch}`),
+    (pull) =>
+      !released(pull) &&
+      !present(pull) &&
+      pull.branch !== "" &&
+      hasRef(system, repository, `refs/remotes/origin/${pull.branch}`) &&
+      branchHolds(system, slug, pull.head, pull.branch),
   );
   if (stale !== undefined) {
     throw new Error(
@@ -191,7 +203,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, range, "--", ...paths]));
-  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, repository, head, tag, paths, merged);
+  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, commits, notes };
 }
 

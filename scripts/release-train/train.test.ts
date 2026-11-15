@@ -279,7 +279,7 @@ describe("plan", () => {
 
   test("a local checkout whose origin/next lacks the promotion's head stops the plan instead of reading the title alone", () => {
     const ids = { squash: "", head: "" };
-    const remote = repository("stale-remote", (path) => {
+    const remote = repository("stale", (path) => {
       commit(path, "feat: first", { "package.json": manifest("stale", "0.4.2") });
       git(path, "tag", "v0.4.2");
       git(path, "branch", "next");
@@ -294,6 +294,10 @@ describe("plan", () => {
     git(remote, "commit", "--quiet", "-m", "feat(query): batch reads and cursor fixes (#122)");
     ids.squash = tip(remote);
     git(clone, "fetch", "--quiet", `file://${remote}`, "main:refs/remotes/origin/main");
+    pulls["AntelopeJS/stale"] = [{ number: 122, mergeCommit: { oid: ids.squash }, headRefOid: ids.head, headRefName: "main" }];
+    const elsewhere = fakeSystem();
+    assert.equal(main(["plan", clone], elsewhere.system), 0, "a fork's or a reused branch's head that GitHub's branch does not hold keeps the squash commit");
+    assert.match(elsewhere.output(), /0\.4\.2 -> 0\.4\.3 \(patch\)/);
     pulls["AntelopeJS/stale"] = [{ number: 122, mergeCommit: { oid: ids.squash }, headRefOid: ids.head, headRefName: "next" }];
     const { system, errors } = fakeSystem();
     assert.equal(main(["plan", clone], system), 1);
