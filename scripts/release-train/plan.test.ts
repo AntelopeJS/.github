@@ -35,7 +35,6 @@ function source(
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
     baseManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
-    promotedManifest: null,
     stableSiblings: {},
     commits,
     notes: commits,

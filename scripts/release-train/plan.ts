@@ -45,15 +45,11 @@ export interface PackageSource {
   stableManifest: Manifest | null;
   /**
    * The manifest at the merge base of the stable tag and the branch read, which is the tag itself when the branch holds it.
+   * When the branch does not hold the tag, the head of the last promotion that tag released replaces a merge base older than it,
+   * since a promotion squash-merges the branch as it was there.
    * A promotion carries a dependency spec of the branch only when the branch changed it since that base.
    */
   baseManifest: Manifest | null;
-  /**
-   * When the branch read does not hold the stable tag, the manifest at the newest head the branch holds of a pull request
-   * that tag released, which is what the last promotion carried. A spec the branch still holds as it was there shipped.
-   * Null otherwise.
-   */
-  promotedManifest: Manifest | null;
   /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
   stableSiblings: Record<string, string>;
   /** The commits on the branch since the stable tag. */
@@ -283,19 +279,15 @@ function highestLevel(commits: readonly Commit[]): Level | null {
   return null;
 }
 
-function isShipped(source: PackageSource, field: DependencyField, name: string, spec: string | undefined): boolean {
-  const { stableManifest, baseManifest, promotedManifest } = source;
-  return [stableManifest, baseManifest, promotedManifest].some((manifest) => manifest !== null && manifest[field]?.[name] === spec);
-}
-
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const stable = source.stableManifest;
+  const { stableManifest: stable, baseManifest: base } = source;
   if (stable === null) return [];
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
+    const forked = (base ?? stable)[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !Object.hasOwn(ranges, name) && !isShipped(source, field, name, after[name]))
+      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && forked[name] !== after[name])
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;
@@ -435,7 +427,9 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
-    if (pins.some(({ field, name: pinned, spec }) => source.promotedManifest?.[field]?.[pinned] !== spec)) reasons.push("replaces preview pins");
+    const replaced = ({ field, name: pinned, spec }: Dependency): boolean =>
+      source.baseManifest?.[field]?.[pinned] === spec && source.stableManifest?.[field]?.[pinned] === ranges[pinned];
+    if (!pins.every(replaced)) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
   }

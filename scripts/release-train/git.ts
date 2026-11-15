@@ -124,6 +124,13 @@ export function workspacePackages(system: System, { repository }: Checkout, { na
   return released.length === 0 ? null : released.sort();
 }
 
+function packedVersion(system: System, repository: string, revision: string, directory: string): [string, string][] {
+  const file = posix.join(directory, "package.json");
+  if (exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim() === "") return [];
+  const value: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
+  return isRecord(value) && typeof value.name === "string" && typeof value.version === "string" ? [[value.name, value.version]] : [];
+}
+
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
   const file = posix.join(directory, ".release-it.json");
   const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();
@@ -243,14 +250,8 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   if (forked !== null && forked.status !== 0 && forked.status !== 1) {
     throw new Error(`git -C ${repository} merge-base ${tag} ${revision} failed\n${forked.stderr.trim()}`);
   }
-  const base = forked?.status === 0 ? forked.stdout.trim() : null;
-  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
-  const stableSiblings = Object.fromEntries(
-    siblings.flatMap((inner) => {
-      const sibling = tag === null ? null : readManifest(system, repository, tag, inner, `${from.slug}:${posix.join(inner, "package.json")} at ${stable?.tag}`);
-      return sibling === null ? [] : [[sibling.name, sibling.version]];
-    }),
-  );
+  const forkPoint = forked?.status === 0 ? forked.stdout.trim() : null;
+  const stableSiblings = Object.fromEntries(siblings.flatMap((inner) => (tag === null ? [] : packedVersion(system, repository, tag, inner))));
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const shipped = (merged ?? [])
@@ -258,10 +259,11 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .map((pull) => pull.head);
   const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shipped.filter((sha) => isAncestor(system, repository, sha, revision));
   const promoted = held.find((sha) => held.every((other) => isAncestor(system, repository, other, sha)));
-  const promotedManifest = promoted === undefined ? null : readManifest(system, repository, promoted, directory, `${where} at ${promoted.slice(0, 7)}`);
+  const base = promoted !== undefined && (forkPoint === null || !isAncestor(system, repository, promoted, forkPoint)) ? promoted : forkPoint;
+  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, promotedManifest, stableSiblings, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */
