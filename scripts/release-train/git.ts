@@ -98,6 +98,12 @@ function parseManifest(text: string, where: string): Manifest {
   return manifest;
 }
 
+function readManifest(system: System, repository: string, revision: string, directory: string, where: string): Manifest | null {
+  const file = posix.join(directory, "package.json");
+  const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();
+  return listed === "" ? null : parseManifest(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]), where);
+}
+
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
   const file = posix.join(directory, ".release-it.json");
   const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();
@@ -204,12 +210,13 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     }
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
+  const stableManifest = stable === null ? null : readManifest(system, repository, `refs/tags/${stable.tag}`, directory, `${where} at ${stable.tag}`);
   const range = tag === null ? revision : `${tag}..${revision}`;
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, range, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

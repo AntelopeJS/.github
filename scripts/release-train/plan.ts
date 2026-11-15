@@ -41,6 +41,8 @@ export interface PackageSource {
   tagName: string;
   manifest: Manifest;
   stable: string | null;
+  /** The manifest at the stable tag, which npm published, or null when there is no stable tag. */
+  stableManifest: Manifest | null;
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -66,7 +68,12 @@ export type Entry =
       ranges: Record<string, string>;
       kept: KeptPin[];
     }
-  | { status: "unchanged"; source: PackageSource }
+  | {
+      status: "unchanged";
+      source: PackageSource;
+      /** Why the commits since the stable tag release nothing, or null when there are none. */
+      reason: string | null;
+    }
   | { status: "excluded"; source: PackageSource }
   | { status: "refused"; source: PackageSource; reasons: string[] };
 
@@ -99,7 +106,8 @@ const previewPattern = /\d+\.\d+\.\d+-/;
 const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
-const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]);
+const patchTypes = new Set(["feat", "fix", "perf", "refactor", "types", "revert"]);
+const runtimeFields = dependencyFields.filter((field) => field !== "devDependencies");
 const versionPart = "(?:0|[1-9]\\d*|[xX*])";
 const identifiers = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
 const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`;
@@ -253,6 +261,34 @@ function highestLevel(commits: readonly Commit[]): Level | null {
   return null;
 }
 
+function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
+  const stable = source.stableManifest;
+  if (stable === null) return [];
+  return runtimeFields.flatMap((field) => {
+    const before = stable[field] ?? {};
+    const after = source.manifest[field] ?? {};
+    return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name])
+      .map((name) => {
+        const [from, to] = [before[name], after[name]];
+        if (from === undefined) return `adds ${field} ${name}@${to}`;
+        if (to === undefined) return `removes ${field} ${name}@${from}`;
+        return `moves ${field} ${name} ${from} -> ${to}`;
+      });
+  });
+}
+
+function series(words: readonly string[]): string {
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+function quietReason(source: PackageSource): string | null {
+  const commits = [...source.commits, ...source.notes];
+  if (commits.length === 0) return null;
+  const types = [...new Set(commits.map((commit) => parseHeader(commit.subject)?.type ?? "non-conventional"))].sort();
+  return `only ${series(types)} commits${source.stable === null ? "" : ` since ${source.stable}`}`;
+}
+
 interface Resolution {
   listed: ReadonlyMap<string, PackageSource>;
   exclude: ReadonlySet<string>;
@@ -307,9 +343,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const reasons: string[] = [];
   let level = highestLevel([...source.commits, ...source.notes]);
   if (level === null) {
-    if (Object.keys(ranges).length === 0) return { status: "unchanged", source };
+    reasons.push(...dependencyChanges(source, ranges));
+    if (Object.keys(ranges).length > 0) reasons.push("replaces preview pins");
+    if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
-    reasons.push("replaces preview pins");
   }
   const to =
     source.stable === null
@@ -401,13 +438,20 @@ export function renderPlan(plan: Plan): string {
       .filter((entry) => entry.status === status)
       .map((entry) => entry.source.manifest.name)
       .join(", ");
-  const unchanged = names("unchanged");
+  const unchanged = plan.entries
+    .filter((entry) => entry.status === "unchanged" && entry.reason === null)
+    .map((entry) => entry.source.manifest.name)
+    .join(", ");
+  const quiet = plan.entries.flatMap((entry) =>
+    entry.status === "unchanged" && entry.reason !== null ? [`Unchanged: ${entry.source.manifest.name}, ${entry.reason}`] : [],
+  );
   const excluded = names("excluded");
   return [
     header,
     "",
     ...numbered.flatMap((entry, offset) => renderEntry(entry, offset + 1)),
     ...(unchanged === "" ? [] : [`Unchanged: ${unchanged}`]),
+    ...quiet,
     ...(excluded === "" ? [] : [`Not now: ${excluded}`]),
     "",
   ].join("\n");

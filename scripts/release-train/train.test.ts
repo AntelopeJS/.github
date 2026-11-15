@@ -15,6 +15,32 @@ describe("plan", () => {
     assert.deepEqual(dispatches(calls), []);
   });
 
+  test("a tooling-only cycle plans a patch only when it changes a runtime dependency of the published package.json", () => {
+    const tooling = (name: string, dependencies: Record<string, string>) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "0.4.2", { dependencies: { mongodb: "^6.21.0" }, devDependencies: { "@antelopejs/tooling-configs": "^0.7.0" } }) });
+        git(path, "tag", "v0.4.2");
+        commit(path, "build: move to @antelopejs/tooling-configs 0.8", {
+          "package.json": manifest(name, "0.4.2", { dependencies, devDependencies: { "@antelopejs/tooling-configs": "^0.8.0" } }),
+        });
+      });
+    const kept = tooling("tooling-kept", { mongodb: "^6.21.0" });
+    const moved = tooling("tooling-moved", { mongodb: "^7.0.0" });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", kept, moved], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/tooling-moved 0.4.2 -> 0.4.3 (patch)  AntelopeJS/tooling-moved@${short(tip(moved))}`,
+        "     moves dependencies mongodb ^6.21.0 -> ^7.0.0",
+        "Unchanged: @antelopejs/tooling-kept, only build commits since 0.4.2",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("an excluded package refuses the packages that pin its preview at runtime", () => {
     const { system, output } = fakeSystem();
     const status = main(["plan", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb, dmsDatabase], system);
@@ -26,7 +52,7 @@ describe("plan", () => {
         "",
         `1. @antelopejs/mongodb refused  AntelopeJS/mongodb@${short(tip(mongodb))}`,
         `     depends on preview @antelopejs/interface-database@0.4.3-next.12.g${short(commits.cursor)}, which is not in this release`,
-        "Unchanged: @antelopejs/dms-database",
+        "Unchanged: @antelopejs/dms-database, only chore commits since 0.5.3",
         "Not now: @antelopejs/interface-database",
         "",
       ].join("\n"),

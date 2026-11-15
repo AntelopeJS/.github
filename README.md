@@ -114,10 +114,18 @@ plan then decides each package
 in dependency order.
 
 - A commit with `!` or a `BREAKING CHANGE:` footer asks for a minor release.
-  `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `types` and `revert` ask
-  for a patch. Other types ask for nothing. The level is the highest one over
-  the branch's commits and the cycle's commits, so a promotion titled too low
-  never releases too little. A release never changes the major version.
+  `feat`, `fix`, `perf`, `refactor`, `types` and `revert` ask for a patch.
+  Tooling types (`build`, `ci`, `chore`, `test`, `docs`, `style`) and other
+  types ask for nothing. The level is the highest one over the branch's
+  commits and the cycle's commits, so a promotion titled too low never
+  releases too little. A release never changes the major version.
+- A package whose commits ask for nothing still gets a patch when its
+  `dependencies`, `peerDependencies` or `optionalDependencies` differ from the
+  `package.json` of its last stable tag, which npm published. The plan names
+  each change. Otherwise the plan lists the package as unchanged with the
+  types of its commits, such as `only build commits since 0.4.2`. Those
+  commits stay in the cycle, so the release notes of the next release list
+  them.
 - Each preview pin moves to the stable range of the version its dependency
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The
