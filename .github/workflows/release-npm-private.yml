@@ -216,14 +216,16 @@ jobs:
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           RELEASE_VERSION: ${{ inputs.release-version }}
-          BEFORE: ${{ github.event.before }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
           name=$(node -p "require('./package.json').name")
-          if [ "$MODE" = preview ] && [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null && git diff --quiet "$BEFORE" "$GITHUB_SHA" -- .; then
-            echo "::notice::$name did not change in this push, so it gets no preview."
-            exit 0
+          if [ "$MODE" = preview ]; then
+            previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
+            if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && git diff --quiet "$previous" "$GITHUB_SHA" -- .; then
+              echo "::notice::$name did not change since its last preview, so it gets no new one."
+              exit 0
+            fi
           fi
           if latest=$(npm view "$name" version 2>"$RUNNER_TEMP/npm-view.log"); then
             :

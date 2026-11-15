@@ -26,9 +26,11 @@ tests. The checks of the pull request that brought each commit are the gate.
 
 ### Preview versions
 
-Every push to `next` publishes a preview of the package when the push changed
-its directory. A push that left the directory alone publishes nothing and says
-so in a notice. The preview version is
+Every push to `next` publishes a preview of the package when its directory
+changed since the commit of the current `next` preview, read from npm as its
+`gitHead`. A package whose directory did not change publishes nothing and says
+so in a notice. A push whose run GitHub dropped from the queue is still covered
+by the next run. The preview version is
 `<base>-next.<commit count>.g<short sha>`, such as `0.4.3-next.161.g3f9a2c1`.
 The base is the patch after the current `latest` version on npm. A package that
 was never published uses the version of its `package.json` without its

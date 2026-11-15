@@ -65,6 +65,7 @@ writeFileSync(
     '  if [ -n "$FAKE_LATEST" ]; then echo "$FAKE_LATEST"; exit 0; fi',
     '  echo "npm error code E404" >&2; exit 1',
     "fi",
+    'if [ "$2" = "@antelopejs/x@next" ] && [ "$3" = gitHead ]; then echo "$FAKE_NEXT_HEAD"; exit 0; fi',
     'if [ "$2" = "@antelopejs/x@$FAKE_PUBLISHED" ]; then echo "$FAKE_PUBLISHED"; fi',
     "",
   ].join("\n"),
@@ -84,12 +85,16 @@ git(checkout, "init", "--quiet");
 writeFileSync(join(packagePath, "package.json"), `${JSON.stringify({ name: "@antelopejs/x", version: "0.4.2" })}\n`);
 git(checkout, "add", "--all");
 git(checkout, "commit", "--quiet", "-m", "feat: x");
+const firstCommit = git(checkout, "rev-parse", "HEAD");
+writeFileSync(join(packagePath, "index.js"), "x\n");
+git(checkout, "add", "--all");
+git(checkout, "commit", "--quiet", "-m", "fix: x");
 const packageCommit = git(checkout, "rev-parse", "HEAD");
 writeFileSync(join(checkout, "README.md"), "x\n");
 git(checkout, "add", "--all");
 git(checkout, "commit", "--quiet", "-m", "docs: readme");
 const head = git(checkout, "rev-parse", "HEAD");
-const previewSuffix = `next.2.g${git(checkout, "rev-parse", "--short=7", "HEAD")}`;
+const previewSuffix = `next.3.g${git(checkout, "rev-parse", "--short=7", "HEAD")}`;
 
 for (const { file, text } of workflows) {
   describe(file, () => {
@@ -154,15 +159,16 @@ for (const { file, text } of workflows) {
           PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
           MODE: "preview",
           GITHUB_SHA: head,
-          BEFORE: "",
+          FAKE_NEXT_HEAD: "",
           FAKE_LATEST: "",
           FAKE_PUBLISHED: "",
           ...env,
         });
       assert.equal(version({ FAKE_LATEST: "0.4.2" }).outputs, `version=0.4.3-${previewSuffix}\n`);
-      assert.equal(version({ BEFORE: "0".repeat(40), FAKE_LATEST: "1.8.6" }).outputs, `version=1.8.7-${previewSuffix}\n`);
+      assert.equal(version({ FAKE_NEXT_HEAD: "0".repeat(40), FAKE_LATEST: "1.8.6" }).outputs, `version=1.8.7-${previewSuffix}\n`);
+      assert.equal(version({ FAKE_NEXT_HEAD: firstCommit, FAKE_LATEST: "0.4.2" }).outputs, `version=0.4.3-${previewSuffix}\n`);
       assert.equal(version({}).outputs, `version=0.4.2-${previewSuffix}\n`);
-      const unchanged = version({ BEFORE: packageCommit, FAKE_LATEST: "0.4.2" });
+      const unchanged = version({ FAKE_NEXT_HEAD: packageCommit, FAKE_LATEST: "0.4.2" });
       assert.deepEqual([unchanged.status, unchanged.outputs], [0, ""]);
       const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.4.3-${previewSuffix}` });
       assert.deepEqual([published.status, published.outputs], [0, ""]);
