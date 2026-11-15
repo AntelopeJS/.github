@@ -100,9 +100,10 @@ the default branch.
 
 Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
 tag as the [release workflows](#reusable-release-workflows), so the same
-backward-compatibility rule applies. Call Node CI on pull requests and pushes to `main`,
-with the [Renovate sync](README.md#renovate-sync) in its own job so that only
-that job, and only on Renovate pull requests, holds a write token:
+backward-compatibility rule applies. Call Node CI on the triggers its
+[tiers](README.md#node-ci) read, with the [Renovate sync](README.md#renovate-sync)
+in its own job so that only that job, and only on Renovate pull requests, holds
+a write token:
 
 ```yaml
 name: ci
@@ -110,9 +111,11 @@ name: ci
 on:
   push:
     branches:
-      - main
       - next
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
