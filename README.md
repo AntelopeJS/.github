@@ -265,7 +265,8 @@ different groups, so a queued preview never cancels a pending stable release.
 
 ### What a caller declares
 
-`antelopejs-sync` writes this caller, and the workflows keep it stable.
+`antelopejs-sync` of `@antelopejs/tooling-configs` 0.8.0 writes this caller,
+and the shared workflows at `@v2` work with it unchanged.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
@@ -281,10 +282,10 @@ different groups, so a queued preview never cancels a pending stable release.
   public. The release jobs ask only `contents: read`, because they write with
   `RELEASE_GITHUB_TOKEN`.
 - **Optional inputs.** Every other input of the shared workflows has a default
-  that fits this caller, such as `integration-branch`, `next` by default, which
-  `cloud` sets to `develop`.
+  that fits this caller. A caller may set `install-core`. `integration-branch`
+  is `next` by default, and `cloud` sets it to `develop`.
 - **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
-  `NPM_ANTELOPE_TOKEN` for the private one.
+  `NPM_ANTELOPE_TOKEN` for the private one, each passed by name.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name.
 - **Repository setting.** The `npm-publish` environment allows the preview
@@ -333,10 +334,14 @@ jobs:
 ```
 
 A private package calls `release-npm-private.yml` and also passes
-`NPM_ANTELOPE_TOKEN`, or uses `secrets: inherit`. A repository whose package is
-not at its root also declares a `package-directory` input in
-`workflow_dispatch`, because the release train passes it, and forwards it with
-`package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
+`NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}`. The caller grants
+`id-token: write` only when one of its packages is public. A repository whose
+package is not at its root also declares an optional `package-directory` input
+in `workflow_dispatch`, because the release train passes it, and forwards it
+with `package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
+A repository with several packages has one job per package, which forwards its
+own directory and runs on a push or on a dispatch that names it, as in
+[pnpm workspaces](#pnpm-workspaces).
 
 Callers use `@v2`. `v1` keeps the previous interface.
 
@@ -584,18 +589,21 @@ repository root. The release fails with an explicit message when no lockfile is
 found between the package directory and the repository root.
 
 In a pnpm workspace the lockfile lives at the repository root, so a caller
-releasing a package below `packages/` needs no extra input:
+releasing a package below `packages/` needs no extra input. This is the job
+`antelopejs-sync` writes for one package of a repository that holds several:
 
 ```yaml
 jobs:
-  release:
+  release-packages-dms-automation:
+    if: github.event_name == 'push' || inputs.package-directory == 'packages/dms-automation'
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v2
     with:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
       package-directory: packages/dms-automation
-    secrets: inherit
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
 ```
 
 Both workflows install from the nearest directory at or above the package
