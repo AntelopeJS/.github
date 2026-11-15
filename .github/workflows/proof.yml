@@ -1,0 +1,16 @@
+name: proof
+on:
+  push:
+    branches: [test/ci-node-tiers-proof]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/ci-node.yml
+    with:
+      renovate-sync: false
+      test-job: true
+      skill-eval-offline: false

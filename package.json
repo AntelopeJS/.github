@@ -1,0 +1,11 @@
+{
+  "name": "ci-node-tiers-proof",
+  "private": true,
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "typecheck": "echo typecheck",
+    "lint": "echo lint",
+    "checks": "echo \"checks, skip=$ANTELOPEJS_CHECKS_SKIP tier=$ANTELOPEJS_CI_TIER\"",
+    "test": "echo \"test tier=$ANTELOPEJS_CI_TIER base=$ANTELOPEJS_TEST_BASE\" && git diff --name-only \"${ANTELOPEJS_TEST_BASE:-HEAD}\" HEAD"
+  }
+}
