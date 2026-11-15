@@ -257,7 +257,9 @@ release or a tarball.
 1. A pull request from `next` to `main` brings the work to `main` once a
    maintainer approves it. Merge it with **Squash and merge**. The Next sync
    workflow then merges `main` back into `next`, so `next` holds the release
-   commits, the changelogs and the stable ranges.
+   commits, the changelogs and the stable ranges. That merge publishes no
+   preview of a package whose release changed only its version and its
+   changelog.
 2. Run the [release train](README.md#release-train) with `plan`. Leave out with
    `--exclude` any package that should not ship now. Its commits stay on `main`
    and the next plan includes them.
@@ -269,12 +271,13 @@ release or a tarball.
 `next` stays: the `next history` ruleset forbids deleting it and
 force-pushing to it.
 
-The squash commit is the only commit of the cycle on `main`, so the release
-train reads its title alone. Title the pull request with the highest change
-type of the cycle, `feat!:` when it holds a breaking change, then `feat:`,
-then `fix:`. A breaking change gives a minor release, never a major one. A
-`chore` title releases nothing. Keep the list of the cycle's commits that
-GitHub puts in the squash commit body, so the changelog shows them.
+The squash commit is the only commit of the cycle on `main`. The release train
+reads each task's commit from the head of the promotion pull request instead,
+so the changelog lists every task. Title the pull request with the highest
+change type of the cycle, `feat!:` when it holds a breaking change, then
+`feat:`, then `fix:`. The release level reads that title beside the tasks'
+commits, so a title that is too low never releases too little. A breaking
+change gives a minor release, never a major one.
 
 ### Stable fixes during a cycle
 

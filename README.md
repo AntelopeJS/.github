@@ -34,8 +34,13 @@ only `main`.
 
 Every push to `next` publishes a preview of the package when its directory
 changed since the commit of the current `next` preview, read from npm as its
-`gitHead`. A package whose directory did not change publishes nothing and says
-so in a notice. A push whose run GitHub dropped from the queue is still covered
+`gitHead`. A change to the changelog, or to the `version` field of
+`package.json`, does not count. The changelog is the `output` of
+`changelogen.config.json`, or `CHANGELOG.md`. So the merge of a release commit
+back into `next` publishes no preview. A release that wrote stable ranges
+changed `package.json` beyond its version, so its merge does publish one. A
+package that changed nothing it ships publishes nothing and says so in a
+notice. A push whose run GitHub dropped from the queue is still covered
 by the next run. The preview version is
 `<base>-next.<commit count>.g<short sha>`, such as `0.4.3-next.161.g3f9a2c1`.
 The base is the patch after the current `latest` version on npm. A package that
@@ -83,13 +88,24 @@ since that tag that touched the package directory. Release commits do not
 count. A directory inside the package that holds another listed package does
 not count either, so a root package beside `packages/*` gets only its own
 commits. Each numbered line of the plan names the repository and the commit it
-read, such as `AntelopeJS/mongodb@3f9a2c1`. The plan then decides each package
+read, such as `AntelopeJS/mongodb@3f9a2c1`.
+
+`next` reaches the default branch as one squash commit per promotion, so the
+plan lists the commits of the cycle instead. It reads the last 100 pull
+requests merged into the default branch, for `--ref next` too. A pull request
+merged since the stable tag gives the commits of its head, in place of its
+squash commit. The heads of the pull requests merged before the tag mark where
+the cycle starts. A pull request whose head the checkout lacks, such as a
+person's branch deleted after the merge, keeps its squash commit. Merge commits
+and release commits do not count. When `gh` fails, or no pull request was
+merged, the plan lists the branch's commits. The plan then decides each package
 in dependency order.
 
 - A commit with `!` or a `BREAKING CHANGE:` footer asks for a minor release.
   `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `types` and `revert` ask
-  for a patch. Other types ask for nothing. A release never changes the major
-  version.
+  for a patch. Other types ask for nothing. The level is the highest one over
+  the branch's commits and the cycle's commits, so a promotion titled too low
+  never releases too little. A release never changes the major version.
 - Each preview pin moves to the stable range of the version its dependency
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The
@@ -125,7 +141,12 @@ in dependency order.
 
 `go` takes no `--ref`. It prints the plan, then dispatches `release.yml` on the
 default branch of each package to release, one at a time, with the planned
-`release-version`, `release-commit` and `dependency-ranges`. It waits for each
+`release-version`, `release-commit`, `dependency-ranges` and `release-notes`.
+The release notes are the changelog section of the cycle in changelogen's
+format. They hold the compare link, one block per commit type with the oldest
+commit first, the breaking changes and the contributors. A subject that is not
+conventional is left out. When the release writes stable ranges, the notes
+also list its `fix(deps)` commit under Fixes. It waits for each
 run to finish before it dispatches the next one, so a dependent installs a
 dependency that is already published. After the last one it prints what it
 published and, when the plan refused a package, what it did not publish.
@@ -161,10 +182,15 @@ A stable run then does the following.
    `pnpm install --no-frozen-lockfile` and commits `package.json` and the
    lockfile as `fix(deps): depend on the stable <names>`. Otherwise it installs
    with `pnpm install --frozen-lockfile`.
-6. It runs `pnpm exec release-it --ci --increment=<release-version>`, which
-   writes the changelog since the last stable tag, the release commit, the tag
-   and the GitHub release, and publishes to npm. It never runs the
-   repository's `release` script, so no tests run.
+6. It writes `release-notes` under a `## v<version>` heading on top of the
+   changelog, the `output` of `changelogen.config.json` or `CHANGELOG.md`, and
+   stages it. It writes a release-it config from the repository's
+   `.release-it.json`, without the `release-it-changelogen` plugin and with the
+   notes as the GitHub release notes.
+7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
+   config, which writes the release commit with the changelog, the tag and the
+   GitHub release, and publishes to npm. It never runs the repository's
+   `release` script, so no tests run.
 
 ### Workflow inputs
 
@@ -455,8 +481,9 @@ to start the sync otherwise.
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge
 of `main` back into `next` keeps the next pull request's diff to the work done
-since. The squash commit is the only commit the stable release sees, so title
-the pull request as described in
+since. The release train reads the cycle's commits from the head of that pull
+request, so the changelog lists every task. Title the pull request as described
+in
 [promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its
 checks are those `next` already ran on the same commit: `ci-node.yml` gives the
 pull request the `none` tier, so `ci / checks` succeeds without running again.
