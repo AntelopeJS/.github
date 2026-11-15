@@ -415,6 +415,23 @@ types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
 | `schedule` | `nightly` | `full`, plus the Windows jobs |
 | `workflow_dispatch` and any other event | `full` | as above |
 
+The rule lives in the `ci-tier` composite action, which `Tier` calls. A caller
+cannot read `ci-node.yml`'s outputs before the whole call ends, so a repository
+that declares jobs of its own picks the same tier in its own job with that
+action, which needs no checkout and no input:
+
+```yaml
+jobs:
+  tier:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+    steps:
+      - id: tier
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+```
+
 The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
 the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
 also run on Windows in the `fast` and `full` tiers of a pull request or a manual
