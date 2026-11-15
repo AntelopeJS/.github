@@ -559,12 +559,20 @@ jobs:
           destination=$(mktemp -d "$RUNNER_TEMP/pack.XXXXXX")
           pnpm pack --pack-destination "$destination" > /dev/null
           tarball=$(find "$destination" -name '*.tgz')
-          TARBALL=$tarball node <<'NODE'
+          NPM_PACKAGE_ARG="$(dirname "$(readlink -f "$(command -v npm)")")/../node_modules/npm-package-arg" TARBALL=$tarball node <<'NODE'
           const { execFileSync } = require('node:child_process')
+          const npa = require(process.env.NPM_PACKAGE_ARG)
           const pkg = JSON.parse(execFileSync('tar', ['-xOzf', process.env.TARBALL, 'package/package.json'], { encoding: 'utf8' }))
-          const local = /^(?:(?:workspace|catalog|file|link|git(?:\+[a-z]+)?|github|gitlab|bitbucket|gist):|\.{0,2}\/|~\/|[\w.-]+\/[\w.-]+(?:#.*)?$|https?:\/\/.*\.git(?:#.*)?$)/
+          const installable = new Set(['version', 'range', 'tag', 'alias', 'remote'])
+          const resolvesOutside = (name, spec) => {
+            try {
+              return installable.has(npa.resolve(name, spec).type)
+            } catch {
+              return false
+            }
+          }
           const refused = ['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
-            Object.entries(pkg[field] ?? {}).filter(([, spec]) => local.test(spec)).map(([name, spec]) => `${field} ${name} ${spec}`),
+            Object.entries(pkg[field] ?? {}).filter(([name, spec]) => !resolvesOutside(name, spec)).map(([name, spec]) => `${field} ${name} ${spec}`),
           )
           if (refused.length) {
             console.error(`${pkg.name}@${pkg.version} would ship specs that resolve only inside its repository:\n${refused.join('\n')}`)

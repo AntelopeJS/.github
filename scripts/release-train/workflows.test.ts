@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
@@ -129,11 +129,13 @@ function repository(name: string, files: Record<string, string>): { directory: s
   return { directory, sha: commitFiles(directory, "feat: x", files) };
 }
 
-const recordingNpm = join(root, "recording-npm");
-mkdirSync(recordingNpm);
+const realNpm = realpathSync(spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).stdout.trim());
+const recordingNpm = join(root, "recording-npm", "bin");
+mkdirSync(recordingNpm, { recursive: true });
+symlinkSync(join(dirname(realNpm), "..", "node_modules"), join(recordingNpm, "..", "node_modules"));
 writeFileSync(
   join(recordingNpm, "npm"),
-  `#!/bin/sh\nif [ "$1" = publish ]; then printf '%s\\n' "$PWD" "$@" > "$NPM_PUBLISH_LOG"; exit 0; fi\nexec '${spawnSync("sh", ["-c", "command -v npm"], { encoding: "utf8" }).stdout.trim()}' "$@"\n`,
+  `#!/bin/sh\nif [ "$1" = publish ]; then printf '%s\\n' "$PWD" "$@" > "$NPM_PUBLISH_LOG"; exit 0; fi\nexec '${realNpm}' "$@"\n`,
 );
 chmodSync(join(recordingNpm, "npm"), 0o755);
 
@@ -531,14 +533,19 @@ for (const { file, text } of workflows) {
         "github:AntelopeJS/interface-database#next",
         "git+https://github.com/AntelopeJS/interface-database.git",
         "https://github.com/AntelopeJS/interface-database.git",
+        "https://github.com/AntelopeJS/interface-database",
+        "git@github.com:AntelopeJS/interface-database.git",
+        "ssh://git@github.com/AntelopeJS/interface-database.git",
         "AntelopeJS/interface-database",
         "../interface-database",
+        "interface-database.tgz",
+        "portal:../interface-database",
       ];
       const { directory } = repository(`${file}-unpublishable`, {
         "package.json": JSON.stringify({
           name: "@antelopejs/x",
           version: "1.0.0",
-          dependencies: { ...Object.fromEntries(local.map((spec, index) => [`@antelopejs/d${index}`, spec])), "@antelopejs/r": "^1.0.0", "@antelopejs/t": "https://example.com/t.tgz" },
+          dependencies: { ...Object.fromEntries(local.map((spec, index) => [`@antelopejs/d${index}`, spec])), "@antelopejs/r": "^1.0.0", "@antelopejs/a": "npm:@antelopejs/x@>=1 <2", "@antelopejs/l": "latest", "@antelopejs/t": "https://example.com/t.tgz" },
           peerDependencies: { "@antelopejs/p": "file:../p" },
           optionalDependencies: { "@antelopejs/o": "link:../o" },
           devDependencies: { "@antelopejs/dev": "file:../dev" },
