@@ -333,3 +333,4 @@ workspace, pnpm walks up to `pnpm-workspace.yaml`, validates the root lockfile,
 and installs every workspace project, so the released package and the workspace
 dependencies it links through `workspace:*` are installed together; no
 `--filter` is required.
+proof
