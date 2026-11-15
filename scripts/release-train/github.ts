@@ -1,5 +1,5 @@
 import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
-import { renderReleaseNotes, type Release } from "./plan.ts";
+import type { Release } from "./plan.ts";
 import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
@@ -94,7 +94,6 @@ export function releaseRun(system: System, entry: Release): RunOutcome {
     "-f", `release-version=${entry.to}`,
     "-f", `release-commit=${head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
-    "-f", `release-notes=${renderReleaseNotes(entry)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
   ]);
   if (dispatched.status !== 0) {

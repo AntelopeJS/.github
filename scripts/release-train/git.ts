@@ -125,13 +125,13 @@ function parseCommits(log: string): Commit[] {
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record) => {
-      const [sha = "", subject = "", body = "", author = ""] = record.split("\x1f");
-      return { sha, subject, author, level: commitLevel(subject, body) };
+      const [sha = "", subject = "", body = ""] = record.split("\x1f");
+      return { sha, subject, level: commitLevel(subject, body) };
     })
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
 
-const logFormat = "--format=%H%x1f%s%x1f%b%x1f%an%x1e";
+const logFormat = "--format=%H%x1f%s%x1f%b%x1e";
 
 function hasCommit(system: System, repository: string, sha: string): boolean {
   return system.run("git", ["-C", repository, "--no-lazy-fetch", "cat-file", "-e", `${sha}^{commit}`]).status === 0;

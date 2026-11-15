@@ -11,10 +11,6 @@ on:
         description: Commit SHA a workflow_dispatch run releases; the run fails when the branch moved past it
         default: ""
         type: string
-      release-notes:
-        description: Changelog section a workflow_dispatch run writes, rendered by the release train
-        default: ""
-        type: string
       dependency-ranges:
         description: JSON object mapping each dependency name to the stable range that replaces its preview pin
         default: "{}"
@@ -55,7 +51,6 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release-version }}
           RELEASE_COMMIT: ${{ inputs.release-commit }}
-          RELEASE_NOTES: ${{ inputs.release-notes }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
@@ -67,10 +62,6 @@ jobs:
             }
             [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
               echo "A stable release needs release-commit as the 40-character SHA of the planned commit, got '$RELEASE_COMMIT'." >&2
-              exit 1
-            }
-            [ -n "$RELEASE_NOTES" ] || {
-              echo "A stable release needs release-notes, the changelog section the release train renders." >&2
               exit 1
             }
             echo "mode=stable" >> "$GITHUB_OUTPUT"
@@ -449,28 +440,103 @@ jobs:
         if: steps.mode.outputs.mode == 'stable'
         working-directory: ${{ inputs.package-directory }}
         env:
-          RELEASE_NOTES: ${{ inputs.release-notes }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
           const { execFileSync } = require('node:child_process')
-          const readJson = (file) => (fs.existsSync(file) ? require(`./${file}`) : {})
-          const notes = `${process.env.RUNNER_TEMP}/release-notes.md`
-          fs.writeFileSync(notes, process.env.RELEASE_NOTES)
+          const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', maxBuffer: 1 << 26 })
+          const git = (...args) => run('git', args)
+          const holds = (...args) => {
+            try {
+              git(...args)
+              return true
+            } catch {
+              return false
+            }
+          }
+          const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
+          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RUNNER_TEMP } = process.env
+          const config = readJson('.release-it.json')
+          const [prefix = 'v', suffix = ''] = (config.git?.tagName || 'v${version}').split('${version}')
+          const tag = (version) => `${prefix}${version}${suffix}`
+          const order = (left, right) => {
+            const [a, b] = [left, right].map((version) => version.split('.').map(Number))
+            return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+          }
+          const from = git('tag', '--merged', 'HEAD').split('\n')
+            .filter((name) => name.length > prefix.length + suffix.length && name.startsWith(prefix) && name.endsWith(suffix))
+            .map((name) => name.slice(prefix.length, name.length - suffix.length))
+            .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+            .sort(order)
+            .at(-1)
+          const nested = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean)
+            .map((file) => `:(exclude)${file.slice(0, -'/.release-it.json'.length)}`)
+          const pulls = JSON.parse(run('gh', ['pr', 'list', '--repo', slug, '--base', DEFAULT_BRANCH, '--state', 'merged', '--limit', '100', '--json', 'number,mergeCommit,headRefOid']))
+            .filter((pull) => pull.mergeCommit?.oid && holds('merge-base', '--is-ancestor', pull.mergeCommit.oid, 'HEAD') && holds('cat-file', '-e', `${pull.headRefOid}^{commit}`))
+          const shipped = (pull) => from !== undefined && holds('merge-base', '--is-ancestor', pull.mergeCommit.oid, `refs/tags/${tag(from)}`)
+          const current = pulls.filter((pull) => !shipped(pull))
+          const exclude = [...(from === undefined ? [] : [`refs/tags/${tag(from)}`]), ...pulls.filter(shipped).map((pull) => pull.headRefOid)]
+          const squashes = new Set(current.map((pull) => pull.mergeCommit.oid))
+          const machinery = /^(?:(?:chore\(release\)|release): |fix\(deps\): depend on the stable )/
+          const header = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/
+          const commits = git('log', '--no-merges', '--format=%H%x1f%s%x1f%b%x1f%an%x1e', 'HEAD', ...current.map((pull) => pull.headRefOid), '--not', ...exclude, '--', '.', ...nested)
+            .split('\x1e')
+            .map((record) => record.replace(/^\n/, ''))
+            .filter(Boolean)
+            .map((record) => {
+              const [sha, subject, body, author] = record.split('\x1f')
+              return { sha, subject, body, author }
+            })
+            .filter((commit) => !squashes.has(commit.sha) && !machinery.test(commit.subject))
+          const sections = [
+            ['feat', '🚀 Enhancements'], ['perf', '🔥 Performance'], ['fix', '🩹 Fixes'], ['refactor', '💅 Refactors'],
+            ['docs', '📖 Documentation'], ['build', '📦 Build'], ['types', '🌊 Types'], ['revert', '⏪ Reverts'],
+            ['chore', '🏡 Chore'], ['examples', '🏀 Examples'], ['test', '✅ Tests'], ['style', '🎨 Styles'], ['ci', '🤖 CI'],
+          ]
+          const listed = commits.toReversed().flatMap(({ sha, subject, body, author }) => {
+            const match = header.exec(subject)
+            if (match === null || !sections.some(([type]) => type === match[1])) return []
+            let description = match[4]
+            const links = []
+            for (let pull = /\s*\(#(\d+)\)$/.exec(description); pull !== null; pull = /\s*\(#(\d+)\)$/.exec(description)) {
+              links.unshift(`[#${pull[1]}](https://github.com/${slug}/pull/${pull[1]})`)
+              description = description.slice(0, pull.index)
+            }
+            if (links.length === 0) links.push(`[${sha.slice(0, 7)}](https://github.com/${slug}/commit/${sha})`)
+            const scope = match[2] ? `**${match[2]}:** ` : ''
+            const line = `- ${scope}${description.charAt(0).toUpperCase()}${description.slice(1)} (${links.join(', ')})`
+            return [{ type: match[1], breaking: match[3] === '!' || /^BREAKING[ -]CHANGE:/m.test(body), author, line }]
+          })
+          const names = Object.keys(JSON.parse(process.env.DEPENDENCY_RANGES || '{}'))
+          const deps = names.length === 0 ? [] : [`- **deps:** Depend on the stable ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`}`]
+          const block = (title, lines) => (lines.length === 0 ? [] : [`${title}\n\n${lines.join('\n')}`])
+          const contributors = [...new Set(listed.map((note) => note.author))].filter((author) => !author.endsWith('[bot]'))
+          const releaseNotes = [
+            ...(from === undefined ? [] : [`[compare changes](https://github.com/${slug}/compare/${tag(from)}...${tag(RELEASE_VERSION)})`]),
+            ...sections.flatMap(([type, title]) =>
+              block(`### ${title}`, [...listed.filter((note) => note.type === type).map((note) => note.line), ...(type === 'fix' ? deps : [])]),
+            ),
+            ...block('#### ⚠️ Breaking Changes', listed.filter((note) => note.breaking).map((note) => note.line)),
+            ...block('### ❤️ Contributors', contributors.map((author) => `- ${author}`)),
+          ].join('\n\n')
+          const notes = `${RUNNER_TEMP}/release-notes.md`
+          fs.writeFileSync(notes, releaseNotes)
           const { output } = readJson('changelogen.config.json')
           const changelog = typeof output === 'string' ? output : 'CHANGELOG.md'
           const text = fs.existsSync(changelog) ? fs.readFileSync(changelog, 'utf8') : '# Changelog\n'
-          const section = `## v${process.env.RELEASE_VERSION}\n\n${process.env.RELEASE_NOTES}\n\n`
+          const section = `## v${RELEASE_VERSION}\n\n${releaseNotes}\n\n`
           const entry = /^###?\s/m.exec(text)
           fs.writeFileSync(changelog, entry ? text.slice(0, entry.index) + section + text.slice(entry.index) : `${text.trimEnd()}\n\n${section}`)
-          execFileSync('git', ['add', '--', changelog])
-          const config = readJson('.release-it.json')
+          git('add', '--', changelog)
           delete config.plugins?.['release-it-changelogen']
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
-          fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
+          fs.writeFileSync(`${RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
           NODE
 
       - name: Publish preview

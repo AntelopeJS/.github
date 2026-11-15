@@ -59,6 +59,8 @@ function packageDirectory(name: string, manifest: object): string {
 const fakeNpm = join(root, "bin");
 mkdirSync(fakeNpm);
 writeFileSync(join(fakeNpm, "pnpm"), '#!/bin/sh\necho "pnpm $*"\n');
+writeFileSync(join(fakeNpm, "gh"), '#!/bin/sh\nif [ -n "$FAKE_GH_DOWN" ]; then echo "gh: down" >&2; exit 1; fi\necho "$FAKE_PULLS"\n');
+chmodSync(join(fakeNpm, "gh"), 0o755);
 chmodSync(join(fakeNpm, "pnpm"), 0o755);
 writeFileSync(
   join(fakeNpm, "npm"),
@@ -242,22 +244,19 @@ for (const { file, text } of workflows) {
     });
 
     test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {
-      const mode = (event: string, ref: string, version = "", commit = head, notes = "### 🩹 Fixes") =>
+      const mode = (event: string, ref: string, version = "", commit = head) =>
         runStep(text, "Resolve release mode", root, {
           GITHUB_EVENT_NAME: event,
           GITHUB_REF: ref,
           DEFAULT_BRANCH: "main",
           RELEASE_VERSION: version,
           RELEASE_COMMIT: commit,
-          RELEASE_NOTES: notes,
         });
       assert.equal(mode("push", "refs/heads/next").outputs, "mode=preview\n");
-      assert.equal(mode("push", "refs/heads/next", "", "", "").outputs, "mode=preview\n");
+      assert.equal(mode("push", "refs/heads/next", "", "").outputs, "mode=preview\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
-      const notes = mode("workflow_dispatch", "refs/heads/main", "0.5.0", head, "");
-      assert.deepEqual([notes.status, notes.stderr], [1, "A stable release needs release-notes, the changelog section the release train renders.\n"]);
       assert.equal(mode("workflow_dispatch", "refs/heads/main").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
@@ -277,19 +276,33 @@ for (const { file, text } of workflows) {
       );
     });
 
-    test("Write release notes puts the train's section on top of the changelog and points release-it at it", () => {
-      const notes = "[compare changes](https://github.com/AntelopeJS/x/compare/v0.4.2...v0.5.0)\n\n### 🩹 Fixes\n\n- Close the feed";
-      const section = `## v0.5.0\n\n${notes}\n\n`;
+    test("Write release notes puts the cycle's section on top of the changelog and points release-it at it", () => {
       const write = (name: string, files: Record<string, string>) => {
         const directory = join(root, `${file}-${name}`);
         mkdirSync(join(directory, "docs"), { recursive: true });
         git(directory, "init", "--quiet");
-        for (const [path, content] of Object.entries(files)) writeFileSync(join(directory, path), content);
-        const result = runStep(text, "Write release notes", directory, { RELEASE_NOTES: notes, RELEASE_VERSION: "0.5.0" });
+        commitFiles(directory, "feat: first", { "package.json": "{}\n", ...files });
+        git(directory, "tag", "v0.4.2");
+        const fix = commitFiles(directory, "fix: close the feed", { "feed.js": "x\n" });
+        const result = runStep(text, "Write release notes", directory, {
+          PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+          FAKE_PULLS: "[]",
+          GITHUB_REPOSITORY: "AntelopeJS/x",
+          DEFAULT_BRANCH: "main",
+          RELEASE_VERSION: "0.5.0",
+          ...hermeticGit,
+        });
         assert.equal(result.status, 0, result.stderr);
         const read = (path: string): string => readFileSync(join(directory, path), "utf8");
         const config: unknown = JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
-        return { read, staged: git(directory, "diff", "--cached", "--name-only"), config };
+        const notes = [
+          "[compare changes](https://github.com/AntelopeJS/x/compare/v0.4.2...v0.5.0)",
+          "### 🩹 Fixes",
+          `- Close the feed ([${fix.slice(0, 7)}](https://github.com/AntelopeJS/x/commit/${fix}))`,
+          "### ❤️ Contributors",
+          "- Test",
+        ].join("\n\n");
+        return { read, staged: git(directory, "diff", "--cached", "--name-only"), config, notes, section: `## v0.5.0\n\n${notes}\n\n` };
       };
       const existing = write("existing", {
         "CHANGELOG.md": "# Changelog\n\n## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n",
@@ -299,8 +312,8 @@ for (const { file, text } of workflows) {
           plugins: { "release-it-changelogen": { disableVersion: true }, "@release-it/bumper": {} },
         }),
       });
-      assert.equal(existing.read("CHANGELOG.md"), `# Changelog\n\n${section}## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n`);
-      assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), notes);
+      assert.equal(existing.read("CHANGELOG.md"), `# Changelog\n\n${existing.section}## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n`);
+      assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), existing.notes);
       assert.deepEqual(existing.config, {
         git: { tagName: "v${version}", requireCommits: true, requireCleanWorkingDir: false },
         github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
@@ -308,7 +321,7 @@ for (const { file, text } of workflows) {
       });
 
       const fresh = write("fresh", {});
-      assert.equal(fresh.read("CHANGELOG.md"), `# Changelog\n\n${section}`);
+      assert.equal(fresh.read("CHANGELOG.md"), `# Changelog\n\n${fresh.section}`);
       assert.equal(fresh.staged, "CHANGELOG.md");
       assert.deepEqual(fresh.config, {
         git: { requireCleanWorkingDir: false },
@@ -320,12 +333,100 @@ for (const { file, text } of workflows) {
         "docs/CHANGES.md": "# Changes\n",
         ".release-it.json": JSON.stringify({ plugins: { "release-it-changelogen": {} } }),
       });
-      assert.equal(custom.read("docs/CHANGES.md"), `# Changes\n\n${section}`);
+      assert.equal(custom.read("docs/CHANGES.md"), `# Changes\n\n${custom.section}`);
       assert.equal(custom.staged, "docs/CHANGES.md");
       assert.deepEqual(custom.config, {
         git: { requireCleanWorkingDir: false },
         github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
       });
+    });
+
+    test("Write release notes lists one line per task of the cycle from the promotion's head, with breaking changes and contributors", () => {
+      const repo = join(root, `${file}-cycle`);
+      mkdirSync(repo);
+      git(repo, "init", "--quiet", "--initial-branch=main");
+      const by = (author: string, subject: string, body = ""): string => {
+        writeFileSync(join(repo, "log.txt"), `${subject}\n`, { flag: "a" });
+        git(repo, "add", "--all");
+        git(repo, "commit", "--quiet", `--author=${author} <a@example.com>`, "-m", subject, ...(body === "" ? [] : ["-m", body]));
+        return git(repo, "rev-parse", "HEAD");
+      };
+      const antony = "Antony Rizzitelli";
+      commitFiles(repo, "feat: first", { "package.json": "{}\n" });
+      git(repo, "checkout", "--quiet", "-b", "next");
+      const oldHead = by(antony, "fix: an old task (#88)");
+      git(repo, "checkout", "--quiet", "main");
+      git(repo, "merge", "--quiet", "--squash", "next");
+      git(repo, "commit", "--quiet", "-m", "fix: promote next (#90)");
+      const oldSquash = git(repo, "rev-parse", "HEAD");
+      commitFiles(repo, "chore(release): v0.4.1", { "CHANGELOG.md": "## v0.4.1\n" });
+      git(repo, "tag", "v0.4.1");
+      git(repo, "checkout", "--quiet", "next");
+      git(repo, "merge", "--quiet", "--no-ff", "--no-edit", "main");
+      by(antony, "feat(query): ReadCursor hands over rows in batches (#97)");
+      const guard = by("Carol", "fix: guard the empty batch");
+      const close = by("Carol", "fix(cursor): close on error", "BREAKING CHANGE: the cursor throws");
+      by("renovate[bot]", "ci: run the checks on Windows (#94)");
+      by("Bob", "Update the README");
+      by(antony, "wip: half done");
+      by(antony, "fix(deps): depend on the stable @antelopejs/core");
+      const head = by(antony, "feat(query)!: rename ReadCursor.next to ReadCursor.read (#101)");
+      git(repo, "checkout", "--quiet", "main");
+      git(repo, "merge", "--quiet", "--squash", "next");
+      git(repo, "commit", "--quiet", "-m", "feat(query): batch reads and cursor fixes (#122)");
+      const squash = git(repo, "rev-parse", "HEAD");
+      const pulls = [
+        { number: 122, mergeCommit: { oid: squash }, headRefOid: head },
+        { number: 90, mergeCommit: { oid: oldSquash }, headRefOid: oldHead },
+        { number: 7, mergeCommit: { oid: "e".repeat(40) }, headRefOid: "f".repeat(40) },
+      ];
+      const env = {
+        PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+        FAKE_PULLS: JSON.stringify(pulls),
+        GITHUB_REPOSITORY: "AntelopeJS/interface-database",
+        DEFAULT_BRANCH: "main",
+        RELEASE_VERSION: "0.5.0",
+        DEPENDENCY_RANGES: JSON.stringify({ "@antelopejs/mongodb": ">=1.8.7 <1.9.0", "@antelopejs/core": ">=1.24.0 <1.25.0" }),
+        ...hermeticGit,
+      };
+      const result = runStep(text, "Write release notes", repo, env);
+      assert.equal(result.status, 0, result.stderr);
+      const pull = (number: number): string => `[#${number}](https://github.com/AntelopeJS/interface-database/pull/${number})`;
+      const commitLink = (sha: string): string => `[${sha.slice(0, 7)}](https://github.com/AntelopeJS/interface-database/commit/${sha})`;
+      const closeOnError = `- **cursor:** Close on error (${commitLink(close)})`;
+      assert.equal(
+        readFileSync(join(root, "release-notes.md"), "utf8"),
+        [
+          "[compare changes](https://github.com/AntelopeJS/interface-database/compare/v0.4.1...v0.5.0)",
+          "",
+          "### 🚀 Enhancements",
+          "",
+          `- **query:** ReadCursor hands over rows in batches (${pull(97)})`,
+          `- **query:** Rename ReadCursor.next to ReadCursor.read (${pull(101)})`,
+          "",
+          "### 🩹 Fixes",
+          "",
+          `- Guard the empty batch (${commitLink(guard)})`,
+          closeOnError,
+          "- **deps:** Depend on the stable @antelopejs/mongodb and @antelopejs/core",
+          "",
+          "### 🤖 CI",
+          "",
+          `- Run the checks on Windows (${pull(94)})`,
+          "",
+          "#### ⚠️ Breaking Changes",
+          "",
+          closeOnError,
+          `- **query:** Rename ReadCursor.next to ReadCursor.read (${pull(101)})`,
+          "",
+          "### ❤️ Contributors",
+          "",
+          "- Antony Rizzitelli",
+          "- Carol",
+        ].join("\n"),
+      );
+      const down = runStep(text, "Write release notes", repo, { ...env, FAKE_GH_DOWN: "1" });
+      assert.equal(down.status, 1);
     });
 
     test("Publish stable release runs release-it with the written config", () => {

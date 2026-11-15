@@ -13,8 +13,8 @@ import {
 } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
-function commit(subject: string, body = "", author = "Antony Rizzitelli"): Commit {
-  return { sha: subject.length.toString(16).padStart(40, "0"), subject, author, level: commitLevel(subject, body) };
+function commit(subject: string, body = ""): Commit {
+  return { sha: subject.length.toString(16).padStart(40, "0"), subject, level: commitLevel(subject, body) };
 }
 
 function source(
