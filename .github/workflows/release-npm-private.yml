@@ -11,10 +11,6 @@ on:
         description: Commit SHA a workflow_dispatch run releases; the run fails when the branch moved past it
         default: ""
         type: string
-      release-notes:
-        description: Changelog section a workflow_dispatch run writes, rendered by the release train
-        default: ""
-        type: string
       dependency-ranges:
         description: JSON object mapping each dependency name to the stable range that replaces its preview pin
         default: "{}"
@@ -26,6 +22,10 @@ on:
       package-directory:
         description: Relative path to the package directory to release
         default: .
+        type: string
+      integration-branch:
+        description: Branch that receives the stable ranges a stable run writes, so that the Next sync merge does not conflict
+        default: next
         type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
-      contents: write
+      contents: read
     concurrency:
       group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ inputs.package-directory }}
       cancel-in-progress: false
@@ -53,7 +53,6 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release-version }}
           RELEASE_COMMIT: ${{ inputs.release-commit }}
-          RELEASE_NOTES: ${{ inputs.release-notes }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
@@ -65,10 +64,6 @@ jobs:
             }
             [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
               echo "A stable release needs release-commit as the 40-character SHA of the planned commit, got '$RELEASE_COMMIT'." >&2
-              exit 1
-            }
-            [ -n "$RELEASE_NOTES" ] || {
-              echo "A stable release needs release-notes, the changelog section the release train renders." >&2
               exit 1
             }
             echo "mode=stable" >> "$GITHUB_OUTPUT"
@@ -223,10 +218,24 @@ jobs:
 
       - name: Validate package publication metadata
         working-directory: ${{ inputs.package-directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           node <<'NODE'
+          const { spawnSync } = require('node:child_process')
           const pkg = require('./package.json')
           const errors = []
+          const repository = process.env.GITHUB_REPOSITORY
+          const slugOf = (url) => /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(url ?? '')?.[1]?.toLowerCase()
+          const url = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url
+          if (slugOf(url) !== repository.toLowerCase()) errors.push(`repository.url must name ${repository}, got ${url ?? 'nothing'}`)
+          const view = spawnSync('npm', ['view', pkg.name, 'repository.url'], { encoding: 'utf8' })
+          const published = view.stdout?.trim()
+          if (view.status === 0 && published && slugOf(published) !== repository.toLowerCase()) {
+            errors.push(`${pkg.name} on npm comes from ${published}, not from ${repository}`)
+          } else if (view.status !== 0 && !/\bE404\b/.test(view.stderr ?? '')) {
+            errors.push(`npm view ${pkg.name} repository.url failed: ${(view.stderr ?? '').trim()}`)
+          }
           if (!pkg.name?.startsWith('@antelopejs-private/')) errors.push('name must use the @antelopejs-private scope')
           if (pkg.private === true) errors.push('private must not be true for a published package')
           if (pkg.license !== 'Apache-2.0') errors.push('license must be Apache-2.0')
@@ -263,8 +272,10 @@ jobs:
           const changelog = (typeof output === 'string' ? output : 'CHANGELOG.md').replace(/^\.\//, '')
           const shipped = (revision) => ({ ...JSON.parse(git('show', `${revision}:./package.json`)), version: null })
           const ships = (file) => file !== changelog && (file !== 'package.json' || !isDeepStrictEqual(shipped(PREVIOUS), shipped(GITHUB_SHA)))
+          const released = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean).map((file) => file.slice(0, -'.release-it.json'.length))
+          const own = (file) => !released.some((directory) => file.startsWith(directory)) && !/(^|\/)pnpm-lock\.yaml$/.test(file)
           const changed = git('diff', '--name-only', '--no-renames', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
-          process.exit(changed.some(ships) ? 1 : 0)
+          process.exit(changed.filter(own).some(ships) ? 1 : 0)
           NODE
           then
             echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
@@ -297,7 +308,20 @@ jobs:
               echo "$version changes the major version of $name $latest, which a release never does." >&2
               exit 1
             fi
-            if [ -n "$latest" ] && (( new_minor < minor || (new_minor == minor && new_patch <= patch) )); then
+            if [ "$latest" = "$version" ]; then
+              tag=$(node -p "const fs = require('node:fs'); const config = fs.existsSync('.release-it.json') ? JSON.parse(fs.readFileSync('.release-it.json', 'utf8')) : {}; (config.git?.tagName || 'v\${version}').replace('\${version}', process.env.RELEASE_VERSION)")
+              if git rev-parse --verify --quiet "refs/tags/$tag" > /dev/null; then
+                echo "$name $version is released: npm holds it and the tag $tag exists." >&2
+                exit 1
+              fi
+              published=$(npm view "$name@$version" gitHead 2>/dev/null || true)
+              if [ "$published" != "$(git rev-parse HEAD)" ]; then
+                echo "npm holds $name $version from commit ${published:-unknown}, not from $GITHUB_REF_NAME at the planned commit $(git rev-parse HEAD), so this run cannot finish its release." >&2
+                exit 1
+              fi
+              echo "::notice::npm holds $name $version but the tag $tag is missing, so this run writes the release commit, the tag and the GitHub release without publishing again."
+              echo "resume=true" >> "$GITHUB_OUTPUT"
+            elif [ -n "$latest" ] && (( new_minor < minor || (new_minor == minor && new_patch <= patch) )); then
               echo "$version is not greater than $name $latest on npm." >&2
               exit 1
             fi
@@ -314,6 +338,19 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs')
           const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies']
+          const part = '(?:0|[1-9]\\d*|[xX*])'
+          const identifiers = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*'
+          const partial = `v?${part}(?:\\.${part}(?:\\.${part}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`
+          const partialPattern = new RegExp(`^${partial}$`)
+          const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`)
+          const alias = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/
+          const isRegistrySpec = (spec) =>
+            (alias.exec(spec)?.[1] ?? spec).split('||').every((set) => {
+              const words = set.trim().replace(/([<>=~^])\s+/g, '$1').split(/\s+/)
+              if (words.length === 3 && words[1] === '-') return words.every((word, index) => index === 1 || partialPattern.test(word))
+              return words.every((word) => comparatorPattern.test(word))
+            })
+          const isPreview = (spec) => /\d+\.\d+\.\d+-/.test(spec)
           let ranges = null
           try {
             ranges = JSON.parse(process.env.DEPENDENCY_RANGES || '{}')
@@ -322,40 +359,36 @@ jobs:
             console.error('dependency-ranges must be a JSON object mapping each dependency name to a range')
             process.exit(1)
           }
-          const names = Object.keys(ranges)
-          if (names.length === 0) process.exit(0)
+          const unstable = Object.entries(ranges).filter(([, range]) => !isRegistrySpec(range) || isPreview(range))
+          if (unstable.length) {
+            console.error(`dependency-ranges must map each name to a stable version range:\n${unstable.map((pair) => pair.join(' ')).join('\n')}`)
+            process.exit(1)
+          }
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const previewFields = (name) =>
-            fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && /\d+\.\d+\.\d+-/.test(pkg[field][name]))
+          const previewFields = (name) => fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && isPreview(pkg[field][name]))
+          const names = Object.keys(ranges)
           const missing = names.filter((name) => previewFields(name).length === 0)
           if (missing.length) {
             console.error(`dependency-ranges names packages that package.json does not pin to a preview: ${missing.join(', ')}`)
             process.exit(1)
           }
-          for (const name of names) {
-            for (const field of previewFields(name)) pkg[field][name] = ranges[name]
+          if (names.length) {
+            for (const name of names) {
+              for (const field of previewFields(name)) pkg[field][name] = ranges[name]
+            }
+            fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
+            const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `message=fix(deps): depend on the stable ${list}\n`)
           }
-          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
-          const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `message=fix(deps): depend on the stable ${list}\n`)
-          NODE
-
-      - name: Refuse preview dependencies
-        if: steps.mode.outputs.mode == 'stable'
-        working-directory: ${{ inputs.package-directory }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const previewsOf = (field) => Object.entries(pkg[field] ?? {}).filter(([, spec]) => /\d+\.\d+\.\d+-/.test(spec))
-          for (const [name, spec] of previewsOf('devDependencies')) {
+          const specsOf = (field) => Object.entries(pkg[field] ?? {})
+          for (const [name, spec] of specsOf('devDependencies').filter(([, spec]) => isPreview(spec))) {
             console.log(`::warning::The stable release keeps the devDependency preview ${name} ${spec}.`)
           }
-          const previews = ['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
-            previewsOf(field).map(([name, spec]) => `${field} ${name} ${spec}`),
+          const refused = fields.slice(0, 3).flatMap((field) =>
+            specsOf(field).filter(([, spec]) => isPreview(spec) || !isRegistrySpec(spec)).map(([name, spec]) => `${field} ${name} ${spec}`),
           )
-          if (previews.length) {
-            console.error(`A stable release cannot depend on a preview. Give each a stable range in dependency-ranges:\n${previews.join('\n')}`)
+          if (refused.length) {
+            console.error(`A stable release depends only on stable registry version ranges. Give each preview a stable range in dependency-ranges, and replace each other spec:\n${refused.join('\n')}`)
             process.exit(1)
           }
           NODE
@@ -383,42 +416,143 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit stable dependencies
+      - name: Stage stable dependencies
         if: steps.ranges.outputs.message != ''
         env:
-          MESSAGE: ${{ steps.ranges.outputs.message }}
           PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
           LOCKFILE: ${{ steps.lockfile.outputs.path }}
         run: |
           git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
-          git commit --quiet -m "$MESSAGE"
+
+      - name: Bring the stable ranges to the integration branch
+        if: steps.ranges.outputs.message != ''
+        env:
+          BRANCH: ${{ inputs.integration-branch }}
+          MESSAGE: ${{ steps.ranges.outputs.message }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" > /dev/null; then
+            exit 0
+          fi
+          commit=$(git commit-tree "$(git write-tree)" -p HEAD -m "$MESSAGE")
+          worktree="$RUNNER_TEMP/integration-branch"
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          trap 'git config --local --unset-all http.https://github.com/.extraheader || true; git worktree remove --force "$worktree" 2> /dev/null || true' EXIT
+          git worktree add --quiet --detach "$worktree" "origin/$BRANCH"
+          if ! git -C "$worktree" cherry-pick "$commit" > /dev/null 2>&1; then
+            if [ -n "$(git -C "$worktree" diff --name-only --diff-filter=U)" ]; then
+              echo "::warning::$BRANCH changed the same dependency lines since the plan, so it keeps them and the Next sync of this release will conflict."
+            fi
+            git -C "$worktree" cherry-pick --abort
+            exit 0
+          fi
+          if ! git -C "$worktree" push --quiet origin "HEAD:refs/heads/$BRANCH"; then
+            echo "::warning::The stable ranges were not pushed to $BRANCH, so the Next sync of this release will conflict."
+          fi
 
       - name: Write release notes
         if: steps.mode.outputs.mode == 'stable'
         working-directory: ${{ inputs.package-directory }}
         env:
-          RELEASE_NOTES: ${{ inputs.release-notes }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
           const { execFileSync } = require('node:child_process')
-          const readJson = (file) => (fs.existsSync(file) ? require(`./${file}`) : {})
-          const notes = `${process.env.RUNNER_TEMP}/release-notes.md`
-          fs.writeFileSync(notes, process.env.RELEASE_NOTES)
+          const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', maxBuffer: 1 << 26 })
+          const git = (...args) => run('git', args)
+          const holds = (...args) => {
+            try {
+              git(...args)
+              return true
+            } catch {
+              return false
+            }
+          }
+          const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
+          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RUNNER_TEMP } = process.env
+          const config = readJson('.release-it.json')
+          const [prefix = 'v', suffix = ''] = (config.git?.tagName || 'v${version}').split('${version}')
+          const tag = (version) => `${prefix}${version}${suffix}`
+          const order = (left, right) => {
+            const [a, b] = [left, right].map((version) => version.split('.').map(Number))
+            return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+          }
+          const from = git('tag', '--merged', 'HEAD').split('\n')
+            .filter((name) => name.length > prefix.length + suffix.length && name.startsWith(prefix) && name.endsWith(suffix))
+            .map((name) => name.slice(prefix.length, name.length - suffix.length))
+            .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+            .sort(order)
+            .at(-1)
+          const nested = git('ls-files', '-z', '--', '*/.release-it.json').split('\0').filter(Boolean)
+            .map((file) => `:(exclude)${file.slice(0, -'/.release-it.json'.length)}`)
+          const pulls = JSON.parse(run('gh', ['pr', 'list', '--repo', slug, '--base', DEFAULT_BRANCH, '--state', 'merged', '--limit', '100', '--json', 'number,mergeCommit,headRefOid']))
+            .filter((pull) => pull.mergeCommit?.oid && holds('merge-base', '--is-ancestor', pull.mergeCommit.oid, 'HEAD') && holds('cat-file', '-e', `${pull.headRefOid}^{commit}`))
+          const shipped = (pull) => from !== undefined && holds('merge-base', '--is-ancestor', pull.mergeCommit.oid, `refs/tags/${tag(from)}`)
+          const current = pulls.filter((pull) => !shipped(pull))
+          const exclude = [...(from === undefined ? [] : [`refs/tags/${tag(from)}`]), ...pulls.filter(shipped).map((pull) => pull.headRefOid)]
+          const squashes = new Set(current.map((pull) => pull.mergeCommit.oid))
+          const machinery = /^(?:(?:chore\(release\)|release): |fix\(deps\): depend on the stable )/
+          const header = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/
+          const commits = git('log', '--no-merges', '--format=%H%x1f%s%x1f%b%x1f%an%x1e', 'HEAD', ...current.map((pull) => pull.headRefOid), '--not', ...exclude, '--', '.', ...nested)
+            .split('\x1e')
+            .map((record) => record.replace(/^\n/, ''))
+            .filter(Boolean)
+            .map((record) => {
+              const [sha, subject, body, author] = record.split('\x1f')
+              return { sha, subject, body, author }
+            })
+            .filter((commit) => !squashes.has(commit.sha) && !machinery.test(commit.subject))
+          const sections = [
+            ['feat', '🚀 Enhancements'], ['perf', '🔥 Performance'], ['fix', '🩹 Fixes'], ['refactor', '💅 Refactors'],
+            ['docs', '📖 Documentation'], ['build', '📦 Build'], ['types', '🌊 Types'], ['revert', '⏪ Reverts'],
+            ['chore', '🏡 Chore'], ['examples', '🏀 Examples'], ['test', '✅ Tests'], ['style', '🎨 Styles'], ['ci', '🤖 CI'],
+          ]
+          const listed = commits.toReversed().flatMap(({ sha, subject, body, author }) => {
+            const match = header.exec(subject)
+            if (match === null || !sections.some(([type]) => type === match[1])) return []
+            let description = match[4]
+            const links = []
+            for (let pull = /\s*\(#(\d+)\)$/.exec(description); pull !== null; pull = /\s*\(#(\d+)\)$/.exec(description)) {
+              links.unshift(`[#${pull[1]}](https://github.com/${slug}/pull/${pull[1]})`)
+              description = description.slice(0, pull.index)
+            }
+            if (links.length === 0) links.push(`[${sha.slice(0, 7)}](https://github.com/${slug}/commit/${sha})`)
+            const scope = match[2] ? `**${match[2]}:** ` : ''
+            const line = `- ${scope}${description.charAt(0).toUpperCase()}${description.slice(1)} (${links.join(', ')})`
+            return [{ type: match[1], breaking: match[3] === '!' || /^BREAKING[ -]CHANGE:/m.test(body), author, line }]
+          })
+          const names = Object.keys(JSON.parse(process.env.DEPENDENCY_RANGES || '{}'))
+          const deps = names.length === 0 ? [] : [`- **deps:** Depend on the stable ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`}`]
+          const block = (title, lines) => (lines.length === 0 ? [] : [`${title}\n\n${lines.join('\n')}`])
+          const contributors = [...new Set(listed.map((note) => note.author))].filter((author) => !author.endsWith('[bot]'))
+          const releaseNotes = [
+            ...(from === undefined ? [] : [`[compare changes](https://github.com/${slug}/compare/${tag(from)}...${tag(RELEASE_VERSION)})`]),
+            ...sections.flatMap(([type, title]) =>
+              block(`### ${title}`, [...listed.filter((note) => note.type === type).map((note) => note.line), ...(type === 'fix' ? deps : [])]),
+            ),
+            ...block('#### ⚠️ Breaking Changes', listed.filter((note) => note.breaking).map((note) => note.line)),
+            ...block('### ❤️ Contributors', contributors.map((author) => `- ${author}`)),
+          ].join('\n\n')
+          const notes = `${RUNNER_TEMP}/release-notes.md`
+          fs.writeFileSync(notes, releaseNotes)
           const { output } = readJson('changelogen.config.json')
           const changelog = typeof output === 'string' ? output : 'CHANGELOG.md'
           const text = fs.existsSync(changelog) ? fs.readFileSync(changelog, 'utf8') : '# Changelog\n'
-          const section = `## v${process.env.RELEASE_VERSION}\n\n${process.env.RELEASE_NOTES}\n\n`
+          const section = `## v${RELEASE_VERSION}\n\n${releaseNotes}\n\n`
           const entry = /^###?\s/m.exec(text)
           fs.writeFileSync(changelog, entry ? text.slice(0, entry.index) + section + text.slice(entry.index) : `${text.trimEnd()}\n\n${section}`)
-          execFileSync('git', ['add', '--', changelog])
-          const config = readJson('.release-it.json')
+          git('add', '--', changelog)
           delete config.plugins?.['release-it-changelogen']
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
-          fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
+          fs.writeFileSync(`${RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
           NODE
 
       - name: Publish preview
@@ -436,6 +570,7 @@ jobs:
         working-directory: ${{ inputs.package-directory }}
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RESUME: ${{ steps.version.outputs.resume }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
@@ -444,4 +579,8 @@ jobs:
           trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
 
           prerelease_tags='*.*.*-*'
-          pnpm exec release-it --config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION"
+          args=(--config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION")
+          if [ "$RESUME" = true ]; then
+            args+=(--no-npm.publish)
+          fi
+          pnpm exec release-it "${args[@]}"

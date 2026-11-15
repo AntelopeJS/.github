@@ -5,9 +5,11 @@ export type Level = "minor" | "patch";
 export interface Commit {
   sha: string;
   subject: string;
-  author: string;
   level: Level | null;
 }
+
+/** Where a dependency must hold a preview's commit: at its planned head, or at its last stable tag. */
+export type Holder = "head" | "stable";
 
 /** One of the four dependency fields of a `package.json`. */
 export type DependencyField =
@@ -81,7 +83,7 @@ export interface Plan {
 export interface PlanOptions {
   ref: string;
   exclude: readonly string[];
-  contains: (name: string, sha: string) => boolean;
+  contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
 interface Version {
@@ -98,6 +100,12 @@ const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]);
+const versionPart = "(?:0|[1-9]\\d*|[xX*])";
+const identifiers = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`;
+const partialPattern = new RegExp(`^${partial}$`);
+const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`);
+const aliasPattern = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/;
 
 /** Parses `M.m.p` or `M.m.p-pre`, or returns null. */
 export function parseVersion(text: string): Version | null {
@@ -139,6 +147,19 @@ export function stableRange(version: string): string {
 /** Whether a dependency spec names a semver prerelease. */
 export function isPreviewSpec(spec: string): boolean {
   return previewPattern.test(spec);
+}
+
+/**
+ * Whether a dependency spec resolves from the registry: a semver range, or an `npm:` alias to one.
+ * A path, `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec does not.
+ */
+export function isRegistrySpec(spec: string): boolean {
+  const range = aliasPattern.exec(spec)?.[1] ?? spec;
+  return range.split("||").every((set) => {
+    const words = set.trim().replace(/([<>=~^])\s+/g, "$1").split(/\s+/);
+    if (words.length === 3 && words[1] === "-") return words.every((word, index) => index === 1 || partialPattern.test(word));
+    return words.every((word) => comparatorPattern.test(word));
+  });
 }
 
 interface Header {
@@ -236,7 +257,7 @@ interface Resolution {
   listed: ReadonlyMap<string, PackageSource>;
   exclude: ReadonlySet<string>;
   resolved: ReadonlyMap<string, Entry>;
-  contains: (name: string, sha: string) => boolean;
+  contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
 type PinOutcome = { range: string } | { reason: string };
@@ -256,7 +277,12 @@ function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome
   if (target === null) return { reason: "which has no stable release" };
   const base = `${version.major}.${version.minor}.${version.patch}`;
   if (compareCore(target, base) < 0) return { reason: `whose stable ${target} is older than ${base}` };
-  if (!context.contains(name, sha)) return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  if (planned.status === "release" && !context.contains(name, sha, "head")) {
+    return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  }
+  if (planned.status !== "release" && !context.contains(name, sha, "stable")) {
+    return { reason: `whose stable ${target} does not contain commit ${sha}` };
+  }
   return { range: stableRange(target) };
 }
 
@@ -266,6 +292,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const kept: KeptPin[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
     const { field, name, spec } = dependency;
+    if (field !== "devDependencies" && !isRegistrySpec(spec)) {
+      refusals.add(`depends on ${name}@${spec}, which is not a registry version range`);
+      continue;
+    }
     if (!isPreviewSpec(spec)) continue;
     const outcome = resolvePin(dependency, context);
     if ("range" in outcome) ranges[name] = outcome.range;
@@ -381,77 +411,4 @@ export function renderPlan(plan: Plan): string {
     ...(excluded === "" ? [] : [`Not now: ${excluded}`]),
     "",
   ].join("\n");
-}
-
-const noteSections: readonly (readonly [type: string, title: string])[] = [
-  ["feat", "🚀 Enhancements"],
-  ["perf", "🔥 Performance"],
-  ["fix", "🩹 Fixes"],
-  ["refactor", "💅 Refactors"],
-  ["docs", "📖 Documentation"],
-  ["build", "📦 Build"],
-  ["types", "🌊 Types"],
-  ["revert", "⏪ Reverts"],
-  ["chore", "🏡 Chore"],
-  ["examples", "🏀 Examples"],
-  ["test", "✅ Tests"],
-  ["style", "🎨 Styles"],
-  ["ci", "🤖 CI"],
-];
-const trailingPullPattern = /\s*\(#(\d+)\)$/;
-
-interface Note {
-  type: string;
-  breaking: boolean;
-  author: string;
-  line: string;
-}
-
-function noteOf(commit: Commit, slug: string): Note | null {
-  const header = parseHeader(commit.subject);
-  if (header === null) return null;
-  let { description } = header;
-  const pulls: string[] = [];
-  for (let match = trailingPullPattern.exec(description); match !== null; match = trailingPullPattern.exec(description)) {
-    pulls.unshift(`[#${match[1]}](https://github.com/${slug}/pull/${match[1]})`);
-    description = description.slice(0, match.index);
-  }
-  const links = pulls.length > 0 ? pulls : [`[${commit.sha.slice(0, 7)}](https://github.com/${slug}/commit/${commit.sha})`];
-  const scope = header.scope === "" ? "" : `**${header.scope}:** `;
-  const line = `- ${scope}${description.charAt(0).toUpperCase()}${description.slice(1)} (${links.join(", ")})`;
-  return { type: header.type, breaking: commit.level === "minor", author: commit.author, line };
-}
-
-function listNames(names: readonly string[]): string {
-  return names.length === 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-}
-
-/**
- * Renders the changelog section of a release in changelogen's format, without its `## v…` heading: the
- * compare link, one block per commit type with the oldest commit first, the breaking changes, then the
- * contributors. A subject that is not conventional is left out.
- */
-export function renderReleaseNotes(entry: Release): string {
-  const { slug, tagName, notes } = entry.source;
-  const listed = notes
-    .toReversed()
-    .flatMap((commit) => noteOf(commit, slug) ?? [])
-    .filter((note) => noteSections.some(([type]) => type === note.type));
-  const names = Object.keys(entry.ranges);
-  const deps = names.length === 0 ? [] : [`- **deps:** Depend on the stable ${listNames(names)}`];
-  const block = (title: string, lines: readonly string[]): string[] =>
-    lines.length === 0 ? [] : [`${title}\n\n${lines.join("\n")}`];
-  const tag = (version: string): string => tagName.replace("${version}", version);
-  const contributors = [...new Set(listed.map((note) => note.author))].filter((author) => !author.endsWith("[bot]"));
-  return [
-    ...(entry.from === null ? [] : [`[compare changes](https://github.com/${slug}/compare/${tag(entry.from)}...${tag(entry.to)})`]),
-    ...noteSections.flatMap(([type, title]) =>
-      block(`### ${title}`, [
-        ...listed.filter((note) => note.type === type).map((note) => note.line),
-        ...(type === "fix" ? deps : []),
-      ]),
-    ),
-    ...block("#### ⚠️ Breaking Changes", listed.filter((note) => note.breaking).map((note) => note.line)),
-    ...block("### ❤️ Contributors", contributors.map((author) => `- ${author}`)),
-  ].join("\n\n");
 }

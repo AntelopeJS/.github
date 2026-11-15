@@ -21,11 +21,12 @@ export interface Revision {
   name: string;
 }
 
-/** A pull request merged into a branch: its merge commit on the branch and the head commit it merged. */
+/** A pull request merged into a branch: its merge commit on the branch, the head commit it merged and the branch it came from. */
 export interface MergedPull {
   number: number;
   mergeCommit: string;
   head: string;
+  branch: string;
 }
 
 /** Where one package lives in a checkout, and what the train reads beside it. */
@@ -36,7 +37,7 @@ export interface Place {
 }
 
 const remotePattern = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
-const releaseSubjectPattern = /^(?:chore\(release\)|release): /;
+const releaseSubjectPattern = /^(?:(?:chore\(release\)|release): |fix\(deps\): depend on the stable )/;
 
 /** Clones or fetches the repository of a target, or reads a local checkout as it is. */
 export function openCheckout(target: Target, system: System): Checkout {
@@ -125,20 +126,32 @@ function parseCommits(log: string): Commit[] {
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record) => {
-      const [sha = "", subject = "", body = "", author = ""] = record.split("\x1f");
-      return { sha, subject, author, level: commitLevel(subject, body) };
+      const [sha = "", subject = "", body = ""] = record.split("\x1f");
+      return { sha, subject, level: commitLevel(subject, body) };
     })
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
 
-const logFormat = "--format=%H%x1f%s%x1f%b%x1f%an%x1e";
+const logFormat = "--format=%H%x1f%s%x1f%b%x1e";
 
 function hasCommit(system: System, repository: string, sha: string): boolean {
   return system.run("git", ["-C", repository, "--no-lazy-fetch", "cat-file", "-e", `${sha}^{commit}`]).status === 0;
 }
 
+function branchHolds(system: System, slug: string, sha: string, branch: string): boolean {
+  const path = `repos/${slug}/compare/${sha}...${branch.replace(/[%#?]/g, encodeURIComponent)}`;
+  const result = system.run("gh", ["api", path, "--jq", ".status"]);
+  if (result.status !== 0) {
+    if (/\bHTTP 404\b/.test(`${result.stderr}\n${result.stdout}`)) return false;
+    throw new Error(`gh api ${path} failed, so the plan cannot tell whether ${branch} holds commit ${sha.slice(0, 7)}\n${result.stderr.trim()}`);
+  }
+  const status = result.stdout.trim();
+  return status === "ahead" || status === "identical";
+}
+
 function cycleNotes(
   system: System,
+  slug: string,
   repository: string,
   head: string,
   tag: string | null,
@@ -148,6 +161,19 @@ function cycleNotes(
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
+  const stale = landed.find(
+    (pull) =>
+      !released(pull) &&
+      !present(pull) &&
+      pull.branch !== "" &&
+      hasRef(system, repository, `refs/remotes/origin/${pull.branch}`) &&
+      branchHolds(system, slug, pull.head, pull.branch),
+  );
+  if (stale !== undefined) {
+    throw new Error(
+      `${repository} lacks commit ${stale.head.slice(0, 7)}, the head of pull request #${stale.number} from ${stale.branch}, so its origin/${stale.branch} is stale. Run git fetch origin there, then plan again.`,
+    );
+  }
   const current = landed.filter((pull) => !released(pull) && present(pull));
   const previous = landed.filter((pull) => released(pull) && present(pull));
   const include = [head, ...current.map((pull) => pull.head)];
@@ -182,7 +208,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, range, "--", ...paths]));
-  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, repository, head, tag, paths, merged);
+  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, commits, notes };
 }
 

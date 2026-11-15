@@ -1,5 +1,5 @@
 import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
-import { renderReleaseNotes, type Release } from "./plan.ts";
+import type { Release } from "./plan.ts";
 import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
@@ -8,12 +8,14 @@ const dispatchPollMilliseconds = 5_000;
 const dispatchPollAttempts = 24;
 
 /**
- * How a dispatched release ended. `failed` means nothing was published. `unknown` means the dispatch was
- * accepted but the train could not see how its run ended, so the package may be published.
+ * How a dispatched release ended. `failed` means nothing was published. `incomplete` means the run failed
+ * after npm received the version, so its release commit, tag or GitHub release may be missing. `unknown`
+ * means the train could not see how its run ended, or what npm holds, so the package may be published.
  */
 export type RunOutcome =
   | { kind: "success"; url: string }
   | { kind: "failed"; detail: string }
+  | { kind: "incomplete"; detail: string }
   | { kind: "unknown"; detail: string; url: string };
 
 function parseJson(text: string): unknown {
@@ -49,7 +51,21 @@ function viewRun(system: System, slug: string, id: number): { status: string; co
   return { status: value.status, conclusion: String(value.conclusion ?? ""), url: String(value.url ?? "") };
 }
 
-function awaitRun(system: System, slug: string, id: number): RunOutcome {
+function npmHolds(system: System, name: string, version: string): boolean | null {
+  const result = system.run("npm", ["view", `${name}@${version}`, "version"]);
+  if (result.status === 0) return result.stdout.trim() === version;
+  return /\bE404\b/.test(result.stderr) ? false : null;
+}
+
+function failedRun(system: System, entry: Release, detail: string, url: string): RunOutcome {
+  const held = npmHolds(system, entry.source.manifest.name, entry.to);
+  if (held === false) return { kind: "failed", detail };
+  if (held === true) return { kind: "incomplete", detail };
+  return { kind: "unknown", detail: `${detail}, and npm view ${entry.source.manifest.name}@${entry.to} failed`, url };
+}
+
+function awaitRun(system: System, entry: Release, id: number): RunOutcome {
+  const { slug } = entry.source;
   const url = `https://github.com/${slug}/actions/runs/${id}`;
   let failures = 0;
   for (;;) {
@@ -61,7 +77,7 @@ function awaitRun(system: System, slug: string, id: number): RunOutcome {
     if (run?.status === "completed") {
       return run.conclusion === "success"
         ? { kind: "success", url: run.url || url }
-        : { kind: "failed", detail: `(${run.conclusion})  ${run.url || url}` };
+        : failedRun(system, entry, `(${run.conclusion})  ${run.url || url}`, run.url || url);
     }
     system.sleep(runPollMilliseconds);
   }
@@ -78,7 +94,6 @@ export function releaseRun(system: System, entry: Release): RunOutcome {
     "-f", `release-version=${entry.to}`,
     "-f", `release-commit=${head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
-    "-f", `release-notes=${renderReleaseNotes(entry)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
   ]);
   if (dispatched.status !== 0) {
@@ -89,7 +104,7 @@ export function releaseRun(system: System, entry: Release): RunOutcome {
     const created = (listRuns(system, slug) ?? [])
       .filter((run) => !known.has(run.id) && run.branch === branch)
       .sort((left, right) => left.id - right.id)[0];
-    if (created !== undefined) return awaitRun(system, slug, created.id);
+    if (created !== undefined) return awaitRun(system, entry, created.id);
   }
   return { kind: "unknown", detail: "no release.yml run appeared after the dispatch", url: `https://github.com/${slug}/actions` };
 }
@@ -104,7 +119,7 @@ function parsePulls(text: string): MergedPull[] {
       typeof pull.headRefOid === "string" &&
       isRecord(pull.mergeCommit) &&
       typeof pull.mergeCommit.oid === "string"
-        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid }]
+        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid, branch: typeof pull.headRefName === "string" ? pull.headRefName : "" }]
         : [],
     )
     .sort((left, right) => right.number - left.number);
@@ -122,7 +137,7 @@ export function mergedPulls(system: System): MergedPulls {
     if (cached !== undefined) return cached;
     const result = system.run("gh", [
       "pr", "list", "--repo", slug, "--base", branch, "--state", "merged", "--limit", "100",
-      "--json", "number,mergeCommit,headRefOid",
+      "--json", "number,mergeCommit,headRefOid,headRefName",
     ]);
     const found = result.status === 0 ? parsePulls(result.stdout) : null;
     pulls.set(key, found);

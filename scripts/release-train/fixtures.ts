@@ -94,16 +94,27 @@ interface Run {
   views: number;
 }
 
-function compare(range: string): string {
-  const [, owner = "", repo = "", base = "", head = ""] = /^repos\/([^/]+)\/([^/]+)\/compare\/(\w+)\.\.\.(\w+)$/.exec(range) ?? [];
-  const ancestor = spawnSync("git", ["-C", join(root, repo), "merge-base", "--is-ancestor", base, head]);
+function compare(range: string): RunResult {
+  const [, owner = "", repo = "", base = "", head = ""] = /^repos\/([^/]+)\/([^/]+)\/compare\/(\w+)\.\.\.(.+)$/.exec(range) ?? [];
   assert.equal(owner, "AntelopeJS");
-  return base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged";
+  const known = (ref: string): boolean => spawnSync("git", ["-C", join(root, repo), "rev-parse", "--verify", "--quiet", `${decodeURIComponent(ref)}^{commit}`]).status === 0;
+  if (!known(base) || !known(head)) return { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
+  const ancestor = spawnSync("git", ["-C", join(root, repo), "merge-base", "--is-ancestor", base, decodeURIComponent(head)]);
+  return { status: 0, stdout: `${base === head ? "identical" : ancestor.status === 0 ? "ahead" : "diverged"}\n`, stderr: "" };
 }
 
 type View = "fail" | "running";
 
-export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?: boolean; views?: Record<string, View[]> } = {}) {
+interface Fakes {
+  down?: boolean;
+  pullsDown?: boolean;
+  compareDown?: boolean;
+  views?: Record<string, View[]>;
+  npm?: Record<string, string>;
+  dispatched?: (repo: string, fields: Record<string, string>) => void;
+}
+
+export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes = {}) {
   const calls: string[][] = [];
   const sleeps: number[] = [];
   const runs: Run[] = [];
@@ -118,13 +129,22 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
         return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
       }
       calls.push([...args]);
-      if (gh.down) return answer("", 1);
+      if (command === "npm") {
+        const held = gh.npm?.[args[1] ?? ""];
+        if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
+        return held === "error" ? answer("", 1) : answer(`${held}\n`);
+      }
+      if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
       if (args[0] === "pr") return answer(JSON.stringify(pulls[flag(args, "--repo")] ?? []));
-      if (args[0] === "api") return answer(`${compare(args[1] ?? "")}\n`);
+      if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);
         if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
+        const fields = Object.fromEntries(
+          args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
+        );
+        gh.dispatched?.(repo, fields);
         return answer("");
       }
       if (args[0] === "run" && args[1] === "list") {
@@ -154,20 +174,10 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
   return { system, calls, sleeps, output: () => out, errors: () => err };
 }
 
-function fields(calls: string[][]): string[][] {
+export function dispatches(calls: string[][]): string[][] {
   return calls
     .filter((args) => args[0] === "workflow")
     .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
-}
-
-export function dispatches(calls: string[][]): string[][] {
-  return fields(calls).map((values) => values.filter((value) => !value.startsWith("release-notes=")));
-}
-
-export function releaseNotes(calls: string[][]): Record<string, string> {
-  return Object.fromEntries(
-    fields(calls).map(([repo = "", ...values]) => [repo, values.find((value) => value.startsWith("release-notes="))?.slice(14) ?? ""]),
-  );
 }
 
 export function tip(repository: string, branch = "main"): string {
