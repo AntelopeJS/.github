@@ -41,9 +41,11 @@ export interface PackageSource {
   tagName: string;
   manifest: Manifest;
   stable: string | null;
+  /** The manifest at the stable tag, which npm published, or null when there is no stable tag or the tag has no `package.json` in the directory. */
+  stableManifest: Manifest | null;
   /**
-   * The manifest where the branch read leaves the stable release: at the stable tag when the branch holds it, else at
-   * their merge base. Null when there is no stable tag or that commit has no `package.json` in the directory.
+   * The manifest at the merge base of the stable tag and the branch read, which is the tag itself when the branch holds it.
+   * A promotion carries a dependency spec of the branch only when the branch changed it since that base.
    */
   baseManifest: Manifest | null;
   /** The commits on the branch since the stable tag. */
@@ -265,13 +267,14 @@ function highestLevel(commits: readonly Commit[]): Level | null {
 }
 
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const stable = source.baseManifest;
+  const { stableManifest: stable, baseManifest: base } = source;
   if (stable === null) return [];
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
+    const forked = (base ?? stable)[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name])
+      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && forked[name] !== after[name])
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;

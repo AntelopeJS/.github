@@ -122,8 +122,10 @@ in dependency order.
   commits and the cycle's commits, so a promotion titled too low never
   releases too little. A release never changes the major version.
 - A package whose commits ask for nothing still gets a patch when its
-  `dependencies`, `peerDependencies` or `optionalDependencies` differ from the
-  `package.json` of its last stable tag, which npm published. It also gets a
+  `dependencies`, `peerDependencies` or `optionalDependencies` hold a spec
+  that differs from the `package.json` of its last stable tag, which npm
+  published, and that the branch changed since it forked from that tag. A
+  branch that holds the tag forked at the tag itself. It also gets a
   patch when a listed package pins a preview of it in `dependencies`,
   `peerDependencies` or `optionalDependencies` that is newer than its last
   stable release. The plan names each change and each pin. Otherwise the plan
@@ -143,7 +145,8 @@ in dependency order.
   contains the commit when the commit is an ancestor of it, which covers
   `--ref next`. `next` reaches the default branch by a squash merge, so the
   train also looks in the merged pull requests. It reads the last 100 pull
-  requests merged into the branch, newest first. One counts when the ref holds
+  requests merged into the branch read for the head, and into the default
+  branch for a stable tag, newest first. One counts when the ref holds
   its merge commit and its head contains the pinned commit. A failed
   comparison counts as not found.
 - A package is refused when a spec in `dependencies`, `peerDependencies` or
