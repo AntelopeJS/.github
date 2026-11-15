@@ -1,0 +1,57 @@
+name: Release train checks
+
+on:
+  pull_request:
+    paths:
+      - scripts/**
+      - .github/workflows/release-npm-public.yml
+      - .github/workflows/release-npm-private.yml
+      - .github/workflows/release-train-checks.yml
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/**
+      - .github/workflows/release-npm-public.yml
+      - .github/workflows/release-npm-private.yml
+      - .github/workflows/release-train-checks.yml
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - name: Install the type checker
+        run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1
+
+      - name: Typecheck
+        run: |
+          "$RUNNER_TEMP/tools/node_modules/.bin/tsc" -p scripts/release-train/tsconfig.json --typeRoots "$RUNNER_TEMP/tools/node_modules/@types"
+
+      - name: Test
+        run: node --test 'scripts/release-train/*.test.ts'
+
+      - name: Lint the release workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/release-npm-public.yml .github/workflows/release-npm-private.yml .github/workflows/release-train-checks.yml
