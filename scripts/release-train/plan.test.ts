@@ -35,6 +35,7 @@ function source(
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
     baseManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
+    shippedManifests: [],
     commits,
     notes: commits,
   };
@@ -155,6 +156,41 @@ describe("computePlan", () => {
         ].join("\n"),
       ),
     );
+  });
+
+  test("a tooling-only cycle plans a patch when a sibling's release moves the range a workspace spec packs to out of the published one", () => {
+    const inRepo = (name: string, stable: string, subjects: string[], fields: Partial<Manifest> = {}) => ({
+      ...source(name, stable, subjects, fields),
+      slug: "AntelopeJS/dms-saas",
+      directory: `packages/${name}`,
+    });
+    const dependent = (dependencies: Record<string, string>) =>
+      inRepo("dms-saas", "0.12.1", ["build: move to 0.8"], { dependencies, peerDependencies: dependencies });
+    const minor = inRepo("interface-dms-saas", "0.10.0", ["feat!: rename the plans"]);
+    const patch = inRepo("interface-dms-saas", "0.10.0", ["fix: x"]);
+    const quiet = inRepo("interface-dms-saas", "0.10.0", ["build: move to 0.8"]);
+    const reasons = (sibling: PackageSource, spec: string): string[] | string => {
+      const found = entry(plan([dependent({ "@antelopejs/interface-dms-saas": spec }), sibling]).entries, "dms-saas");
+      return found.status === "release" ? found.reasons : found.status;
+    };
+    assert.deepEqual(reasons(minor, "workspace:^"), [
+      "moves dependencies @antelopejs/interface-dms-saas ^0.10.0 -> ^0.11.0",
+      "moves peerDependencies @antelopejs/interface-dms-saas ^0.10.0 -> ^0.11.0",
+    ]);
+    assert.deepEqual(reasons(minor, "workspace:~"), [
+      "moves dependencies @antelopejs/interface-dms-saas ~0.10.0 -> ~0.11.0",
+      "moves peerDependencies @antelopejs/interface-dms-saas ~0.10.0 -> ~0.11.0",
+    ]);
+    assert.deepEqual(reasons(patch, "workspace:*"), [
+      "moves dependencies @antelopejs/interface-dms-saas 0.10.0 -> 0.10.1",
+      "moves peerDependencies @antelopejs/interface-dms-saas 0.10.0 -> 0.10.1",
+    ]);
+    assert.equal(reasons(patch, "workspace:^"), "unchanged");
+    assert.equal(reasons(patch, "workspace:~"), "unchanged");
+    assert.equal(reasons(quiet, "workspace:*"), "unchanged");
+    assert.equal(reasons(inRepo("interface-dms-saas", "1.2.0", ["feat!: rename the plans"]), "workspace:^"), "unchanged");
+    const found = entry(plan([dependent({ "@antelopejs/interface-dms-saas": "workspace:^" }), minor]).entries, "dms-saas");
+    assert.deepEqual(found.status === "release" && [found.to, found.level], ["0.12.2", "patch"]);
   });
 
   test("refuses a workspace spec on a sibling the plan cannot pack to a version npm holds", () => {

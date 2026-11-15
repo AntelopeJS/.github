@@ -304,6 +304,78 @@ describe("plan", () => {
     assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-moved, only ci commits since 1.0.1\n");
   });
 
+  test("--ref next reads a dependency move a promotion shipped as shipped after a released hotfix moved it again", () => {
+    const rehotfixed = repository("next-rehotfixed", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-rehotfixed", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "chore(deps): move to foo 2 (#2)", { "package.json": manifest("next-rehotfixed", "1.0.0", { dependencies: { foo: "^2.0.0" } }) });
+      const task = commit(path, "fix: read with foo 2 (#2)", { "src/foo.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with foo 2 (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-rehotfixed", "1.0.1", { dependencies: { foo: "^2.0.0" } }) });
+      git(path, "tag", "v1.0.1");
+      commit(path, "fix(deps): move to foo 2.0.1 (#5)", { "package.json": manifest("next-rehotfixed", "1.0.1", { dependencies: { foo: "^2.0.1" } }) });
+      commit(path, "chore(release): v1.0.2", { "package.json": manifest("next-rehotfixed", "1.0.2", { dependencies: { foo: "^2.0.1" } }) });
+      git(path, "tag", "v1.0.2");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-rehotfixed"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", rehotfixed], system), 0);
+    assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-rehotfixed, only ci commits since 1.0.2\n");
+  });
+
+  test("--ref next reads a pin the stable run already rewrote into its range as shipped", () => {
+    const ids = { task: "" };
+    const dependency = repository("next-pinned-dependency", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-pinned-dependency", "1.0.0") });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      ids.task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "feat: add the cursor (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-pinned-dependency", "1.0.1") });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-pinned-dependency"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: ids.task }];
+    });
+    const dependent = repository("next-pin-rewritten", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-pin-rewritten", "2.0.0") });
+      git(path, "tag", "v2.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const pin = { "@antelopejs/next-pinned-dependency": `1.0.1-next.3.g${short(ids.task)}` };
+      const task = commit(path, "fix: read with the cursor (#5)", { "package.json": manifest("next-pin-rewritten", "2.0.0", { dependencies: pin }) });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with the cursor (#6)", {});
+      commit(path, "chore(release): v2.0.1", {
+        "package.json": manifest("next-pin-rewritten", "2.0.1", { dependencies: { "@antelopejs/next-pinned-dependency": ">=1.0.1 <1.1.0" } }),
+      });
+      git(path, "tag", "v2.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#7)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-pin-rewritten"] = [{ number: 6, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, nothing to release",
+        "",
+        "Unchanged: @antelopejs/next-pinned-dependency",
+        "Unchanged: @antelopejs/next-pin-rewritten, only ci commits since 2.0.1",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("--ref next moves a pin to the stable release that shipped the pinned commit through a promotion", () => {
     const ids = { task: "" };
     const dependency = repository("next-shipped", (path) => {

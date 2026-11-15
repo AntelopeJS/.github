@@ -48,6 +48,11 @@ export interface PackageSource {
    * A promotion carries a dependency spec of the branch only when the branch changed it since that base.
    */
   baseManifest: Manifest | null;
+  /**
+   * The manifests at the stable tags of the default branch that the branch read does not hold, such as a promotion's
+   * release and the hotfixes released after it, before the Next sync. A spec one of them holds shipped already.
+   */
+  shippedManifests: Manifest[];
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -275,15 +280,19 @@ function highestLevel(commits: readonly Commit[]): Level | null {
   return null;
 }
 
+function isShipped(source: PackageSource, field: DependencyField, name: string, spec: string | undefined): boolean {
+  const { stableManifest, baseManifest, shippedManifests } = source;
+  return [stableManifest, baseManifest, ...shippedManifests].some((manifest) => manifest !== null && manifest[field]?.[name] === spec);
+}
+
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const { stableManifest: stable, baseManifest: base } = source;
+  const stable = source.stableManifest;
   if (stable === null) return [];
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
-    const forked = (base ?? stable)[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && forked[name] !== after[name])
+      .filter((name) => !Object.hasOwn(ranges, name) && !isShipped(source, field, name, after[name]))
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;
@@ -321,7 +330,27 @@ interface Resolution {
 
 type PinOutcome = { range: string } | { reason: string };
 
-function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): PinOutcome {
+type SiblingOutcome =
+  | {
+      range: string;
+      /** The range packed from the sibling's last stable release when the version the plan gives it falls outside it, else null. */
+      published: string | null;
+    }
+  | { reason: string };
+
+function packedRange(operator: string, version: string): string {
+  return operator === "*" ? version : `${operator}${version}`;
+}
+
+function admits(operator: string, base: string, version: string): boolean {
+  const parts = ({ major, minor, patch }: Version): number[] => [major, minor, patch];
+  const from = parts(requireVersion(base));
+  const to = parts(requireVersion(version));
+  const fixed = operator === "*" ? 3 : operator === "~" ? 2 : from.findIndex((part) => part !== 0) + 1 || 3;
+  return from.slice(0, fixed).every((part, index) => part === to[index]);
+}
+
+function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): SiblingOutcome {
   const range = spec.slice(workspacePrefix.length);
   if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
   const sibling = context.listed.get(name);
@@ -335,7 +364,8 @@ function resolveSibling(source: PackageSource, { name, spec }: Dependency, conte
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  return { range: range === "*" ? version : `${range}${version}` };
+  const published = sibling.stable === null || admits(range, sibling.stable, version) ? null : packedRange(range, sibling.stable);
+  return { range: packedRange(range, version), published };
 }
 
 function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome {
@@ -367,12 +397,17 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const ranges: Record<string, string> = {};
   const kept: KeptPin[] = [];
   const siblings: Sibling[] = [];
+  const moves: string[] = [];
+  const pins: Dependency[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
     const { field, name, spec } = dependency;
     if (field !== "devDependencies" && spec.startsWith(workspacePrefix)) {
       const outcome = resolveSibling(source, dependency, context);
-      if ("range" in outcome) siblings.push({ name, spec, range: outcome.range });
-      else refusals.add(`depends on ${name}@${spec}, ${outcome.reason}`);
+      if ("reason" in outcome) refusals.add(`depends on ${name}@${spec}, ${outcome.reason}`);
+      else {
+        siblings.push({ name, spec, range: outcome.range });
+        if (outcome.published !== null) moves.push(`moves ${field} ${name} ${outcome.published} -> ${outcome.range}`);
+      }
       continue;
     }
     if (field !== "devDependencies" && !isRegistrySpec(spec)) {
@@ -381,8 +416,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     }
     if (!isPreviewSpec(spec)) continue;
     const outcome = resolvePin(dependency, context);
-    if ("range" in outcome) ranges[name] = outcome.range;
-    else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
+    if ("range" in outcome) {
+      ranges[name] = outcome.range;
+      pins.push(dependency);
+    } else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
     else refusals.add(`depends on preview ${name}@${spec}, ${outcome.reason}`);
   }
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
@@ -390,11 +427,11 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const reasons: string[] = [];
   let level = highestLevel([...source.commits, ...source.notes]);
   if (level === null) {
-    reasons.push(...dependencyChanges(source, ranges));
+    reasons.push(...dependencyChanges(source, ranges), ...moves);
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
-    if (Object.keys(ranges).length > 0) reasons.push("replaces preview pins");
+    if (pins.some((pin) => !isShipped(source, pin.field, pin.name, ranges[pin.name]))) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
   }

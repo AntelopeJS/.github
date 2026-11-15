@@ -243,6 +243,12 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   }
   const base = forked?.status === 0 ? forked.stdout.trim() : null;
   const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
+  const unsynced = exec(system, "git", ["-C", repository, "tag", "--merged", releases, "--no-merged", revision]).split("\n").map((line) => line.trim());
+  const shippedManifests = unsynced.flatMap((name) => {
+    const version = pattern.exec(name)?.[1];
+    if (version === undefined || compareCore(version, ceiling) > 0) return [];
+    return readManifest(system, repository, `refs/tags/${name}`, directory, `${where} at ${name}`) ?? [];
+  });
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const shipped = (merged ?? [])
@@ -250,7 +256,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .map((pull) => pull.head);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, shippedManifests, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */
