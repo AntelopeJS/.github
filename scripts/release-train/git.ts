@@ -245,12 +245,6 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   }
   const base = forked?.status === 0 ? forked.stdout.trim() : null;
   const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
-  const unsynced = exec(system, "git", ["-C", repository, "tag", "--merged", releases, "--no-merged", revision]).split("\n").map((line) => line.trim());
-  const shippedManifests = unsynced.flatMap((name) => {
-    const version = pattern.exec(name)?.[1];
-    if (version === undefined || compareCore(version, ceiling) > 0) return [];
-    return readManifest(system, repository, `refs/tags/${name}`, directory, `${where} at ${name}`) ?? [];
-  });
   const stableSiblings = Object.fromEntries(
     siblings.flatMap((inner) => {
       const sibling = tag === null ? null : readManifest(system, repository, tag, inner, `${from.slug}:${posix.join(inner, "package.json")} at ${stable?.tag}`);
@@ -262,9 +256,12 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const shipped = (merged ?? [])
     .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
     .map((pull) => pull.head);
+  const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shipped.filter((sha) => isAncestor(system, repository, sha, revision));
+  const promoted = held.find((sha) => held.every((other) => isAncestor(system, repository, other, sha)));
+  const promotedManifest = promoted === undefined ? null : readManifest(system, repository, promoted, directory, `${where} at ${promoted.slice(0, 7)}`);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, shippedManifests, stableSiblings, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, promotedManifest, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

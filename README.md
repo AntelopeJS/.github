@@ -133,10 +133,10 @@ in dependency order.
   `dependencies`, `peerDependencies` or `optionalDependencies` hold a spec
   that differs from the `package.json` of its last stable tag, which npm
   published, and that the branch changed since it forked from that tag. A
-  branch that holds the tag forked at the tag itself. A spec that a stable
-  tag of the default branch published counts as shipped when the branch does
-  not hold that tag yet, such as a `next` before the Next sync after a
-  promotion and a hotfix. It also gets a patch when a listed sibling's
+  branch that holds the tag forked at the tag itself. When the branch does
+  not hold the tag yet, such as a `next` before the Next sync, a spec it
+  still holds as the head of the last promotion that tag released had it
+  counts as shipped, even after a hotfix moved it again. It also gets a patch when a listed sibling's
   release moves the range a `workspace:` spec packs to outside the range the
   package's own last stable release packed, read from the sibling's
   `package.json` at that tag, such as
@@ -151,9 +151,8 @@ in dependency order.
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The
   dependency must be one of the listed packages. A pin alone makes a patch
-  release, unless a stable tag already published that range in the same
-  field, as when the stable run rewrote the pin and `next` has not merged the
-  release back.
+  release, unless the last promotion already carried the same pin, which the
+  stable run rewrote, and `next` has not merged that release back.
 - A pin moves only to a stable release that holds the pinned code. The last
   part of a preview version, `g<short sha>`, names its commit. A dependency the
   plan releases must contain that commit at the head of the branch the plan

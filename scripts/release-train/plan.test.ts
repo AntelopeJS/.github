@@ -35,7 +35,7 @@ function source(
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
     baseManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
-    shippedManifests: [],
+    promotedManifest: null,
     stableSiblings: {},
     commits,
     notes: commits,
@@ -192,6 +192,20 @@ describe("computePlan", () => {
     assert.equal(reasons(patch, "workspace:~"), "unchanged");
     assert.equal(reasons(quiet, "workspace:*"), "unchanged");
     assert.equal(reasons(inRepo("interface-dms-saas", "1.2.0", ["feat!: rename the plans"]), "workspace:^"), "unchanged");
+    const changed = (stableDependencies: Record<string, string>): string[] | string => {
+      const moved = {
+        ...source("dms-saas", "0.12.1", ["build: move to 0.8"], { dependencies: { "@antelopejs/interface-dms-saas": "workspace:^" } }, { dependencies: stableDependencies }),
+        slug: "AntelopeJS/dms-saas",
+        directory: "packages/dms-saas",
+        stableSiblings: { "@antelopejs/interface-dms-saas": "0.10.0" },
+      };
+      const found = entry(plan([moved, minor]).entries, "dms-saas");
+      return found.status === "release" ? found.reasons : found.status;
+    };
+    assert.deepEqual(changed({}), ["adds dependencies @antelopejs/interface-dms-saas@workspace:^"]);
+    assert.deepEqual(changed({ "@antelopejs/interface-dms-saas": "workspace:~" }), [
+      "moves dependencies @antelopejs/interface-dms-saas workspace:~ -> workspace:^",
+    ]);
     const found = entry(plan([dependent({ "@antelopejs/interface-dms-saas": "workspace:^" }), minor]).entries, "dms-saas");
     assert.deepEqual(found.status === "release" && [found.to, found.level], ["0.12.2", "patch"]);
   });

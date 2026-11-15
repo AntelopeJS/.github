@@ -49,10 +49,11 @@ export interface PackageSource {
    */
   baseManifest: Manifest | null;
   /**
-   * The manifests at the stable tags of the default branch that the branch read does not hold, such as a promotion's
-   * release and the hotfixes released after it, before the Next sync. A spec one of them holds shipped already.
+   * When the branch read does not hold the stable tag, the manifest at the newest head the branch holds of a pull request
+   * that tag released, which is what the last promotion carried. A spec the branch still holds as it was there shipped.
+   * Null otherwise.
    */
-  shippedManifests: Manifest[];
+  promotedManifest: Manifest | null;
   /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
   stableSiblings: Record<string, string>;
   /** The commits on the branch since the stable tag. */
@@ -283,8 +284,8 @@ function highestLevel(commits: readonly Commit[]): Level | null {
 }
 
 function isShipped(source: PackageSource, field: DependencyField, name: string, spec: string | undefined): boolean {
-  const { stableManifest, baseManifest, shippedManifests } = source;
-  return [stableManifest, baseManifest, ...shippedManifests].some((manifest) => manifest !== null && manifest[field]?.[name] === spec);
+  const { stableManifest, baseManifest, promotedManifest } = source;
+  return [stableManifest, baseManifest, promotedManifest].some((manifest) => manifest !== null && manifest[field]?.[name] === spec);
 }
 
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
@@ -352,7 +353,7 @@ function admits(operator: string, base: string, version: string): boolean {
   return from.slice(0, fixed).every((part, index) => part === to[index]);
 }
 
-function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): SiblingOutcome {
+function resolveSibling(source: PackageSource, { field, name, spec }: Dependency, context: Resolution): SiblingOutcome {
   const range = spec.slice(workspacePrefix.length);
   if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
   const sibling = context.listed.get(name);
@@ -366,7 +367,7 @@ function resolveSibling(source: PackageSource, { name, spec }: Dependency, conte
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  const packed = source.stableSiblings[name];
+  const packed = source.stableManifest?.[field]?.[name] === spec ? source.stableSiblings[name] : undefined;
   const published = packed === undefined || admits(range, packed, version) ? null : packedRange(range, packed);
   return { range: packedRange(range, version), published };
 }
@@ -434,7 +435,7 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
-    if (pins.some((pin) => !isShipped(source, pin.field, pin.name, ranges[pin.name]))) reasons.push("replaces preview pins");
+    if (pins.some(({ field, name: pinned, spec }) => source.promotedManifest?.[field]?.[pinned] !== spec)) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
   }

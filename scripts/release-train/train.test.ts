@@ -329,6 +329,81 @@ describe("plan", () => {
     assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-rehotfixed, only ci commits since 1.0.2\n");
   });
 
+  test("--ref next reads a move back to a spec an older promotion shipped as a change", () => {
+    const reverted = repository("next-reverted", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const promote = (spec: string, version: string, number: number): unknown => {
+        git(path, "checkout", "--quiet", "next");
+        commit(path, `chore(deps): move to foo ${spec} (#${number})`, { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: spec } }) });
+        const task = commit(path, `fix: read with foo ${spec} (#${number})`, { [`src/${number}.ts`]: "export {};\n" });
+        git(path, "checkout", "--quiet", "main");
+        git(path, "merge", "--quiet", "--squash", "-X", "theirs", "next");
+        const squash = commit(path, `fix: read with foo ${spec} (#${number + 1})`, {});
+        commit(path, `chore(release): v${version}`, { "package.json": manifest("next-reverted", version, { dependencies: { foo: spec } }) });
+        git(path, "tag", `v${version}`);
+        return { number: number + 1, mergeCommit: { oid: squash }, headRefOid: task };
+      };
+      const first = promote("^1.0.0", "1.0.1", 2);
+      const second = promote("^2.0.0", "1.0.2", 4);
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "chore(deps): go back to foo 1 (#6)", { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-reverted"] = [second, first];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/next-reverted 1.0.2 -> 1.0.3 (patch)  AntelopeJS/next-reverted@${short(tip(reverted, "next"))}`,
+        "     moves dependencies foo ^2.0.0 -> ^1.0.0",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("--ref next replaces a pin whose range only the fork base held, which no stable tag published", () => {
+    const ids = { task: "" };
+    const dependency = repository("next-fork-dependency", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-fork-dependency", "1.0.0") });
+      git(path, "tag", "v1.0.0");
+      ids.task = commit(path, "feat: add the cursor", { "src/cursor.ts": "export {};\n" });
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-fork-dependency", "1.0.1") });
+      git(path, "tag", "v1.0.1");
+    });
+    const dependent = repository("next-fork-pinning", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      git(path, "tag", "v2.0.0");
+      commit(path, "build(deps): move to the dependency 1.0", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": ">=1.0.1 <1.1.0" } }) });
+      git(path, "branch", "next");
+      commit(path, "fix(deps): go back to the dependency 0.9", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      commit(path, "chore(release): v2.0.1", { "package.json": manifest("next-fork-pinning", "2.0.1", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      git(path, "tag", "v2.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "build(deps): pin the dependency preview", {
+        "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": `1.0.1-next.3.g${short(ids.task)}` } }),
+      });
+      git(path, "checkout", "--quiet", "main");
+    });
+    git(dependency, "branch", "next");
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], system), 0);
+    assert.ok(
+      output().includes(
+        [
+          `1. @antelopejs/next-fork-pinning 2.0.1 -> 2.0.2 (patch)  AntelopeJS/next-fork-pinning@${short(tip(dependent, "next"))}`,
+          "     replaces preview pins",
+          `     @antelopejs/next-fork-dependency 1.0.1-next.3.g${short(ids.task)} -> >=1.0.1 <1.1.0`,
+        ].join("\n"),
+      ),
+      output(),
+    );
+  });
+
   test("--ref next reads a pin the stable run already rewrote into its range as shipped", () => {
     const ids = { task: "" };
     const dependency = repository("next-pinned-dependency", (path) => {
