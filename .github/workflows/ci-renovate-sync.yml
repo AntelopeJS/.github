@@ -118,9 +118,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.push.outputs.sha }}
         run: |
+          retry() {
+            for _ in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              sleep 10
+            done
+            return 1
+          }
           run=""
           for _ in $(seq 1 24); do
-            run=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${SHA}&event=workflow_dispatch" --jq '.workflow_runs[0].id // empty')
+            run=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${SHA}&event=workflow_dispatch" --jq '.workflow_runs[0].id // empty' || true)
             if [ -n "$run" ]; then
               break
             fi
@@ -133,17 +142,30 @@ jobs:
           until [ "$(gh api "repos/${GH_REPO}/actions/runs/${run}" --jq '.status' || true)" = completed ]; do
             sleep 30
           done
-          job=$(gh api --paginate "repos/${GH_REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | select(.name | endswith(" / checks")) | [.name, .conclusion, .html_url] | @tsv')
-          if [ -z "$job" ] || [ "$(printf '%s\n' "$job" | wc -l)" != 1 ]; then
-            echo "::error::The dispatched run ${run} has no single job named '<caller job> / checks'."
-            exit 1
-          fi
-          IFS=$'\t' read -r context conclusion url <<< "$job"
-          case "$conclusion" in
-            success | failure) state=$conclusion ;;
-            *) state=error ;;
-          esac
-          if ! gh api -X POST "repos/${GH_REPO}/statuses/${SHA}" -f state="$state" -f context="$context" -f target_url="$url" -f description="${conclusion} in the workflow_dispatch run" > /dev/null; then
-            echo "::error::The sync commit's checks ran, but ${context} could not be reported on it. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant statuses: write."
-            exit 1
-          fi
+          required=$(retry gh api "repos/${GH_REPO}/rules/branches/${BASE_REF}" --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.integration_id == null or .integration_id == 15368) | .context] | unique')
+          retry gh api --paginate "repos/${GH_REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | {name, conclusion, html_url}' > "$RUNNER_TEMP/jobs.json"
+          reports=$(jq -rn --argjson required "$required" --slurpfile jobs "$RUNNER_TEMP/jobs.json" '
+            $required[] as $context
+            | [$jobs[] | select(.name == $context)] as $matches
+            | if ($matches | length) == 1 then [$context, $matches[0].conclusion, $matches[0].html_url] else [$context, "", ""] end
+            | @tsv')
+          missing=0
+          while IFS=$'\t' read -r context conclusion url; do
+            if [ -z "$context" ]; then
+              continue
+            fi
+            if [ -z "$url" ]; then
+              echo "::error::${BASE_REF} requires ${context}, which is not a single job of the dispatched run ${run}."
+              missing=1
+              continue
+            fi
+            case "$conclusion" in
+              success | failure) state=$conclusion ;;
+              *) state=error ;;
+            esac
+            if ! retry gh api -X POST "repos/${GH_REPO}/statuses/${SHA}" -f state="$state" -f context="$context" -f target_url="$url" -f description="${conclusion} in the workflow_dispatch run" > /dev/null; then
+              echo "::error::The sync commit's checks ran, but ${context} could not be reported on it. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant statuses: write."
+              exit 1
+            fi
+          done <<< "$reports"
+          exit "$missing"

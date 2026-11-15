@@ -489,8 +489,10 @@ A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
 `checks` on the new head. A check from a `workflow_dispatch` run does not count
 for the pull request's required status checks, so the job waits for that run and
-reports its `<caller job> / checks` result on the new head as a commit status of
-the same name, which the ruleset counts. When the sync output touches `.github/workflows/**`
+reports, for each status check the base branch's rulesets require from GitHub
+Actions or from any source, the result of the run's job of that name on the new
+head as a commit status of the same name, which the ruleset counts. A required
+check the run has no single job for fails the job. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
 its summary: the pull request stays One-tap. On any other event the job is
 skipped.
