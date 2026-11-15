@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, pulls, repository, short, tip } from "./fixtures.ts";
+import { readSource, resolveRevision } from "./git.ts";
 import { main } from "./train.ts";
 
 describe("plan", () => {
@@ -114,6 +117,30 @@ describe("plan", () => {
     const offline = fakeSystem({}, { down: true });
     assert.equal(main(["plan", promoted], offline.system), 0);
     assert.match(offline.output(), /\(patch\)  \S+\n {5}fix\(io\): retry the reads \(#17\)\n {5}fix: promote next \(#16\)\n$/);
+  });
+
+  test("a blob:none clone keeps the squash commit of a pull request whose head it lacks, and fetches nothing", () => {
+    const ids = { squash: "", head: "" };
+    const remote = repository("partial-remote", (path) => {
+      git(path, "config", "uploadpack.allowFilter", "true");
+      git(path, "config", "uploadpack.allowAnySHA1InWant", "true");
+      commit(path, "feat: first", { "package.json": manifest("partial", "0.1.0") });
+      git(path, "tag", "v0.1.0");
+      git(path, "checkout", "--quiet", "-b", "task");
+      ids.head = commit(path, "fix(io): wip", { "src/io.ts": "export {};\n" });
+      git(path, "update-ref", "refs/pull/7/head", ids.head);
+      git(path, "checkout", "--quiet", "main");
+      git(path, "branch", "--quiet", "-D", "task");
+      ids.squash = commit(path, "fix(io): retry the reads (#7)", { "src/io.ts": "export {};\n" });
+    });
+    const clone = join(dirname(remote), "partial-clone");
+    git(dirname(remote), "clone", "--quiet", "--filter=blob:none", `file://${remote}`, clone);
+    const { system } = fakeSystem();
+    const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
+    const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head }];
+    const source = readSource(system, from, resolveRevision(system, from, null), { directory: ".", nested: [], merged });
+    assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
+    assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
   });
 
   test("moves a pin only when the branch of its dependency holds the preview's commit", () => {

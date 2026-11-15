@@ -134,7 +134,7 @@ function parseCommits(log: string): Commit[] {
 const logFormat = "--format=%H%x1f%s%x1f%b%x1f%an%x1e";
 
 function hasCommit(system: System, repository: string, sha: string): boolean {
-  return system.run("git", ["-C", repository, "cat-file", "-e", `${sha}^{commit}`]).status === 0;
+  return system.run("git", ["-C", repository, "--no-lazy-fetch", "cat-file", "-e", `${sha}^{commit}`]).status === 0;
 }
 
 function cycleNotes(

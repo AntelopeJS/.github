@@ -96,7 +96,8 @@ requests merged into the default branch, for `--ref next` too. A pull request
 merged since the stable tag gives the commits of its head, in place of its
 squash commit. The heads of the pull requests merged before the tag mark where
 the cycle starts. A pull request whose head the checkout lacks, such as a
-person's branch deleted after the merge, keeps its squash commit. Merge commits
+person's branch deleted after the merge, keeps its squash commit. The train
+never fetches a missing head, not even in its partial clone. Merge commits
 and release commits do not count. When `gh` fails, or no pull request was
 merged, the plan lists the branch's commits. The plan then decides each package
 in dependency order.
