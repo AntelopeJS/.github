@@ -115,10 +115,11 @@ for (const { file, text } of workflows) {
       assert.equal(runStep(text, "Refuse preview dependencies", clean).status, 0);
     });
 
-    test("Apply dependency ranges rewrites every field that holds a name and names the commit", () => {
+    test("Apply dependency ranges rewrites only the preview specs of a name and names the commit", () => {
       const directory = packageDirectory(`${file}-ranges`, {
         name: "@antelopejs/x",
-        peerDependencies: { "@antelopejs/core": "0.6.0-next.1.gabc1234" },
+        dependencies: { "@antelopejs/core": "0.6.0-next.1.gabc1234" },
+        peerDependencies: { "@antelopejs/core": ">=0.5.1 <0.6.0" },
         devDependencies: { "@antelopejs/core": "0.6.0-next.1.gabc1234", "@antelopejs/db": "0.5.0-next.2.gabc1234" },
       });
       const ranges = JSON.stringify({ "@antelopejs/core": ">=0.6.0 <0.7.0", "@antelopejs/db": ">=0.5.0 <0.6.0" });
@@ -127,13 +128,17 @@ for (const { file, text } of workflows) {
       assert.equal(applied.outputs, "message=fix(deps): depend on the stable @antelopejs/core and @antelopejs/db\n");
       assert.deepEqual(JSON.parse(readFileSync(join(directory, "package.json"), "utf8")), {
         name: "@antelopejs/x",
-        peerDependencies: { "@antelopejs/core": ">=0.6.0 <0.7.0" },
+        dependencies: { "@antelopejs/core": ">=0.6.0 <0.7.0" },
+        peerDependencies: { "@antelopejs/core": ">=0.5.1 <0.6.0" },
         devDependencies: { "@antelopejs/core": ">=0.6.0 <0.7.0", "@antelopejs/db": ">=0.5.0 <0.6.0" },
       });
       assert.equal(runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: "{}" }).outputs, "");
+      const stable = runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: '{"@antelopejs/core":">=0.7.0 <0.8.0"}' });
+      assert.equal(stable.status, 1);
+      assert.match(stable.stderr, /does not pin to a preview: @antelopejs\/core$/m);
       const absent = runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: '{"@antelopejs/nope":"~1.0.0"}' });
       assert.equal(absent.status, 1);
-      assert.match(absent.stderr, /does not depend on: @antelopejs\/nope/);
+      assert.match(absent.stderr, /does not pin to a preview: @antelopejs\/nope$/m);
     });
 
     test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {

@@ -282,15 +282,15 @@ jobs:
           const names = Object.keys(ranges)
           if (names.length === 0) process.exit(0)
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const missing = names.filter((name) => !fields.some((field) => Object.hasOwn(pkg[field] ?? {}, name)))
+          const previewFields = (name) =>
+            fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && /\d+\.\d+\.\d+-/.test(pkg[field][name]))
+          const missing = names.filter((name) => previewFields(name).length === 0)
           if (missing.length) {
-            console.error(`dependency-ranges names packages that package.json does not depend on: ${missing.join(', ')}`)
+            console.error(`dependency-ranges names packages that package.json does not pin to a preview: ${missing.join(', ')}`)
             process.exit(1)
           }
           for (const name of names) {
-            for (const field of fields) {
-              if (Object.hasOwn(pkg[field] ?? {}, name)) pkg[field][name] = ranges[name]
-            }
+            for (const field of previewFields(name)) pkg[field][name] = ranges[name]
           }
           fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`)
           const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
