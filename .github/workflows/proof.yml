@@ -14,3 +14,4 @@ jobs:
       renovate-sync: false
       test-job: true
       skill-eval-offline: false
+      windows-pull-requests: true
