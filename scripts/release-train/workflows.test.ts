@@ -277,6 +277,45 @@ for (const { file, text } of workflows) {
       assert.deepEqual([published.status, published.outputs], [0, ""]);
     });
 
+    test("Resolve release version publishes no preview when only the version and the changelog changed", () => {
+      const repository = join(root, `${file}-back-merge`);
+      const directory = join(repository, "packages", "x");
+      mkdirSync(directory, { recursive: true });
+      git(repository, "init", "--quiet");
+      const step = (files: Record<string, string>): string => {
+        for (const [path, content] of Object.entries(files)) writeFileSync(join(directory, path), content);
+        git(repository, "add", "--all");
+        git(repository, "commit", "--quiet", "-m", "x");
+        return git(repository, "rev-parse", "HEAD");
+      };
+      const manifest = (version: string, range = ">=1.8.6 <1.9.0") =>
+        `${JSON.stringify({ name: "@antelopejs/x", version, dependencies: { "@antelopejs/mongodb": range } }, null, 2)}\n`;
+      const preview = step({ "package.json": manifest("0.4.2"), "index.js": "x\n" });
+      const release = step({ "package.json": manifest("0.4.3"), "CHANGELOG.md": "# Changelog\n\n## v0.4.3\n" });
+      const range = step({ "package.json": manifest("0.4.4", ">=1.8.7 <1.9.0") });
+      const source = step({ "index.js": "y\n" });
+      const custom = step({ "changelogen.config.json": '{ "output": "./HISTORY.md" }\n' });
+      const customRelease = step({ "package.json": manifest("0.4.5", ">=1.8.7 <1.9.0"), "HISTORY.md": "## v0.4.5\n" });
+      const resolve = (previous: string, sha: string) => {
+        git(repository, "checkout", "--quiet", "--detach", sha);
+        return runStep(text, "Resolve release version", directory, {
+          PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+          MODE: "preview",
+          GITHUB_SHA: sha,
+          FAKE_NEXT_HEAD: previous,
+          FAKE_LATEST: "0.4.3",
+          FAKE_PUBLISHED: "",
+        });
+      };
+      const skipped = resolve(preview, release);
+      assert.deepEqual([skipped.status, skipped.outputs], [0, ""], skipped.stderr);
+      assert.equal(skipped.stdout, "::notice::@antelopejs/x ships nothing new since its last preview, so it gets no new one.\n");
+      assert.match(resolve(release, range).outputs, /^version=0\.4\.4-next\.\d+\.g[0-9a-f]{7}\n$/);
+      assert.match(resolve(range, source).outputs, /^version=0\.4\.4-next\./);
+      assert.equal(resolve(custom, customRelease).outputs, "");
+      assert.match(resolve(source, customRelease).outputs, /^version=0\.4\.4-next\./);
+    });
+
     test("Resolve release version refuses a stable version that changes the major or does not move forward", () => {
       const stable = (release: string, latest: string) =>
         runStep(text, "Resolve release version", packagePath, {

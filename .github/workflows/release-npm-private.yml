@@ -12,7 +12,7 @@ on:
         default: ""
         type: string
       release-notes:
-        description: Changelog section a workflow_dispatch run writes and publishes as the GitHub release notes; the release train renders it
+        description: Changelog section a workflow_dispatch run writes, rendered by the release train
         default: ""
         type: string
       dependency-ranges:
@@ -249,12 +249,26 @@ jobs:
         run: |
           set -euo pipefail
           name=$(node -p "require('./package.json').name")
+          previous=""
           if [ "$MODE" = preview ]; then
             previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
-            if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && git diff --quiet "$previous" "$GITHUB_SHA" -- .; then
-              echo "::notice::$name did not change since its last preview, so it gets no new one."
-              exit 0
-            fi
+          fi
+          if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const fs = require('node:fs')
+          const { isDeepStrictEqual } = require('node:util')
+          const { PREVIOUS, GITHUB_SHA } = process.env
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' })
+          const { output } = fs.existsSync('changelogen.config.json') ? require('./changelogen.config.json') : {}
+          const changelog = (typeof output === 'string' ? output : 'CHANGELOG.md').replace(/^\.\//, '')
+          const shipped = (revision) => ({ ...JSON.parse(git('show', `${revision}:./package.json`)), version: null })
+          const ships = (file) => file !== changelog && (file !== 'package.json' || !isDeepStrictEqual(shipped(PREVIOUS), shipped(GITHUB_SHA)))
+          const changed = git('diff', '--name-only', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
+          process.exit(changed.some(ships) ? 1 : 0)
+          NODE
+          then
+            echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
+            exit 0
           fi
           if latest=$(npm view "$name" version 2>"$RUNNER_TEMP/npm-view.log"); then
             :
@@ -388,18 +402,15 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('node:fs')
-          const path = require('node:path')
           const { execFileSync } = require('node:child_process')
-          const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
-          const notes = path.join(process.env.RUNNER_TEMP, 'release-notes.md')
+          const readJson = (file) => (fs.existsSync(file) ? require(`./${file}`) : {})
+          const notes = `${process.env.RUNNER_TEMP}/release-notes.md`
           fs.writeFileSync(notes, process.env.RELEASE_NOTES)
           const { output } = readJson('changelogen.config.json')
           const changelog = typeof output === 'string' ? output : 'CHANGELOG.md'
-          const existing = fs.existsSync(changelog) ? fs.readFileSync(changelog, 'utf8') : ''
-          const text = existing.trim() === '' ? '# Changelog\n' : existing
+          const text = fs.existsSync(changelog) ? fs.readFileSync(changelog, 'utf8') : '# Changelog\n'
           const section = `## v${process.env.RELEASE_VERSION}\n\n${process.env.RELEASE_NOTES}\n\n`
           const entry = /^###?\s/m.exec(text)
-          fs.mkdirSync(path.dirname(changelog), { recursive: true })
           fs.writeFileSync(changelog, entry ? text.slice(0, entry.index) + section + text.slice(entry.index) : `${text.trimEnd()}\n\n${section}`)
           execFileSync('git', ['add', '--', changelog])
           const config = readJson('.release-it.json')
@@ -407,7 +418,7 @@ jobs:
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'release-it.json'), `${JSON.stringify(config, null, 2)}\n`)
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-it.json`, `${JSON.stringify(config, null, 2)}\n`)
           NODE
 
       - name: Publish preview
