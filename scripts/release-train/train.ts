@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
+import { openCheckout, readSource, resolveRevision, workspacePackages, type Checkout, type Revision, type Target } from "./git.ts";
 import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
 import { computePlan, renderPlan, type Holder, type PackageSource, type Plan, type Release } from "./plan.ts";
 import type { System } from "./system.ts";
@@ -76,12 +76,21 @@ function buildPlan(command: Command, system: System): Plan {
   const sources: PackageSource[] = [];
   const places = new Map<string, { from: Checkout; revision: Revision; releases: Revision; source: PackageSource }>();
   const checkouts = new Map<string, Checkout>();
-  const pulls = mergedPulls(system);
-  for (const target of command.targets) {
+  const checkoutOf = (target: Target): Checkout => {
     const from = checkouts.get(location(target)) ?? openCheckout(target, system);
     checkouts.set(location(target), from);
+    return from;
+  };
+  const targets = command.targets.flatMap((target) => {
+    const from = checkoutOf(target);
+    const packages = workspacePackages(system, from, resolveRevision(system, from, command.ref), target.directory);
+    return packages === null ? [target] : packages.map((directory) => ({ ...target, directory }));
+  });
+  const pulls = mergedPulls(system);
+  for (const target of targets) {
+    const from = checkoutOf(target);
     const revision = resolveRevision(system, from, command.ref);
-    const nested = command.targets
+    const nested = targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
     const releases = resolveRevision(system, from, null);

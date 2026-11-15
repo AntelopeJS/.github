@@ -76,13 +76,15 @@ node scripts/release-train/train.ts plan AntelopeJS/interface-database AntelopeJ
 node scripts/release-train/train.ts plan --ref next AntelopeJS/interface-database AntelopeJS/mongodb
 node scripts/release-train/train.ts plan --exclude @antelopejs/mongodb AntelopeJS/interface-database AntelopeJS/mongodb
 node scripts/release-train/train.ts go AntelopeJS/interface-database AntelopeJS/mongodb AntelopeJS/dms-database
-node scripts/release-train/train.ts plan AntelopeJS/dms-saas:packages/interface-dms-saas AntelopeJS/dms-saas:packages/dms-saas
+node scripts/release-train/train.ts plan AntelopeJS/dms-saas
 ```
 
 A package is `owner/repo` or a path to a git checkout, followed by
 `:<directory>` when the package is not at the repository root. A workspace
-root that holds no versioned `package.json` is not a package: list each of its
-packages with its directory. The train clones
+root whose `package.json` has no name or version is not a package. The train
+reads it as every directory under it that holds a `package.json` beside a
+`.release-it.json`, such as `packages/dms-saas` and
+`packages/interface-dms-saas` for `AntelopeJS/dms-saas`. The train clones
 each `owner/repo` into `~/.cache/antelopejs-release-train` with blobs on demand
 and fetches it again on the next run. It reads a local checkout as it is.
 

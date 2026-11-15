@@ -41,6 +41,62 @@ describe("plan", () => {
     );
   });
 
+  test("reads a workspace root that is no package through each released package under it, in dependency order", () => {
+    const workspace = repository("workspace-root", (path) => {
+      commit(path, "feat: first", {
+        "package.json": { name: "workspace-root", private: true },
+        "packages/interface-x/package.json": manifest("interface-x", "0.10.0"),
+        "packages/interface-x/.release-it.json": { git: { tagName: "interface-v${version}" } },
+        "packages/x/package.json": manifest("x", "0.12.1", { dependencies: { "@antelopejs/interface-x": "workspace:^" } }),
+        "packages/x/.release-it.json": {},
+        "packages/x/frontend-vue/package.json": { name: "frontend", private: true },
+      });
+      git(path, "tag", "interface-v0.10.0");
+      git(path, "tag", "v0.12.1");
+      commit(path, "fix(x): close the feed", { "packages/x/index.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "feat(interface)!: rename the plans", { "packages/interface-x/index.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+    });
+    git(workspace, "update-ref", "refs/remotes/origin/next", "next");
+    const at = (branch: string): string => short(tip(workspace, branch));
+    const onMain = fakeSystem();
+    assert.equal(main(["plan", workspace], onMain.system), 0, onMain.errors());
+    assert.equal(
+      onMain.output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/x 0.12.1 -> 0.12.2 (patch)  AntelopeJS/workspace-root:packages/x@${at("main")}`,
+        "     fix(x): close the feed",
+        "     @antelopejs/interface-x workspace:^ -> ^0.10.0",
+        "Unchanged: @antelopejs/interface-x",
+        "",
+      ].join("\n"),
+    );
+    const next = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", workspace], next.system), 0, next.errors());
+    assert.equal(
+      next.output(),
+      [
+        "Release plan from next, 2 packages: 2 to release",
+        "",
+        `1. @antelopejs/interface-x 0.10.0 -> 0.11.0 (minor)  AntelopeJS/workspace-root:packages/interface-x@${at("next")}`,
+        "     feat(interface)!: rename the plans",
+        `2. @antelopejs/x 0.12.1 -> 0.12.2 (patch)  AntelopeJS/workspace-root:packages/x@${at("next")}`,
+        "     fix(x): close the feed",
+        "     @antelopejs/interface-x workspace:^ -> ^0.11.0",
+        "",
+      ].join("\n"),
+    );
+    const bare = repository("workspace-empty", (path) => {
+      commit(path, "feat: first", { "package.json": { name: "workspace-empty", private: true } });
+    });
+    const stopped = fakeSystem();
+    assert.equal(main(["plan", bare], stopped.system), 1);
+    assert.equal(stopped.errors(), "AntelopeJS/workspace-empty:package.json has no name or version.\n");
+  });
+
   test("a tag above the version of package.json on the default branch is never the stable release", () => {
     const accidental = repository("accidental-major", (path) => {
       commit(path, "feat: first", { "package.json": manifest("accidental-major", "1.24.0") });
