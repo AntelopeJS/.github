@@ -98,9 +98,8 @@ the default branch.
 
 ## Shared CI and maintenance workflows
 
-Repositories call `ci-node.yml` and `stale.yml` through the same moving `v1`
-tag as the [release workflows](#reusable-release-workflows), so the same
-backward-compatibility rule applies. Call Node CI on the triggers its
+Repositories call `ci-node.yml` and `stale.yml` through the same `v2` tag as
+the [release workflows](#reusable-release-workflows). Call Node CI on the triggers its
 [tiers](README.md#node-ci) read, with the [Renovate sync](README.md#renovate-sync)
 in its own job so that only that job, and only on Renovate pull requests, holds
 a write token:
@@ -125,7 +124,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
     with:
       renovate-sync: false
   renovate-sync:
@@ -136,7 +135,7 @@ jobs:
     permissions:
       contents: write
       actions: write
-    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
 ```
 
 Libraries (published npm packages) pass `node-versions` listing every major
@@ -148,7 +147,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
     with:
       renovate-sync: false
       node-versions: '[22, 24]'
@@ -175,7 +174,7 @@ jobs:
       actions: write
       issues: write
       pull-requests: write
-    uses: AntelopeJS/.github/.github/workflows/stale.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/stale.yml@v2
 ```
 
 A repository with a [`next` branch](README.md#next-branch) calls
@@ -194,7 +193,7 @@ jobs:
   next-sync:
     permissions:
       issues: write
-    uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v2
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -223,21 +222,9 @@ Repositories call the reusable workflows of this repository,
 `release-npm-public.yml` or `release-npm-private.yml`, from their own
 `release.yml`. See the [caller workflow](README.md#caller-workflow).
 
-`v1` is a moving tag. After each merge that changes these workflows, it is
-re-pointed to the latest `main` commit, so every repository picks up the change
-without editing its own workflow. Changes released under `v1` must therefore be
-backward compatible. A breaking change, such as a new required input or a
-removed input, needs a new `v2` tag, and repositories move to it explicitly.
-A changed input default stays on `v1` only when every caller that the new
-default would break passes the old value before `v1` is re-pointed.
-
-The preview and release train interface is such a breaking change. It removes
-the `channel` and `services-compose-file` inputs and adds `release-commit`.
-`v1` keeps the previous interface and never moves to it. The pilot
-repositories call both workflows at `@main`. Once one change has gone the
-whole path, from a push to `next` through a preview to a stable release by the
-release train, the new interface gets the `v2` tag, and `antelopejs-sync`
-writes callers at `@v2`.
+Repositories call the shared workflows at the `v2` tag, which moves to each
+merge on `main` that changes them. `v1` stays frozen for the repositories that
+have not synced yet, and is deleted once the rollout is done.
 
 ### Working on `next`
 

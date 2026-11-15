@@ -338,8 +338,7 @@ not at its root also declares a `package-directory` input in
 `workflow_dispatch`, because the release train passes it, and forwards it with
 `package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
 
-Callers use `@v2`. `v1` keeps the previous interface. Until the `v2` tag exists,
-the pilot repositories call `@main`.
+Callers use `@v2`. `v1` keeps the previous interface.
 
 ## Node CI
 
@@ -470,7 +469,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
     with:
       renovate-sync: false
   renovate-sync:
@@ -481,7 +480,7 @@ jobs:
     permissions:
       contents: write
       actions: write
-    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v1
+    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
 ```
 
 A sync failure then shows on `renovate-sync / Renovate sync` rather than on
