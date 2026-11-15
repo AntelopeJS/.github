@@ -127,8 +127,14 @@ export function workspacePackages(system: System, { repository }: Checkout, { na
 function packedVersion(system: System, repository: string, revision: string, directory: string): [string, string][] {
   const file = posix.join(directory, "package.json");
   if (exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim() === "") return [];
-  const value: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
-  return isRecord(value) && typeof value.name === "string" && typeof value.version === "string" ? [[value.name, value.version]] : [];
+  let value: unknown;
+  try {
+    value = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
+  } catch {
+    return [];
+  }
+  if (!isRecord(value) || typeof value.name !== "string" || typeof value.version !== "string" || parseVersion(value.version) === null) return [];
+  return [[value.name, value.version]];
 }
 
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
@@ -259,7 +265,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .map((pull) => pull.head);
   const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shipped.filter((sha) => isAncestor(system, repository, sha, revision));
   const promoted = held.find((sha) => held.every((other) => isAncestor(system, repository, other, sha)));
-  const base = promoted !== undefined && (forkPoint === null || !isAncestor(system, repository, promoted, forkPoint)) ? promoted : forkPoint;
+  const base = promoted !== undefined && (forkPoint === null || isAncestor(system, repository, forkPoint, promoted)) ? promoted : forkPoint;
   const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);

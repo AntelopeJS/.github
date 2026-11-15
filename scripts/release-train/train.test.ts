@@ -497,6 +497,56 @@ describe("plan", () => {
     );
   });
 
+  test("--ref next reads a move back to the last promotion's spec, after the Next sync brought a later hotfix, as a change", () => {
+    const synced = repository("next-partly-synced", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const task = commit(path, "chore(deps): move to foo 1 (#2)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "chore(deps): move to foo 1 (#3)", {});
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "chore(deps): move to foo 1.1 (#4)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.1.0" } }) });
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+      commit(path, "chore(deps): go back to foo 1.0 (#5)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-partly-synced", "1.0.1", { dependencies: { foo: "^1.1.0" } }) });
+      git(path, "tag", "v1.0.1");
+      pulls["AntelopeJS/next-partly-synced"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", synced], system), 0);
+    assert.ok(
+      output().includes(`1. @antelopejs/next-partly-synced 1.0.1 -> 1.0.2 (patch)  AntelopeJS/next-partly-synced@${short(tip(synced, "next"))}\n     moves dependencies foo ^1.1.0 -> ^1.0.0\n`),
+      output(),
+    );
+  });
+
+  test("a sibling whose package.json at the stable tag is no JSON or holds no semver version blocks no plan", () => {
+    for (const [name, broken] of [["unparsed", "{ not json\n"], ["unversioned", manifest("unversioned-sibling", "0.10")]] as const) {
+      const workspace = repository(`workspace-${name}-sibling`, (path) => {
+        commit(path, "feat: first", {
+          "package.json": { name: `workspace-${name}-sibling`, private: true },
+          "packages/a/package.json": broken,
+          "packages/a/.release-it.json": { git: { tagName: "a-v${version}" } },
+          "packages/b/package.json": manifest(`${name}-dependent`, "0.12.1", { dependencies: { [`@antelopejs/${name}-sibling`]: "workspace:^" } }),
+          "packages/b/.release-it.json": { git: { tagName: "b-v${version}" } },
+        });
+        git(path, "tag", "b-v0.12.1");
+        commit(path, "fix(a): repair the manifest", { "packages/a/package.json": manifest(`${name}-sibling`, "0.10.0") });
+        git(path, "tag", "a-v0.10.0");
+        commit(path, "fix(b): patch", { "packages/b/index.ts": "export {};\n" });
+      });
+      const { system, output, errors } = fakeSystem();
+      assert.equal(main(["plan", workspace], system), 0, errors());
+      assert.ok(output().includes(`1. @antelopejs/${name}-dependent 0.12.1 -> 0.12.2 (patch)`), output());
+    }
+  });
+
   test("a sibling whose package.json at the stable tag names no version blocks no plan", () => {
     const workspace = repository("workspace-unversioned", (path) => {
       commit(path, "feat: first", {

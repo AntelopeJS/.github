@@ -135,8 +135,8 @@ in dependency order.
   published, and that the branch changed since it forked from that tag. A
   branch that holds the tag forked at the tag itself. A branch that does not
   hold the tag yet, such as a `next` before the Next sync, forked at the head
-  of the last promotion that tag released when that head is newer than the
-  merge base, since the promotion squash-merged the branch as it was there.
+  of the last promotion that tag released when that head contains the merge
+  base, since the promotion squash-merged the branch as it was there.
   So a spec `next` still holds as that promotion carried it is no change,
   even after a hotfix moved it again. It also gets a patch when a listed sibling's
   release moves the range a `workspace:` spec packs to outside the range the

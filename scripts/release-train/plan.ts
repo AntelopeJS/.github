@@ -45,7 +45,7 @@ export interface PackageSource {
   stableManifest: Manifest | null;
   /**
    * The manifest at the merge base of the stable tag and the branch read, which is the tag itself when the branch holds it.
-   * When the branch does not hold the tag, the head of the last promotion that tag released replaces a merge base older than it,
+   * When the branch does not hold the tag, the head of the last promotion that tag released replaces a merge base it contains,
    * since a promotion squash-merges the branch as it was there.
    * A promotion carries a dependency spec of the branch only when the branch changed it since that base.
    */
