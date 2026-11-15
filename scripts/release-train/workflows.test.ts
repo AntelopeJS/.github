@@ -545,7 +545,7 @@ for (const { file, text } of workflows) {
         peerDependencies: { "@antelopejs/interface-x": "workspace:*" },
       };
       commitFiles(seed, "feat: first", {
-        ".gitignore": "node_modules\n",
+        ".gitignore": "node_modules\npnpm-lock.yaml\n",
         "package.json": JSON.stringify({ name: "workspace", private: true }),
         "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
         "packages/interface-x/package.json": JSON.stringify({ name: "@antelopejs/interface-x", version: "0.11.0" }),
