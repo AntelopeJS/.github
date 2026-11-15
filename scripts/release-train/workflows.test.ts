@@ -152,19 +152,22 @@ for (const { file, text } of workflows) {
     });
 
     test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {
-      const mode = (event: string, ref: string, version = "", commit = head) =>
+      const mode = (event: string, ref: string, version = "", commit = head, notes = "### 🩹 Fixes") =>
         runStep(text, "Resolve release mode", root, {
           GITHUB_EVENT_NAME: event,
           GITHUB_REF: ref,
           DEFAULT_BRANCH: "main",
           RELEASE_VERSION: version,
           RELEASE_COMMIT: commit,
+          RELEASE_NOTES: notes,
         });
       assert.equal(mode("push", "refs/heads/next").outputs, "mode=preview\n");
-      assert.equal(mode("push", "refs/heads/next", "", "").outputs, "mode=preview\n");
+      assert.equal(mode("push", "refs/heads/next", "", "", "").outputs, "mode=preview\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
+      const notes = mode("workflow_dispatch", "refs/heads/main", "0.5.0", head, "");
+      assert.deepEqual([notes.status, notes.stderr], [1, "A stable release needs release-notes, the changelog section the release train renders.\n"]);
       assert.equal(mode("workflow_dispatch", "refs/heads/main").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
@@ -181,6 +184,75 @@ for (const { file, text } of workflows) {
       assert.equal(
         moved.stderr,
         `main moved since the plan: HEAD is ${head}, the plan released ${firstCommit}. Run the release train again.\n`,
+      );
+    });
+
+    test("Write release notes puts the train's section on top of the changelog and points release-it at it", () => {
+      const notes = "[compare changes](https://github.com/AntelopeJS/x/compare/v0.4.2...v0.5.0)\n\n### 🩹 Fixes\n\n- Close the feed";
+      const section = `## v0.5.0\n\n${notes}\n\n`;
+      const write = (name: string, files: Record<string, string>) => {
+        const directory = join(root, `${file}-${name}`);
+        mkdirSync(join(directory, "docs"), { recursive: true });
+        git(directory, "init", "--quiet");
+        for (const [path, content] of Object.entries(files)) writeFileSync(join(directory, path), content);
+        const result = runStep(text, "Write release notes", directory, { RELEASE_NOTES: notes, RELEASE_VERSION: "0.5.0" });
+        assert.equal(result.status, 0, result.stderr);
+        const read = (path: string): string => readFileSync(join(directory, path), "utf8");
+        const config: unknown = JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
+        return { read, staged: git(directory, "diff", "--cached", "--name-only"), config };
+      };
+      const existing = write("existing", {
+        "CHANGELOG.md": "# Changelog\n\n## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n",
+        ".release-it.json": JSON.stringify({
+          git: { tagName: "v${version}", requireCommits: true },
+          github: { release: true },
+          plugins: { "release-it-changelogen": { disableVersion: true }, "@release-it/bumper": {} },
+        }),
+      });
+      assert.equal(existing.read("CHANGELOG.md"), `# Changelog\n\n${section}## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n`);
+      assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), notes);
+      assert.deepEqual(existing.config, {
+        git: { tagName: "v${version}", requireCommits: true, requireCleanWorkingDir: false },
+        github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+        plugins: { "@release-it/bumper": {} },
+      });
+
+      const fresh = write("fresh", {});
+      assert.equal(fresh.read("CHANGELOG.md"), `# Changelog\n\n${section}`);
+      assert.equal(fresh.staged, "CHANGELOG.md");
+      assert.deepEqual(fresh.config, {
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+      });
+
+      const custom = write("custom", {
+        "changelogen.config.json": JSON.stringify({ output: "docs/CHANGES.md" }),
+        "docs/CHANGES.md": "# Changes\n",
+        ".release-it.json": JSON.stringify({ plugins: { "release-it-changelogen": {} } }),
+      });
+      assert.equal(custom.read("docs/CHANGES.md"), `# Changes\n\n${section}`);
+      assert.equal(custom.staged, "docs/CHANGES.md");
+      assert.deepEqual(custom.config, {
+        git: { requireCleanWorkingDir: false },
+        github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
+      });
+    });
+
+    test("Publish stable release runs release-it with the written config", () => {
+      const bin = join(root, `${file}-pnpm`);
+      mkdirSync(bin);
+      writeFileSync(join(bin, "pnpm"), '#!/bin/sh\necho "$@"\n');
+      chmodSync(join(bin, "pnpm"), 0o755);
+      const published = runStep(text, "Publish stable release", checkout, {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        RELEASE_VERSION: "0.5.0",
+        GITHUB_TOKEN: "token",
+        GITHUB_REF_NAME: "main",
+      });
+      assert.equal(published.status, 0, published.stderr);
+      assert.equal(
+        published.stdout,
+        `exec release-it --config ${join(root, "release-it.json")} --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
       );
     });
 

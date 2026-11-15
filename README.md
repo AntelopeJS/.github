@@ -175,6 +175,7 @@ A stable run then does the following.
 | `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. A preview ignores it. |
 | `release-commit` | `""` | Commit SHA a `workflow_dispatch` run releases, 40 hexadecimal characters. The release train sets it to the commit it planned. A stable run fails when the branch moved past it. A preview ignores it. |
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
+| `release-notes` | `""` | Markdown changelog section a `workflow_dispatch` run writes into the changelog and publishes as the GitHub release notes. The release train renders it from the commits of the cycle. A stable run fails without it. A preview ignores it. |
 | `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
 
@@ -192,7 +193,7 @@ different groups, so a queued preview never cancels a pending stable release.
 ### Caller workflow
 
 The caller is the `release.yml` of the repository. It needs both triggers and
-passes both inputs:
+passes the inputs the release train sets:
 
 ```yaml
 name: Release
@@ -216,6 +217,10 @@ on:
         required: false
         default: "{}"
         type: string
+      release-notes:
+        description: Changelog section of the release, set by the release train
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -228,6 +233,7 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
+      release-notes: ${{ inputs.release-notes }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
 ```
@@ -494,6 +500,7 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
+      release-notes: ${{ inputs.release-notes }}
       package-directory: packages/dms-automation
     secrets: inherit
 ```

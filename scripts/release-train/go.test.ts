@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { commit, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, tip } from "./fixtures.ts";
+import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, releaseNotes, repository, short, tip } from "./fixtures.ts";
 import { main } from "./train.ts";
 
 describe("go", () => {
@@ -15,6 +15,23 @@ describe("go", () => {
       ["AntelopeJS/dms", "release-version=0.11.2", `release-commit=${tip(dms)}`, "dependency-ranges={}", "package-directory=packages/automation"],
     ]);
     assert.ok(calls.filter((args) => args[0] === "workflow").every((args) => args[6] === "main"));
+    const notes = releaseNotes(calls);
+    assert.equal(
+      notes["AntelopeJS/mongodb"],
+      [
+        "[compare changes](https://github.com/AntelopeJS/mongodb/compare/v1.8.6...v1.8.7)",
+        "",
+        "### 🩹 Fixes",
+        "",
+        `- **database:** Close the change feed ([${short(commits.feed)}](https://github.com/AntelopeJS/mongodb/commit/${commits.feed}))`,
+        "- **deps:** Depend on the stable @antelopejs/interface-database",
+        "",
+        "### ❤️ Contributors",
+        "",
+        "- Test",
+      ].join("\n"),
+    );
+    assert.match(notes["AntelopeJS/dms"] ?? "", /^\[compare changes\]\(https:\/\/github\.com\/AntelopeJS\/dms\/compare\/v0\.11\.1\.\.\.v0\.11\.2\)\n\n### 🔥 Performance\n/);
     assert.equal(
       output(),
       `${expectedPlan()}published @antelopejs/interface-database 0.5.0  https://github.com/AntelopeJS/interface-database/actions/runs/100\n` +

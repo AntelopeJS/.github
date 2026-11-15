@@ -154,10 +154,20 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: { down?
   return { system, calls, sleeps, output: () => out, errors: () => err };
 }
 
-export function dispatches(calls: string[][]): string[][] {
+function fields(calls: string[][]): string[][] {
   return calls
     .filter((args) => args[0] === "workflow")
     .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
+}
+
+export function dispatches(calls: string[][]): string[][] {
+  return fields(calls).map((values) => values.filter((value) => !value.startsWith("release-notes=")));
+}
+
+export function releaseNotes(calls: string[][]): Record<string, string> {
+  return Object.fromEntries(
+    fields(calls).map(([repo = "", ...values]) => [repo, values.find((value) => value.startsWith("release-notes="))?.slice(14) ?? ""]),
+  );
 }
 
 export function tip(repository: string, branch = "main"): string {

@@ -19,6 +19,10 @@ on:
         required: false
         default: "{}"
         type: string
+      release-notes:
+        description: Changelog section of the release, set by the release train
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -31,5 +35,6 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
+      release-notes: ${{ inputs.release-notes }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}

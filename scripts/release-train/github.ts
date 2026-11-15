@@ -1,5 +1,5 @@
 import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
-import type { Entry } from "./plan.ts";
+import { renderReleaseNotes, type Release } from "./plan.ts";
 import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
@@ -68,7 +68,7 @@ function awaitRun(system: System, slug: string, id: number): RunOutcome {
 }
 
 /** Dispatches the `release.yml` run of a release entry and waits until the train knows how it ended. */
-export function releaseRun(system: System, entry: Extract<Entry, { status: "release" }>): RunOutcome {
+export function releaseRun(system: System, entry: Release): RunOutcome {
   const { slug, directory, branch, head } = entry.source;
   const before = listRuns(system, slug);
   if (before === null) return { kind: "failed", detail: `gh run list --repo ${slug} failed, so nothing was dispatched` };
@@ -78,6 +78,7 @@ export function releaseRun(system: System, entry: Extract<Entry, { status: "rele
     "-f", `release-version=${entry.to}`,
     "-f", `release-commit=${head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
+    "-f", `release-notes=${renderReleaseNotes(entry)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
   ]);
   if (dispatched.status !== 0) {

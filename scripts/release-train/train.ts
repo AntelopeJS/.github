@@ -4,7 +4,7 @@ import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
 import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
-import { computePlan, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
+import { computePlan, renderPlan, type PackageSource, type Plan, type Release } from "./plan.ts";
 import type { System } from "./system.ts";
 
 interface Command {
@@ -102,8 +102,6 @@ function buildPlan(command: Command, system: System): Plan {
   };
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
-
-type Release = Extract<Entry, { status: "release" }>;
 
 function label(entry: Release): string {
   return `${entry.source.manifest.name} ${entry.to}`;

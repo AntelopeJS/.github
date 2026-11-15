@@ -11,6 +11,10 @@ on:
         description: Commit SHA a workflow_dispatch run releases; the run fails when the branch moved past it
         default: ""
         type: string
+      release-notes:
+        description: Changelog section a workflow_dispatch run writes and publishes as the GitHub release notes; the release train renders it
+        default: ""
+        type: string
       dependency-ranges:
         description: JSON object mapping each dependency name to the stable range that replaces its preview pin
         default: "{}"
@@ -47,6 +51,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release-version }}
           RELEASE_COMMIT: ${{ inputs.release-commit }}
+          RELEASE_NOTES: ${{ inputs.release-notes }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
@@ -58,6 +63,10 @@ jobs:
             }
             [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
               echo "A stable release needs release-commit as the 40-character SHA of the planned commit, got '$RELEASE_COMMIT'." >&2
+              exit 1
+            }
+            [ -n "$RELEASE_NOTES" ] || {
+              echo "A stable release needs release-notes, the changelog section the release train renders." >&2
               exit 1
             }
             echo "mode=stable" >> "$GITHUB_OUTPUT"
@@ -359,6 +368,37 @@ jobs:
           git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
           git commit --quiet -m "$MESSAGE"
 
+      - name: Write release notes
+        if: steps.mode.outputs.mode == 'stable'
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          RELEASE_NOTES: ${{ inputs.release-notes }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const { execFileSync } = require('node:child_process')
+          const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
+          const notes = path.join(process.env.RUNNER_TEMP, 'release-notes.md')
+          fs.writeFileSync(notes, process.env.RELEASE_NOTES)
+          const { output } = readJson('changelogen.config.json')
+          const changelog = typeof output === 'string' ? output : 'CHANGELOG.md'
+          const existing = fs.existsSync(changelog) ? fs.readFileSync(changelog, 'utf8') : ''
+          const text = existing.trim() === '' ? '# Changelog\n' : existing
+          const section = `## v${process.env.RELEASE_VERSION}\n\n${process.env.RELEASE_NOTES}\n\n`
+          const entry = /^###?\s/m.exec(text)
+          fs.mkdirSync(path.dirname(changelog), { recursive: true })
+          fs.writeFileSync(changelog, entry ? text.slice(0, entry.index) + section + text.slice(entry.index) : `${text.trimEnd()}\n\n${section}`)
+          execFileSync('git', ['add', '--', changelog])
+          const config = readJson('.release-it.json')
+          delete config.plugins?.['release-it-changelogen']
+          if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
+          config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
+          config.git = { ...config.git, requireCleanWorkingDir: false }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'release-it.json'), `${JSON.stringify(config, null, 2)}\n`)
+          NODE
+
       - name: Publish preview
         if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
         working-directory: ${{ inputs.package-directory }}
@@ -380,16 +420,4 @@ jobs:
           trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
 
           prerelease_tags='*.*.*-*'
-          args=(--ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION")
-          tag_match=$(node <<'NODE'
-          const fs = require('node:fs')
-          const config = fs.existsSync('.release-it.json') ? JSON.parse(fs.readFileSync('.release-it.json', 'utf8')) : {}
-          const git = config.git ?? {}
-          console.log((git.tagMatch || git.tagName || 'v${version}').replace('${version}', '*'))
-          NODE
-          )
-          stable_tag=$(git describe --tags --abbrev=0 --match "$tag_match" --exclude "$prerelease_tags" 2>/dev/null || true)
-          if [ -n "$stable_tag" ]; then
-            args+=("--plugins.release-it-changelogen.from=$stable_tag")
-          fi
-          pnpm exec release-it "${args[@]}"
+          pnpm exec release-it --config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION"
