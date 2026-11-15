@@ -178,6 +178,28 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/stale.yml@v1
 ```
 
+A repository with a [`next` branch](README.md#next-branch) calls
+`next-sync.yml` on each push to `main`. The job must grant `issues: write`,
+which the sync uses to open and close the conflict issue when no `NOTION_TOKEN`
+secret exists:
+
+```yaml
+name: Next sync
+on:
+  push:
+    branches:
+      - main
+permissions: {}
+jobs:
+  next-sync:
+    permissions:
+      issues: write
+    uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v1
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+```
+
 Use the shared Renovate preset in `renovate.json5`:
 
 ```json
@@ -234,42 +256,45 @@ change is ready to release.
 
 If consumers need a published build to test it, open a prerelease cycle:
 
-1. Create `next` from `main` if it does not exist yet.
+1. If the repository has no `next`, set it up with
+   `scripts/next-branch-setup.sh` of this repository.
 2. Open the pull request against `next` instead of `main`.
 3. After merging, run the Release workflow on `next` with the `next` channel.
 4. Consumers install `@antelopejs/<package>@next`.
 
 Prerelease commits are named `release: v1.9.0-next.0` instead of
 `chore(release): v1.9.0-next.0`. `release` is not a changelog type, so these
-commits never show up in a changelog, in particular not in the stable changelog
-that later covers the whole cycle. Stable releases keep
+commits never show up in a changelog. Stable releases keep
 `chore(release): v1.9.0`.
 
 ### Stable fixes during a prerelease cycle
 
 1. Open the fix against `main` and release it on the `latest` channel.
-2. Rebase `next` onto `main` so the cycle includes the fix:
-
-   ```sh
-   git switch next
-   git fetch origin
-   git rebase origin/main
-   git push --force-with-lease
-   ```
-
-   On conflicts in the `package.json` version or at the top of `CHANGELOG.md`,
+2. The Next sync workflow merges `main` into `next`, so the cycle includes the
+   fix. When the merge conflicts, it files a task in the Inbox, or opens an
+   issue when the repository has no `NOTION_TOKEN` secret. A repository
+   admin merges `origin/main` into `next`, resolves the conflicts and pushes
+   the merge commit straight to `next`, not through a pull request, which
+   would squash it and bring the same conflict back. On conflicts in the
+   `package.json` version or at the top of `CHANGELOG.md`,
    keep the `next` side.
 
 ### Promoting `next` to stable
 
-1. Open a pull request from `next` to `main` and merge it with **Rebase and
-   merge**, so the cycle's commits land on `main` individually.
+1. Open a pull request from `next` to `main` and merge it with **Squash and
+   merge**. The Next sync workflow then merges `main` back into `next`.
 2. Run the Release workflow on `main` with the `latest` channel.
-3. Delete the `next` branch.
 
-Stable releases ignore prerelease tags. The stable changelog therefore covers
-every commit since the previous stable release, not just those since the last
-`-next` tag. When `package.json` holds a prerelease such as `1.9.0-next.4`, the
-stable release is pinned to its base version, `1.9.0`, even if the cycle
-contains breaking commits. Choose the right major or minor version when
-opening the cycle.
+`next` stays: the `next history` ruleset forbids deleting it and
+force-pushing to it.
+
+The squash commit is the only commit of the cycle on `main`, so the stable
+release reads its type and its body alone. Title the pull request with the
+highest change type of the cycle, `feat!:` when it holds a breaking change,
+then `feat:`, then `fix:`, and keep the list of the cycle's commits that
+GitHub puts in the squash commit body.
+
+Stable releases ignore prerelease tags. When `package.json` holds a prerelease
+such as `1.9.0-next.4`, the stable release is pinned to its base version,
+`1.9.0`, even if the cycle contains breaking commits. Choose the right major
+or minor version when opening the cycle.
