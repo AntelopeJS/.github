@@ -32,6 +32,7 @@ export type Manifest = { name: string; version: string } & Partial<
 export interface PackageSource {
   slug: string;
   directory: string;
+  branch: string;
   manifest: Manifest;
   stable: string | null;
   commits: Commit[];
@@ -62,7 +63,7 @@ export interface Plan {
 export interface PlanOptions {
   ref: string;
   exclude: readonly string[];
-  latestStable: (name: string) => string | null;
+  contains: (name: string, sha: string) => boolean;
 }
 
 interface Version {
@@ -75,7 +76,7 @@ interface Version {
 const versionPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const previewPattern = /\d+\.\d+\.\d+-/;
-const exactPreviewPattern = /^(\d+\.\d+\.\d+)-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/;
+const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\([^()]*\))?(!)?: \S/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "docs", "build", "types", "revert"]);
@@ -188,34 +189,42 @@ function highestLevel(commits: readonly Commit[]): Level | null {
   return null;
 }
 
-function resolveEntry(
-  source: PackageSource,
-  resolved: ReadonlyMap<string, Entry>,
-  latestStable: (name: string) => string | null,
-): Entry {
+interface Resolution {
+  listed: ReadonlyMap<string, PackageSource>;
+  exclude: ReadonlySet<string>;
+  resolved: ReadonlyMap<string, Entry>;
+  contains: (name: string, sha: string) => boolean;
+}
+
+type PinOutcome = { range: string } | { reason: string };
+
+function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome {
+  const version = parseVersion(spec);
+  if (version === null) return { reason: "which is not an exact version" };
+  const sha = commitIdentifierPattern.exec(version.prerelease?.split(".").at(-1) ?? "")?.[1];
+  if (sha === undefined) return { reason: "which names no commit" };
+  const dependency = context.listed.get(name);
+  if (dependency === undefined) return { reason: "which this train does not list" };
+  if (context.exclude.has(name)) return { reason: "which is not in this release" };
+  const planned = context.resolved.get(name);
+  if (planned === undefined) return { reason: "which releases after it" };
+  if (planned.status === "refused") return { reason: "which is refused" };
+  const target = planned.status === "release" ? planned.to : dependency.stable;
+  if (target === null) return { reason: "which has no stable release" };
+  const base = `${version.major}.${version.minor}.${version.patch}`;
+  if (compareCore(target, base) < 0) return { reason: `whose stable ${target} is older than ${base}` };
+  if (!context.contains(name, sha)) return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  return { range: stableRange(target) };
+}
+
+function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const refusals = new Set<string>();
   const ranges: Record<string, string> = {};
-  for (const { name, spec } of dependenciesOf(source.manifest)) {
-    if (!isPreviewSpec(spec)) continue;
-    const label = `depends on preview ${name}@${spec}`;
-    const base = exactPreviewPattern.exec(spec)?.[1];
-    const planned = resolved.get(name);
-    if (base === undefined) {
-      refusals.add(`${label}, which is not an exact version`);
-    } else if (planned?.status === "excluded") {
-      refusals.add(`${label}, which is not in this release`);
-    } else if (planned?.status === "refused") {
-      refusals.add(`${label}, which is refused`);
-    } else {
-      const target = planned?.status === "release" ? planned.to : latestStable(name);
-      if (target === null) {
-        refusals.add(`${label}, which has no stable release`);
-      } else if (compareCore(target, base) < 0) {
-        refusals.add(`${label}, whose stable ${target} is older than ${base}`);
-      } else {
-        ranges[name] = stableRange(target);
-      }
-    }
+  for (const dependency of dependenciesOf(source.manifest)) {
+    if (!isPreviewSpec(dependency.spec)) continue;
+    const outcome = resolvePin(dependency, context);
+    if ("range" in outcome) ranges[dependency.name] = outcome.range;
+    else refusals.add(`depends on preview ${dependency.name}@${dependency.spec}, ${outcome.reason}`);
   }
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
 
@@ -237,6 +246,8 @@ function resolveEntry(
 export function computePlan(sources: readonly PackageSource[], options: PlanOptions): Plan {
   const exclude = new Set(options.exclude);
   const resolved = new Map<string, Entry>();
+  const listed = new Map(sources.map((source) => [source.manifest.name, source]));
+  const context: Resolution = { listed, exclude, resolved, contains: options.contains };
   for (const component of components(sources)) {
     const names = component.map((source) => source.manifest.name);
     for (const source of component) {
@@ -249,7 +260,7 @@ export function computePlan(sources: readonly PackageSource[], options: PlanOpti
               source,
               reasons: [`is in a dependency cycle between ${names.join(", ")}`],
             }
-          : resolveEntry(source, resolved, options.latestStable);
+          : resolveEntry(source, context);
       resolved.set(name, entry);
     }
   }

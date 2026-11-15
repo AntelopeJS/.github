@@ -23,14 +23,15 @@ function source(
   return {
     slug: `AntelopeJS/${name}`,
     directory: ".",
+    branch: "main",
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
     commits: subjects.map((subject) => commit(subject)),
   };
 }
 
-function plan(sources: PackageSource[], exclude: string[] = [], npm: Record<string, string> = {}) {
-  return computePlan(sources, { ref: "main", exclude, latestStable: (name) => npm[name] ?? null });
+function plan(sources: PackageSource[], exclude: string[] = [], contains = (_name: string, _sha: string) => true) {
+  return computePlan(sources, { ref: "main", exclude, contains });
 }
 
 function entry(entries: Entry[], name: string): Entry {
@@ -111,10 +112,10 @@ describe("computePlan", () => {
     assert.equal(dms.status === "release" && dms.ranges["@antelopejs/mongodb"], ">=1.8.7 <1.9.0");
   });
 
-  test("a pin on an unlisted package moves to its latest stable", () => {
-    const pinned = source("dms", "0.20.2", [], { dependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234" } });
-    const { entries } = plan([pinned], [], { "@antelopejs/x": "0.2.1" });
-    assert.deepEqual(entry(entries, "dms"), {
+  test("a pin on an unchanged package moves to its stable release", () => {
+    const x = source("x", "0.2.1", ["chore: tidy"]);
+    const pinned = source("dms", "0.20.2", [], { dependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" } });
+    assert.deepEqual(entry(plan([pinned, x]).entries, "dms"), {
       status: "release",
       source: pinned,
       from: "0.20.2",
@@ -125,7 +126,7 @@ describe("computePlan", () => {
     });
   });
 
-  test("refuses a package whose preview dependency is left out or has no stable release", () => {
+  test("refuses a package whose preview dependency is left out, unlisted or has no stable release", () => {
     const excluded = plan([interfaceDatabase, mongodb], ["@antelopejs/interface-database"]).entries;
     assert.equal(entry(excluded, "interface-database").status, "excluded");
     assert.deepEqual(entry(excluded, "mongodb"), {
@@ -134,24 +135,48 @@ describe("computePlan", () => {
       reasons: ["depends on preview @antelopejs/interface-database@0.5.0-next.12.g3f9a2c1, which is not in this release"],
     });
 
-    const pinned = source("dms", "0.20.2", ["fix: x"], { peerDependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234" } });
-    assert.deepEqual(entry(plan([pinned]).entries, "dms"), {
+    const x = source("x", null, []);
+    const pinned = source("dms", "0.20.2", ["fix: x"], {
+      peerDependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234", "@antelopejs/y": "0.1.0-next.1.gabc1234" },
+    });
+    assert.deepEqual(entry(plan([pinned, x]).entries, "dms"), {
       status: "refused",
       source: pinned,
-      reasons: ["depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release"],
+      reasons: [
+        "depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release",
+        "depends on preview @antelopejs/y@0.1.0-next.1.gabc1234, which this train does not list",
+      ],
     });
   });
 
-  test("refuses a pin whose stable is older than the preview, or that is not exact", () => {
+  test("refuses a pin whose stable is older than the preview, that is not exact or that names no commit", () => {
     const pinned = source("dms", "0.20.2", ["fix: x"], {
-      dependencies: { "@antelopejs/x": "0.3.0-next.1.gabc1234" },
+      dependencies: { "@antelopejs/x": "0.3.0-next.1.gabc1234", "@antelopejs/z": "0.2.9-beta.1" },
       optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
     });
-    const refused = entry(plan([pinned], [], { "@antelopejs/x": "0.2.9", "@antelopejs/y": "0.1.0" }).entries, "dms");
+    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", [])];
+    const refused = entry(plan([pinned, ...listed]).entries, "dms");
     assert.deepEqual(refused.status === "refused" && refused.reasons, [
       "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
+      "depends on preview @antelopejs/z@0.2.9-beta.1, which names no commit",
       "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
     ]);
+  });
+
+  test("moves a pin only to a stable release whose branch contains the preview's commit", () => {
+    const found = new Set(["@antelopejs/interface-database 3f9a2c1"]);
+    const contains = (name: string, sha: string) => found.has(`${name} ${sha}`);
+    const missing = source("dms-database", "0.5.3", ["fix: x"], {
+      dependencies: { "@antelopejs/mongodb": "1.8.7-next.40.gabc1234" },
+    });
+    const { entries } = plan([interfaceDatabase, mongodb, missing], [], contains);
+    const mongo = entry(entries, "mongodb");
+    assert.equal(mongo.status === "release" && mongo.ranges["@antelopejs/interface-database"], ">=0.5.0 <0.6.0");
+    assert.deepEqual(entry(entries, "dms-database"), {
+      status: "refused",
+      source: missing,
+      reasons: ["depends on preview @antelopejs/mongodb@1.8.7-next.40.gabc1234, whose main does not contain commit abc1234"],
+    });
   });
 
   test("a refusal cascades to every package pinning a preview of the refused one", () => {
@@ -219,7 +244,7 @@ describe("renderPlan", () => {
         "     fix(database): close the change feed",
         "     @antelopejs/interface-database 0.5.0-next.12.g3f9a2c1 -> >=0.5.0 <0.6.0",
         "3. @antelopejs/dms-database refused  AntelopeJS/dms-database",
-        "     depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release",
+        "     depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which this train does not list",
         "4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation",
         "     perf: faster",
         "Unchanged: @antelopejs/foo",

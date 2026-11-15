@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { openCheckout, readSource, resolveRevision, type Checkout, type Target } from "./git.ts";
-import { awaitRun, dispatch } from "./github.ts";
-import { computePlan, parseVersion, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
+import { openCheckout, readSource, resolveRevision, type Checkout, type Revision, type Target } from "./git.ts";
+import { awaitRun, commitSearch, dispatch } from "./github.ts";
+import { computePlan, renderPlan, type Entry, type PackageSource, type Plan } from "./plan.ts";
 import type { System } from "./system.ts";
 
 interface Command {
@@ -64,18 +64,6 @@ function parseCommand(argv: readonly string[]): Command {
   };
 }
 
-function npmLatest(system: System): (name: string) => string | null {
-  const cache = new Map<string, string | null>();
-  return (name) => {
-    if (!cache.has(name)) {
-      const result = system.run("npm", ["view", name, "version"]);
-      const version = result.stdout.trim();
-      cache.set(name, result.status === 0 && parseVersion(version)?.prerelease === null ? version : null);
-    }
-    return cache.get(name) ?? null;
-  };
-}
-
 function location(target: Target): string {
   return target.kind === "slug" ? target.slug : target.path;
 }
@@ -84,8 +72,8 @@ function isInside(outer: string, inner: string): boolean {
   return inner !== outer && (outer === "." || inner.startsWith(`${outer}/`));
 }
 
-function buildPlan(command: Command, system: System): { plan: Plan; branches: Map<PackageSource, string> } {
-  const branches = new Map<PackageSource, string>();
+function buildPlan(command: Command, system: System): Plan {
+  const places = new Map<PackageSource, { from: Checkout; revision: Revision }>();
   const checkouts = new Map<string, Checkout>();
   for (const target of command.targets) {
     const from = checkouts.get(location(target)) ?? openCheckout(target, system);
@@ -94,28 +82,33 @@ function buildPlan(command: Command, system: System): { plan: Plan; branches: Ma
     const nested = command.targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
-    branches.set(readSource(system, from, revision.name, target.directory, nested), revision.branch);
+    places.set(readSource(system, from, revision, target.directory, nested), { from, revision });
   }
-  const names = [...branches.keys()].map((source) => source.manifest.name);
+  const sources = [...places.keys()];
+  const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicate !== undefined) throw new Error(`${duplicate} is listed twice.`);
   const unknown = command.exclude.find((name) => !names.includes(name));
   if (unknown !== undefined) throw new Error(`--exclude ${unknown} names no listed package.`);
-  const ref = command.ref ?? [...new Set(branches.values())].join(", ");
-  const plan = computePlan([...branches.keys()], { ref, exclude: command.exclude, latestStable: npmLatest(system) });
-  return { plan, branches };
+  const ref = command.ref ?? [...new Set(sources.map((source) => source.branch))].join(", ");
+  const search = commitSearch(system);
+  const contains = (name: string, sha: string): boolean => {
+    const place = [...places].find(([source]) => source.manifest.name === name)?.[1];
+    return place !== undefined && search(place.from, place.revision, sha);
+  };
+  return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
 
 function label(entry: Extract<Entry, { status: "release" }>): string {
   return `${entry.source.manifest.name} ${entry.to}`;
 }
 
-function go(plan: Plan, branches: ReadonlyMap<PackageSource, string>, system: System): number {
+function go(plan: Plan, system: System): number {
   const releases = plan.entries.filter((entry) => entry.status === "release");
   for (const [position, entry] of releases.entries()) {
     let failure: string;
     try {
-      const id = dispatch(system, entry, branches.get(entry.source) ?? "");
+      const id = dispatch(system, entry);
       const { conclusion, url } = awaitRun(system, entry.source.slug, id);
       if (conclusion === "success") {
         system.out(`published ${label(entry)}  ${url}\n`);
@@ -144,9 +137,9 @@ function go(plan: Plan, branches: ReadonlyMap<PackageSource, string>, system: Sy
 export function main(argv: readonly string[], system: System): number {
   try {
     const command = parseCommand(argv);
-    const { plan, branches } = buildPlan(command, system);
+    const plan = buildPlan(command, system);
     system.out(renderPlan(plan));
-    return command.action === "go" ? go(plan, branches, system) : 0;
+    return command.action === "go" ? go(plan, system) : 0;
   } catch (error) {
     system.err(error instanceof Error ? error.message : String(error));
     return 1;

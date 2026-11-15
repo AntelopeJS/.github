@@ -119,7 +119,7 @@ function parseCommits(log: string): Commit[] {
 export function readSource(
   system: System,
   from: Checkout,
-  revision: string,
+  { branch, name: revision }: Revision,
   directory: string,
   nested: readonly string[],
 ): PackageSource {
@@ -138,5 +138,10 @@ export function readSource(
   const range = stable === null ? revision : `refs/tags/${stable.tag}..${revision}`;
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const log = exec(system, "git", ["-C", repository, "log", "--format=%H%x1f%s%x1f%b%x1e", range, "--", ...paths]);
-  return { slug: from.slug, directory, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
+  return { slug: from.slug, directory, branch, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
+}
+
+/** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */
+export function isAncestor(system: System, repository: string, ancestor: string, descendant: string): boolean {
+  return system.run("git", ["-C", repository, "merge-base", "--is-ancestor", ancestor, descendant]).status === 0;
 }
