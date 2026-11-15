@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, interfaceDatabase, mongodb } from "./fixtures.ts";
+import { commit, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, tip } from "./fixtures.ts";
 import { main } from "./train.ts";
 
 describe("go", () => {
@@ -9,10 +9,10 @@ describe("go", () => {
     const status = main(["go", dmsDatabase, mongodb, interfaceDatabase, `${dms}:packages/automation`], system);
     assert.equal(status, 0);
     assert.deepEqual(dispatches(calls), [
-      ["AntelopeJS/interface-database", "release-version=0.5.0", "dependency-ranges={}"],
-      ["AntelopeJS/mongodb", "release-version=1.8.7", 'dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}'],
-      ["AntelopeJS/dms-database", "release-version=0.5.4", 'dependency-ranges={"@antelopejs/mongodb":">=1.8.7 <1.9.0"}'],
-      ["AntelopeJS/dms", "release-version=0.11.2", "dependency-ranges={}", "package-directory=packages/automation"],
+      ["AntelopeJS/interface-database", "release-version=0.5.0", `release-commit=${tip(interfaceDatabase)}`, "dependency-ranges={}"],
+      ["AntelopeJS/mongodb", "release-version=1.8.7", `release-commit=${tip(mongodb)}`, 'dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}'],
+      ["AntelopeJS/dms-database", "release-version=0.5.4", `release-commit=${tip(dmsDatabase)}`, 'dependency-ranges={"@antelopejs/mongodb":">=1.8.7 <1.9.0"}'],
+      ["AntelopeJS/dms", "release-version=0.11.2", `release-commit=${tip(dms)}`, "dependency-ranges={}", "package-directory=packages/automation"],
     ]);
     assert.ok(calls.filter((args) => args[0] === "workflow").every((args) => args[6] === "main"));
     assert.equal(
@@ -52,6 +52,33 @@ describe("go", () => {
       ["AntelopeJS/interface-database"],
     );
     assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
+  });
+
+  test("stops before a second package of a repository that an earlier release of the run changed", () => {
+    const workspace = repository("go-workspace", (path) => {
+      commit(path, "feat: first", {
+        "package.json": manifest("go-root", "1.0.0", { dependencies: { "@antelopejs/go-inner": ">=0.2.0 <0.3.0" } }),
+        "packages/inner/package.json": manifest("go-inner", "0.2.0"),
+        "packages/inner/.release-it.json": { git: { tagName: "inner-v${version}" } },
+      });
+      git(path, "tag", "v1.0.0");
+      git(path, "tag", "inner-v0.2.0");
+      commit(path, "fix(inner): trim the input", { "packages/inner/index.ts": "export {};\n" });
+      commit(path, "fix: log the start", { "index.ts": "export {};\n" });
+    });
+    const { system, calls, errors } = fakeSystem();
+    assert.equal(main(["go", workspace, `${workspace}:packages/inner`], system), 1);
+    assert.deepEqual(dispatches(calls).map((args) => args.at(-1)), ["package-directory=packages/inner"]);
+    assert.equal(
+      errors(),
+      [
+        "failed @antelopejs/go-root 1.0.1 AntelopeJS/go-workspace moved with the release of @antelopejs/go-inner 0.2.1, so its plan is stale.",
+        "Published: @antelopejs/go-inner 0.2.1.",
+        "Not published: @antelopejs/go-root 1.0.1.",
+        "Fix the failure, then run go again to continue.",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("refuses --ref and dispatches nothing", () => {

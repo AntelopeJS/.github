@@ -136,9 +136,10 @@ export function readSource(
     }
   }
   const range = stable === null ? revision : `refs/tags/${stable.tag}..${revision}`;
+  const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const log = exec(system, "git", ["-C", repository, "log", "--format=%H%x1f%s%x1f%b%x1e", range, "--", ...paths]);
-  return { slug: from.slug, directory, branch, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
+  return { slug: from.slug, directory, branch, head, manifest, stable: stable?.version ?? null, commits: parseCommits(log) };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

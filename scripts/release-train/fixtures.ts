@@ -148,6 +148,10 @@ export function dispatches(calls: string[][]): string[][] {
     .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
 }
 
+export function tip(repository: string, branch = "main"): string {
+  return git(repository, "rev-parse", branch);
+}
+
 export function short(sha: string): string {
   return sha.slice(0, 7);
 }
@@ -155,15 +159,15 @@ export function short(sha: string): string {
 export const expectedPlan = (): string => [
   "Release plan from main, 4 packages: 4 to release",
   "",
-  "1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database",
+  `1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database@${short(tip(interfaceDatabase))}`,
   "     feat(query)!: drop the legacy cursor",
-  "2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb",
+  `2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb@${short(tip(mongodb))}`,
   "     fix(database): close the change feed (#7)",
   `     @antelopejs/interface-database 0.4.3-next.12.g${short(commits.cursor)} -> >=0.5.0 <0.6.0`,
-  "3. @antelopejs/dms-database 0.5.3 -> 0.5.4 (patch)  AntelopeJS/dms-database",
+  `3. @antelopejs/dms-database 0.5.3 -> 0.5.4 (patch)  AntelopeJS/dms-database@${short(tip(dmsDatabase))}`,
   "     replaces preview pins",
   `     @antelopejs/mongodb 1.8.7-next.40.g${short(commits.feed)} -> >=1.8.7 <1.9.0`,
-  "4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation",
+  `4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation@${short(tip(dms))}`,
   "     perf(automation): faster",
   "",
 ].join("\n");

@@ -126,6 +126,7 @@ A stable run then does the following.
 | Input | Default | Description |
 | ----- | ------- | ----------- |
 | `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. A preview ignores it. |
+| `release-commit` | `""` | Commit SHA a `workflow_dispatch` run releases, 40 hexadecimal characters. The release train sets it to the commit it planned. A stable run fails when the branch moved past it. A preview ignores it. |
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
 | `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
@@ -159,6 +160,10 @@ on:
         description: Stable version to release, set by the release train
         required: false
         type: string
+      release-commit:
+        description: Commit SHA to release, set by the release train
+        required: false
+        type: string
       dependency-ranges:
         description: JSON object of stable ranges that replace preview pins, set by the release train
         required: false
@@ -174,6 +179,7 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
     with:
       release-version: ${{ inputs.release-version }}
+      release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
@@ -396,6 +402,7 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@main
     with:
       release-version: ${{ inputs.release-version }}
+      release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
       package-directory: packages/dms-automation
     secrets: inherit

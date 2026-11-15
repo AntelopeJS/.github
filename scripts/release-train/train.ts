@@ -99,32 +99,38 @@ function buildPlan(command: Command, system: System): Plan {
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
 
-function label(entry: Extract<Entry, { status: "release" }>): string {
+type Release = Extract<Entry, { status: "release" }>;
+
+function label(entry: Release): string {
   return `${entry.source.manifest.name} ${entry.to}`;
+}
+
+function release(system: System, entry: Release, earlier: Release | undefined): { url: string } | { failure: string } {
+  if (earlier !== undefined) {
+    return { failure: `${entry.source.slug} moved with the release of ${label(earlier)}, so its plan is stale.` };
+  }
+  try {
+    const { conclusion, url } = awaitRun(system, entry.source.slug, dispatch(system, entry));
+    return conclusion === "success" ? { url } : { failure: `(${conclusion})  ${url}` };
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function go(plan: Plan, system: System): number {
   const releases = plan.entries.filter((entry) => entry.status === "release");
   for (const [position, entry] of releases.entries()) {
-    let failure: string;
-    try {
-      const id = dispatch(system, entry);
-      const { conclusion, url } = awaitRun(system, entry.source.slug, id);
-      if (conclusion === "success") {
-        system.out(`published ${label(entry)}  ${url}\n`);
-        continue;
-      }
-      failure = `(${conclusion})  ${url}`;
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
+    const published = releases.slice(0, position);
+    const outcome = release(system, entry, published.find((other) => other.source.slug === entry.source.slug));
+    if ("url" in outcome) {
+      system.out(`published ${label(entry)}  ${outcome.url}\n`);
+      continue;
     }
-    const published = releases.slice(0, position).map(label);
-    const left = releases.slice(position).map(label);
     system.err(
       [
-        `failed ${label(entry)} ${failure}`,
-        `Published: ${published.length === 0 ? "nothing" : published.join(", ")}.`,
-        `Not published: ${left.join(", ")}.`,
+        `failed ${label(entry)} ${outcome.failure}`,
+        `Published: ${published.length === 0 ? "nothing" : published.map(label).join(", ")}.`,
+        `Not published: ${releases.slice(position).map(label).join(", ")}.`,
         "Fix the failure, then run go again to continue.",
       ].join("\n"),
     );

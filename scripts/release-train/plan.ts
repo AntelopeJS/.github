@@ -33,6 +33,7 @@ export interface PackageSource {
   slug: string;
   directory: string;
   branch: string;
+  head: string;
   manifest: Manifest;
   stable: string | null;
   commits: Commit[];
@@ -291,7 +292,8 @@ export function computePlan(sources: readonly PackageSource[], options: PlanOpti
 }
 
 function location(source: PackageSource): string {
-  return source.directory === "." ? source.slug : `${source.slug}:${source.directory}`;
+  const place = source.directory === "." ? source.slug : `${source.slug}:${source.directory}`;
+  return `${place}@${source.head.slice(0, 7)}`;
 }
 
 function plural(count: number, word: string): string {

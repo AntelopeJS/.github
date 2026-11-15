@@ -152,20 +152,36 @@ for (const { file, text } of workflows) {
     });
 
     test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {
-      const mode = (event: string, ref: string, version = "") =>
+      const mode = (event: string, ref: string, version = "", commit = head) =>
         runStep(text, "Resolve release mode", root, {
           GITHUB_EVENT_NAME: event,
           GITHUB_REF: ref,
           DEFAULT_BRANCH: "main",
           RELEASE_VERSION: version,
+          RELEASE_COMMIT: commit,
         });
       assert.equal(mode("push", "refs/heads/next").outputs, "mode=preview\n");
+      assert.equal(mode("push", "refs/heads/next", "", "").outputs, "mode=preview\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
+      assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
+      assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
       assert.equal(mode("push", "refs/heads/main").status, 1);
       assert.equal(mode("push", "refs/tags/v1.0.0").status, 1);
+    });
+
+    test("Check the planned commit refuses a branch that moved since the plan", () => {
+      const check = (commit: string) =>
+        runStep(text, "Check the planned commit", checkout, { RELEASE_COMMIT: commit, GITHUB_REF_NAME: "main" });
+      assert.equal(check(head).status, 0);
+      const moved = check(firstCommit);
+      assert.equal(moved.status, 1);
+      assert.equal(
+        moved.stderr,
+        `main moved since the plan: HEAD is ${head}, the plan released ${firstCommit}. Run the release train again.\n`,
+      );
     });
 
     test("Resolve release version derives the preview from npm latest and skips what needs no publish", () => {
@@ -206,3 +222,10 @@ for (const { file, text } of workflows) {
     });
   });
 }
+
+test("the README caller example is the starter workflow", () => {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const section = readme.slice(readme.indexOf("### Caller workflow"));
+  const example = /```yaml\n([\s\S]*?)```/.exec(section)?.[1];
+  assert.equal(example, readFileSync(new URL("../../workflow-templates/npm-release.yml", import.meta.url), "utf8"));
+});

@@ -30,6 +30,7 @@ export function dispatch(system: System, entry: Extract<Entry, { status: "releas
   exec(system, "gh", [
     "workflow", "run", "release.yml", "--repo", slug, "--ref", branch,
     "-f", `release-version=${entry.to}`,
+    "-f", `release-commit=${entry.source.head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),
   ]);

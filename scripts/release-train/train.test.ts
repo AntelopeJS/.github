@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short } from "./fixtures.ts";
+import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short, tip } from "./fixtures.ts";
 import { main } from "./train.ts";
 
 describe("plan", () => {
@@ -21,7 +21,7 @@ describe("plan", () => {
       [
         "Release plan from main, 1 package: 1 refused",
         "",
-        "1. @antelopejs/mongodb refused  AntelopeJS/mongodb",
+        `1. @antelopejs/mongodb refused  AntelopeJS/mongodb@${short(tip(mongodb))}`,
         `     depends on preview @antelopejs/interface-database@0.4.3-next.12.g${short(commits.cursor)}, which is not in this release`,
         "Unchanged: @antelopejs/dms-database",
         "Not now: @antelopejs/interface-database",
@@ -48,7 +48,7 @@ describe("plan", () => {
       [
         "Release plan from main, 1 package: 1 to release",
         "",
-        "1. @antelopejs/inner 0.2.0 -> 0.2.1 (patch)  AntelopeJS/workspace:packages/inner",
+        `1. @antelopejs/inner 0.2.0 -> 0.2.1 (patch)  AntelopeJS/workspace:packages/inner@${short(tip(workspace))}`,
         "     fix(inner): trim the input",
         "Unchanged: @antelopejs/workspace",
         "",
@@ -64,7 +64,7 @@ describe("plan", () => {
       [
         "Release plan from next, 1 package: 1 to release",
         "",
-        "1. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb",
+        `1. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb@${short(tip(mongodb, "next"))}`,
         "     fix(database): retry the change feed",
         "     fix(database): close the change feed",
         "",

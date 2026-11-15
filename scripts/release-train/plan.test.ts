@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
 import {
   commitLevel,
@@ -24,6 +25,7 @@ function source(
     slug: `AntelopeJS/${name}`,
     directory: ".",
     branch: "main",
+    head: createHash("sha1").update(name).digest("hex"),
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
     commits: subjects.map((subject) => commit(subject)),
@@ -32,6 +34,10 @@ function source(
 
 function plan(sources: PackageSource[], exclude: string[] = [], contains = (_name: string, _sha: string) => true) {
   return computePlan(sources, { ref: "main", exclude, contains });
+}
+
+function at(name: string): string {
+  return createHash("sha1").update(name).digest("hex").slice(0, 7);
 }
 
 function entry(entries: Entry[], name: string): Entry {
@@ -240,11 +246,11 @@ describe("computePlan", () => {
       [
         "Release plan from main, 2 packages: 2 to release",
         "",
-        "1. @antelopejs/b 0.1.0 -> 0.1.1 (patch)  AntelopeJS/b",
+        `1. @antelopejs/b 0.1.0 -> 0.1.1 (patch)  AntelopeJS/b@${at("b")}`,
         "     fix: y",
         "     keeps devDependency @antelopejs/a@0.1.1-next.1.gabc1234, which releases after it",
         "     keeps devDependency @antelopejs/z@0.3.0-next.2.gabc1234, which this train does not list",
-        "2. @antelopejs/a 0.1.0 -> 0.1.1 (patch)  AntelopeJS/a",
+        `2. @antelopejs/a 0.1.0 -> 0.1.1 (patch)  AntelopeJS/a@${at("a")}`,
         "     fix: x",
         "",
       ].join("\n"),
@@ -295,14 +301,14 @@ describe("renderPlan", () => {
       [
         "Release plan from main, 4 packages: 3 to release, 1 refused",
         "",
-        "1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database",
+        `1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database@${at("interface-database")}`,
         "     feat(query)!: drop the legacy cursor",
-        "2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb",
+        `2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb@${at("mongodb")}`,
         "     fix(database): close the change feed",
         "     @antelopejs/interface-database 0.5.0-next.12.g3f9a2c1 -> >=0.5.0 <0.6.0",
-        "3. @antelopejs/dms-database refused  AntelopeJS/dms-database",
+        `3. @antelopejs/dms-database refused  AntelopeJS/dms-database@${at("dms-database")}`,
         "     depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which this train does not list",
-        "4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation",
+        `4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation@${at("dms-automation")}`,
         "     perf: faster",
         "Unchanged: @antelopejs/foo",
         "Not now: @antelopejs/bar",
