@@ -257,12 +257,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
-          name=$(node -p "require('./package.json').name")
-          previous=""
-          if [ "$MODE" = preview ]; then
+          latest_of() {
+            if ! npm view "$1" version 2>"$RUNNER_TEMP/npm-view.log" && ! grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
+              cat "$RUNNER_TEMP/npm-view.log" >&2
+              return 1
+            fi
+          }
+          preview_of() {
+            local name previous latest major minor patch base
+            name=$(node -p "require('./package.json').name")
             previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
-          fi
-          if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
+            if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
           const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
           const { isDeepStrictEqual } = require('node:util')
@@ -277,31 +282,65 @@ jobs:
           const changed = git('diff', '--name-only', '--no-renames', '--relative', '-z', PREVIOUS, GITHUB_SHA, '--', '.').split('\0').filter(Boolean)
           process.exit(changed.filter(own).some(ships) ? 1 : 0)
           NODE
-          then
-            echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
-            exit 0
-          fi
-          if latest=$(npm view "$name" version 2>"$RUNNER_TEMP/npm-view.log"); then
-            :
-          elif grep -q E404 "$RUNNER_TEMP/npm-view.log"; then
-            latest=""
-          else
-            cat "$RUNNER_TEMP/npm-view.log" >&2
-            exit 1
-          fi
-          IFS=. read -r major minor patch <<< "${latest:-0.0.0}"
-          if [ "$MODE" = preview ]; then
+            then
+              return 0
+            fi
+            latest=$(latest_of "$name")
             if [ -n "$latest" ]; then
+              IFS=. read -r major minor patch <<< "$latest"
               base="$major.$minor.$((patch + 1))"
             else
               base=$(node -p "require('./package.json').version.split('-')[0]")
             fi
-            version="$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            echo "$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+          }
+          name=$(node -p "require('./package.json').name")
+          if [ "$MODE" = preview ]; then
+            version=$(preview_of)
+            if [ -z "$version" ]; then
+              echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
+              exit 0
+            fi
             if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
               echo "::notice::$name@$version is already published."
               exit 0
             fi
+            node > "$RUNNER_TEMP/siblings.tsv" <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const pkg = require('./package.json')
+          const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+          const nameOf = (file) => {
+            try {
+              return JSON.parse(fs.readFileSync(path.join(top, file), 'utf8')).name
+            } catch {
+              return undefined
+            }
+          }
+          const files = execFileSync('git', ['ls-files', '-z', '--', ':(glob)**/package.json'], { cwd: top, encoding: 'utf8' }).split('\0').filter(Boolean)
+          const directories = new Map(files.map((file) => [nameOf(file), path.dirname(file)]))
+          const siblings = new Set(['dependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) =>
+            Object.entries(pkg[field] ?? {}).filter(([, spec]) => spec.startsWith('workspace:')).map(([name]) => name),
+          ))
+          for (const name of siblings) {
+            const directory = directories.get(name)
+            if (directory !== undefined && fs.existsSync(path.join(top, directory, '.release-it.json'))) console.log(`${name}\t${directory}`)
+          }
+          NODE
+            pins='{}'
+            while IFS=$'\t' read -r sibling directory; do
+              pin=$(cd "$(git rev-parse --show-toplevel)/$directory" && preview_of)
+              if [ -n "$pin" ]; then
+                pins=$(jq -c --arg name "$sibling" --arg pin "$pin" '. + {($name): $pin}' <<< "$pins")
+              fi
+            done < "$RUNNER_TEMP/siblings.tsv"
+            if [ "$pins" != '{}' ]; then
+              echo "pins=$pins" >> "$GITHUB_OUTPUT"
+            fi
           else
+            latest=$(latest_of "$name")
+            IFS=. read -r major minor patch <<< "${latest:-0.0.0}"
             version=$RELEASE_VERSION
             IFS=. read -r new_major new_minor new_patch <<< "$version"
             if [ -n "$latest" ] && [ "$new_major" != "$major" ]; then
@@ -560,6 +599,7 @@ jobs:
         working-directory: ${{ inputs.package-directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PINS: ${{ steps.version.outputs.pins }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
@@ -567,6 +607,12 @@ jobs:
           const fs = require('node:fs')
           const { execFileSync } = require('node:child_process')
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const pins = JSON.parse(process.env.PINS || '{}')
+          for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+            for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
+              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = pins[name]
+            }
+          }
           const gitHead = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
           fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION, gitHead }, null, 2)}\n`)
           NODE

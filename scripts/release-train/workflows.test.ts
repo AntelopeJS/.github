@@ -145,10 +145,10 @@ interface Publication {
 }
 
 let previews = 0;
-function publishPreview(text: string, cwd: string, version: string): StepResult & { publication: Publication | null } {
+function publishPreview(text: string, cwd: string, version: string, env: Record<string, string> = {}): StepResult & { publication: Publication | null } {
   previews += 1;
   const log = join(root, `npm-publish-${previews}.log`);
-  const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, NPM_PUBLISH_LOG: log, ...hermeticGit });
+  const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
   if (!existsSync(log)) return { ...result, publication: null };
   const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
   const tarball = args.find((arg) => arg.endsWith(".tgz"));
@@ -523,6 +523,63 @@ for (const { file, text } of workflows) {
           gitHead: sha,
         },
         args: ["publish", "--tag", "next"],
+      });
+    });
+
+    test("a preview pins each workspace sibling that publishes a preview at its commit, and keeps the stable range of one that publishes none", () => {
+      const manifest = (name: string, version: string, dependencies: Record<string, string> = {}) => `${JSON.stringify({ name, version, dependencies })}\n`;
+      const { directory, sha: first } = repository(`${file}-siblings`, {
+        "package.json": JSON.stringify({ name: "workspace", private: true }),
+        "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+        "packages/interface-x/package.json": manifest("@antelopejs/interface-x", "0.10.0"),
+        "packages/interface-x/.release-it.json": "{}\n",
+        "packages/interface-y/package.json": manifest("@antelopejs/interface-y", "0.4.0"),
+        "packages/interface-y/.release-it.json": "{}\n",
+        "packages/x/package.json": manifest("@antelopejs/x", "0.12.1", { "@antelopejs/interface-x": "workspace:^", "@antelopejs/interface-y": "workspace:^" }),
+        "packages/x/.release-it.json": "{}\n",
+      });
+      const yPreview = commitFiles(directory, "fix: y", { "packages/interface-y/index.js": "y\n" });
+      const sha = commitFiles(directory, "feat: x", { "packages/interface-x/index.js": "x\n", "packages/x/index.js": "x\n" });
+      const views = join(root, `${file}-npm-views.tsv`);
+      writeFileSync(
+        views,
+        [
+          ["@antelopejs/x version", "0.12.1"],
+          ["@antelopejs/x@next gitHead", first],
+          ["@antelopejs/interface-x version", "0.10.0"],
+          ["@antelopejs/interface-x@next gitHead", first],
+          ["@antelopejs/interface-y version", "0.4.0"],
+          ["@antelopejs/interface-y@next gitHead", yPreview],
+        ]
+          .map((row) => row.join("\t"))
+          .join("\n") + "\n",
+      );
+      const registry = join(root, `${file}-registry-npm`);
+      mkdirSync(registry);
+      writeFileSync(
+        join(registry, "npm"),
+        `#!/bin/sh\nif [ "$1" = view ]; then awk -F '\\t' -v key="$2 $3" '$1 == key { print $2; found = 1 } END { exit !found }' "$FAKE_VIEWS" && exit 0; echo "npm error code E404" >&2; exit 1; fi\nexec '${realNpm}' "$@"\n`,
+      );
+      chmodSync(join(registry, "npm"), 0o755);
+      const suffix = `next.3.g${sha.slice(0, 7)}`;
+      const resolved = runStep(text, "Resolve release version", join(directory, "packages", "x"), {
+        PATH: `${registry}:${process.env.PATH ?? ""}`,
+        MODE: "preview",
+        GITHUB_SHA: sha,
+        FAKE_VIEWS: views,
+        ...hermeticGit,
+      });
+      assert.equal(resolved.status, 0, resolved.stderr);
+      assert.equal(resolved.outputs, `pins={"@antelopejs/interface-x":"0.10.1-${suffix}"}\nversion=0.12.2-${suffix}\n`);
+      const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: directory, encoding: "utf8" });
+      assert.equal(installed.status, 0, installed.stderr);
+      const preview = publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PINS: `{"@antelopejs/interface-x":"0.10.1-${suffix}"}` });
+      assert.equal(preview.status, 0, preview.stderr);
+      assert.deepEqual(preview.publication?.manifest, {
+        name: "@antelopejs/x",
+        version: `0.12.2-${suffix}`,
+        dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0" },
+        gitHead: sha,
       });
     });
 
