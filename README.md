@@ -651,6 +651,16 @@ The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
 called workflow cannot ask for more than its caller grants, so GitHub refuses
 to start the sync otherwise.
 
+GitHub sometimes drops the push event of a merge, for instance when the merge
+call answers a 502 and lands anyway: no `Next sync` runs and `next` stays
+behind `main`. The caller therefore also listens to `workflow_dispatch`, and
+`gh workflow run next-sync.yml --repo <owner/repo>` merges `main` into `next`.
+The sync reads the default branch from the repository, not from the event, so a
+dispatch needs no input and is a no-op when `next` already holds `main`. Check
+that `next` holds `main` after a promotion with
+`gh api repos/<owner/repo>/compare/main...next --jq .behind_by`, which must
+print `0`.
+
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge
 of `main` back into `next` keeps the next pull request's diff to the work done

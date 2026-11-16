@@ -179,9 +179,10 @@ jobs:
 ```
 
 A repository with a [`next` branch](README.md#next-branch) calls
-`next-sync.yml` on each push to `main`. The job must grant `issues: write`,
-which the sync uses to open and close the conflict issue when no `NOTION_TOKEN`
-secret exists:
+`next-sync.yml` on each push to `main`, and on demand by `workflow_dispatch`,
+which catches `next` up when GitHub dropped the push event of a merge. The job
+must grant `issues: write`, which the sync uses to open and close the conflict
+issue when no `NOTION_TOKEN` secret exists:
 
 ```yaml
 name: Next sync
@@ -189,6 +190,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 permissions: {}
 jobs:
   next-sync:
