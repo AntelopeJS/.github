@@ -144,14 +144,14 @@ function tagPattern(tagName: string): RegExp {
   return new RegExp(`^${escaped[0]}(\\d+\\.\\d+\\.\\d+)${escaped[1]}$`);
 }
 
-function parseCommits(log: string, mergeCommits: ReadonlyMap<string, string>): Commit[] {
+function parseCommits(log: string, slug: string): Commit[] {
   return log
     .split("\x1e")
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record) => {
       const [sha = "", subject = "", body = ""] = record.split("\x1f");
-      return { sha, subject, level: commitLevel(subject, body), reverts: revertedCommits(body, mergeCommits) };
+      return { sha, subject, level: commitLevel(subject, body), reverts: revertedCommits(body, slug) };
     })
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
@@ -183,7 +183,6 @@ function cycleNotes(
   merged: readonly MergedPull[],
   shipped: readonly string[],
   cancelled: ReadonlySet<string>,
-  mergeCommits: ReadonlyMap<string, string>,
 ): Commit[] {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
@@ -206,7 +205,7 @@ function cycleNotes(
   const exclude = [...(tag === null ? [] : [tag]), ...shipped];
   const log = exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, ...include, "--not", ...exclude, "--", ...paths]);
   const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled]);
-  return withoutReverts(parseCommits(log, mergeCommits).filter((commit) => !replaced.has(commit.sha)));
+  return withoutReverts(parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha)));
 }
 
 /**
@@ -251,12 +250,11 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const shipped = (merged ?? [])
     .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
     .map((pull) => pull.head);
-  const mergeCommits = new Map((merged ?? []).map((pull) => [`${from.slug.toLowerCase()}#${pull.number}`, pull.mergeCommit]));
-  const log = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]), mergeCommits);
+  const log = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]), from.slug);
   const commits = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !commits.includes(commit)).map((commit) => commit.sha));
   const notes =
-    merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled, mergeCommits);
+    merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, commits, notes };
 }
 

@@ -305,7 +305,7 @@ describe("plan", () => {
   });
 
   test("--ref next counts neither a squashed pull request nor the one that reverts it, in the level or the notes", () => {
-    const cycle = (name: string, reverts: (squash: string) => string) =>
+    const cycle = (name: string, reverts: (squash: string) => string, listed: boolean) =>
       repository(name, (path) => {
         commit(path, "feat: first", { "package.json": manifest(name, "0.5.2"), "src/rows.ts": "export const rows = 1;\n" });
         git(path, "tag", "v0.5.2");
@@ -323,14 +323,15 @@ describe("plan", () => {
           "src/rows.ts": "export const rows = 1;\n",
         });
         git(path, "checkout", "--quiet", "main");
-        pulls[`AntelopeJS/${name}`] = [removal, fix, restore].map(({ head, squash }, index) => ({ number: [1093, 1094, 1098][index], mergeCommit: { oid: squash }, headRefOid: head }));
+        const merged = [removal, fix, restore].map(({ head, squash }, index) => ({ number: [1093, 1094, 1098][index], mergeCommit: { oid: squash }, headRefOid: head }));
+        pulls[`AntelopeJS/${name}`] = listed ? merged : [];
       });
-    const bodies: [string, (squash: string) => string][] = [
-      ["revert-both", (squash) => `This reverts commit ${squash}.\nReverts AntelopeJS/revert-both#1093`],
-      ["revert-pull", () => "Reverts AntelopeJS/revert-pull#1093"],
+    const bodies: [string, (squash: string) => string, boolean, string][] = [
+      ["revert-both", (squash) => `This reverts commit ${squash}.\nReverts AntelopeJS/revert-both#1093`, true, "fix(builder): close the cursor"],
+      ["revert-pull", () => "Reverts AntelopeJS/revert-pull#1093", false, "fix(builder): close the cursor (#1094)"],
     ];
-    for (const [name, reverts] of bodies) {
-      const reverted = cycle(name, reverts);
+    for (const [name, reverts, listed, note] of bodies) {
+      const reverted = cycle(name, reverts, listed);
       const { system, output } = fakeSystem();
       assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
       assert.equal(
@@ -339,7 +340,7 @@ describe("plan", () => {
           "Release plan from next, 1 package: 1 to release",
           "",
           `1. @antelopejs/${name} 0.5.2 -> 0.5.3 (patch)  AntelopeJS/${name}@${short(tip(reverted, "next"))}`,
-          "     fix(builder): close the cursor",
+          `     ${note}`,
           "",
         ].join("\n"),
         name,

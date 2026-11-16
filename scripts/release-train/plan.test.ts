@@ -13,10 +13,11 @@ import {
   type Entry,
   type Manifest,
   type PackageSource,
+  type Reverted,
 } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
-function commit(subject: string, body = "", reverts: readonly string[] = []): Commit {
+function commit(subject: string, body = "", reverts: readonly Reverted[] = []): Commit {
   return { sha: createHash("sha1").update(subject).digest("hex"), subject, level: commitLevel(subject, body), reverts };
 }
 
@@ -100,7 +101,7 @@ describe("commitLevel", () => {
 describe("withoutReverts", () => {
   const breaking = commit("refactor(builder)!: remove the sample rows (#1093)");
   const fix = commit("fix(builder): close the cursor (#1094)");
-  const restore = commit("refactor(builder): restore the sample rows (#1098)", "", [breaking.sha]);
+  const restore = commit("refactor(builder): restore the sample rows (#1098)", "", [{ sha: breaking.sha }]);
   const levelOf = (commits: Commit[]) => {
     const found = plan([{ ...source("builder", "0.5.2", []), commits: withoutReverts(commits), notes: withoutReverts(commits) }]).entries[0];
     return found?.status === "release" ? found.level : found?.status;
@@ -113,27 +114,32 @@ describe("withoutReverts", () => {
   });
 
   test("an abbreviated SHA names the commit it reverts", () => {
-    const short = commit("revert: remove the sample rows", "", [breaking.sha.slice(0, 9)]);
+    const short = commit("revert: remove the sample rows", "", [{ sha: breaking.sha.slice(0, 9) }]);
     assert.deepEqual(withoutReverts([short, fix, breaking]), [fix]);
   });
 
+  test("a pull request number names the squash commit whose subject ends with it", () => {
+    const byPull = commit("refactor(builder): restore the sample rows (#1098)", "", [{ pull: 1093 }]);
+    assert.deepEqual(withoutReverts([byPull, fix, breaking]), [fix]);
+    assert.deepEqual(withoutReverts([commit("revert: x", "", [{ pull: 109 }]), breaking]).length, 2);
+  });
+
   test("a revert of a commit older than the range counts as a change", () => {
-    const older = commit("revert: drop the cursor", "", ["0123456789abcdef0123456789abcdef01234567"]);
+    const older = commit("revert: drop the cursor", "", [{ sha: "0123456789abcdef0123456789abcdef01234567" }]);
     assert.deepEqual(withoutReverts([older]), [older]);
     assert.equal(levelOf([older]), "patch");
   });
 
   test("a revert of a revert cancels that revert and leaves the first commit", () => {
-    const again = commit("refactor(builder)!: remove the sample rows again (#1100)", "", [restore.sha]);
+    const again = commit("refactor(builder)!: remove the sample rows again (#1100)", "", [{ sha: restore.sha }]);
     assert.deepEqual(withoutReverts([again, restore, fix, breaking]), [fix, breaking]);
     assert.equal(levelOf([again, restore, fix, breaking]), "minor");
   });
 
-  test("reads the commits a message reverts from git's line and from a pull request reference it can resolve", () => {
-    const merges = new Map([["antelopejs/dms#1093", "daa3203f433e0985e65a61e91f3e51295204890a"]]);
-    const body = "Restores it.\n\nThis reverts commit daa3203f4.\nReverts AntelopeJS/dms#1093\nReverts AntelopeJS/dms#7\nReverts AntelopeJS/other#1093";
-    assert.deepEqual(revertedCommits(body, merges), ["daa3203f4", "daa3203f433e0985e65a61e91f3e51295204890a"]);
-    assert.deepEqual(revertedCommits("Mentions This reverts commit daa3203f4 inline.", merges), []);
+  test("reads the commits a message reverts from git's line and from a reference to a pull request of the same repository", () => {
+    const body = "Restores it.\n\nThis reverts commit daa3203f4.\nReverts antelopejs/DMS#1093\nReverts AntelopeJS/other#7";
+    assert.deepEqual(revertedCommits(body, "AntelopeJS/dms"), [{ sha: "daa3203f4" }, { pull: 1093 }]);
+    assert.deepEqual(revertedCommits("Mentions This reverts commit daa3203f4 inline.", "AntelopeJS/dms"), []);
   });
 });
 

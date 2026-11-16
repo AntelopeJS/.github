@@ -6,9 +6,12 @@ export interface Commit {
   sha: string;
   subject: string;
   level: Level | null;
-  /** The commits, by full or abbreviated SHA, that this commit's message says it reverts. */
-  reverts: readonly string[];
+  /** The commits this commit's message says it reverts. */
+  reverts: readonly Reverted[];
 }
+
+/** A commit a revert names: by full or abbreviated SHA, or by the number of the pull request whose squash commit it is. */
+export type Reverted = { sha: string } | { pull: number };
 
 /** Where a dependency must hold a preview's commit: at its planned head, or at its last stable tag. */
 export type Holder = "head" | "stable";
@@ -122,7 +125,7 @@ const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
 const revertedCommitPattern = /^This reverts commit ([0-9a-f]{7,40})\b/gm;
-const revertedPullPattern = /^Reverts ([\w.-]+\/[\w.-]+#\d+)\s*$/gm;
+const revertedPullPattern = /^Reverts ([\w.-]+\/[\w.-]+)#(\d+)\s*$/gm;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "types", "revert"]);
 const runtimeFields = dependencyFields.filter((field) => field !== "devDependencies");
 const versionPart = "(?:0|[1-9]\\d*|[xX*])";
@@ -210,12 +213,18 @@ export function commitLevel(subject: string, body: string): Level | null {
 }
 
 /**
- * The commits a commit message says it reverts: each `This reverts commit <sha>` line, and each
- * `Reverts <owner>/<repo>#<n>` line whose pull request `mergeCommits` maps to its merge commit.
+ * The commits a commit message of the repository `slug` says it reverts: each `This reverts commit <sha>` line,
+ * and each `Reverts <owner>/<repo>#<n>` line that names a pull request of that repository.
  */
-export function revertedCommits(body: string, mergeCommits: ReadonlyMap<string, string>): string[] {
-  const pulls = [...body.matchAll(revertedPullPattern)].flatMap((match) => mergeCommits.get(match[1]?.toLowerCase() ?? "") ?? []);
-  return [...[...body.matchAll(revertedCommitPattern)].map((match) => match[1] ?? ""), ...pulls];
+export function revertedCommits(body: string, slug: string): Reverted[] {
+  const pulls = [...body.matchAll(revertedPullPattern)]
+    .filter((match) => match[1]?.toLowerCase() === slug.toLowerCase())
+    .map((match) => ({ pull: Number(match[2]) }));
+  return [...[...body.matchAll(revertedCommitPattern)].map((match) => ({ sha: match[1] ?? "" })), ...pulls];
+}
+
+function names(commit: Commit, reverted: Reverted): boolean {
+  return "sha" in reverted ? commit.sha.startsWith(reverted.sha) : commit.subject.endsWith(` (#${reverted.pull})`);
 }
 
 /**
@@ -228,7 +237,7 @@ export function withoutReverts(commits: readonly Commit[]): Commit[] {
     if (cancelled.has(commit.sha)) return;
     const target = commits
       .slice(index + 1)
-      .find((older) => !cancelled.has(older.sha) && commit.reverts.some((sha) => older.sha.startsWith(sha)));
+      .find((older) => !cancelled.has(older.sha) && commit.reverts.some((reverted) => names(older, reverted)));
     if (target !== undefined) cancelled.add(commit.sha).add(target.sha);
   });
   return commits.filter((commit) => !cancelled.has(commit.sha));
