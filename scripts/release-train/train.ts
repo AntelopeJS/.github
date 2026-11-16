@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, workspacePackages, type Checkout, type Revision, type Target } from "./git.ts";
-import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
+import { awaitRegistry, commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
 import { computePlan, renderPlan, type Holder, type PackageSource, type Plan, type Release } from "./plan.ts";
 import type { System } from "./system.ts";
 
@@ -180,6 +180,19 @@ function go(plan: Plan, replan: () => Plan, system: System): number {
     system.out(`published ${label(entry)}  ${outcome.url}\n`);
     published.push(entry);
     pending = rest;
+    const { name } = entry.source.manifest;
+    const dependent = rest.find((other) => Object.hasOwn(other.ranges, name) || other.siblings.some((sibling) => sibling.name === name));
+    if (dependent !== undefined && !awaitRegistry(system, name, entry.to)) {
+      system.err(
+        [
+          `npm did not serve ${label(entry)} within 20 minutes of its release, so ${label(dependent)}, which depends on it, was not dispatched.`,
+          `Published: ${list(published)}.`,
+          `Not published: ${list(rest)}.`,
+          `Run go again once npm view ${name}@${entry.to} version prints ${entry.to}.`,
+        ].join("\n"),
+      );
+      return 1;
+    }
     const { slug, head } = entry.source;
     if (!rest.some((other) => other.source.slug === slug)) continue;
     let next: Release[];

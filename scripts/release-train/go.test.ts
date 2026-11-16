@@ -137,6 +137,36 @@ describe("go", () => {
     );
   });
 
+  test("waits until npm serves a release before it dispatches the release that depends on it", () => {
+    const { system, calls } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 3 } });
+    assert.equal(main(["go", interfaceDatabase, mongodb], system), 0);
+    const steps = calls
+      .filter((args) => args[0] === "view" || args[0] === "workflow")
+      .map((args) => (args[0] === "view" ? `view ${args[1]}` : `dispatch ${args[4]}`));
+    assert.deepEqual(steps, [
+      "dispatch AntelopeJS/interface-database",
+      ...Array.from({ length: 4 }, () => "view @antelopejs/interface-database@0.5.0"),
+      "dispatch AntelopeJS/mongodb",
+    ]);
+  });
+
+  test("stops when npm does not serve a release within 20 minutes, before the release that depends on it", () => {
+    const { system, calls, errors } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 80 } });
+    assert.equal(main(["go", interfaceDatabase, mongodb], system), 1);
+    assert.equal(calls.filter((args) => args[0] === "view").length, 80);
+    assert.deepEqual(dispatches(calls).map(([repo]) => repo), ["AntelopeJS/interface-database"]);
+    assert.equal(
+      errors(),
+      [
+        "npm did not serve @antelopejs/interface-database 0.5.0 within 20 minutes of its release, so @antelopejs/mongodb 1.8.7, which depends on it, was not dispatched.",
+        "Published: @antelopejs/interface-database 0.5.0.",
+        "Not published: @antelopejs/mongodb 1.8.7.",
+        "Run go again once npm view @antelopejs/interface-database@0.5.0 version prints 0.5.0.",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("releases every listed package of a repository, each from the head the release before it left", () => {
     const workspace = repository("go-workspace", (path) => {
       commit(path, "feat: first", {
