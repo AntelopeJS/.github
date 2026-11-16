@@ -3,8 +3,8 @@
   { "name": "Module Typescript", "init": "module", "start": "pnpm build && pnpm dev", "ready": "Hello world" },
   { "name": "DMS Module Typescript", "init": "module", "start": "pnpm dev", "ready": "No owner exists yet" },
   { "name": "Todo App Typescript", "init": "project", "start": "pnpm exec ajs project modules install --yes && pnpm dev", "ready": "Constructed modules" },
-  { "name": "DMS Starter", "init": "project", "start": "docker compose up", "ready": "Local: +http://localhost:3001/" },
+  { "name": "DMS Starter", "init": "project", "start": "chmod -R a+rwX . && docker compose up", "ready": "Local: +http://localhost:3001/" },
   { "name": "DMS Demo", "init": "project", "start": "pnpm dev", "ready": "No owner exists yet" },
-  { "name": "DMS Connect Demo", "init": "project", "start": "docker compose up", "ready": "Local: +http://localhost:3001/" },
+  { "name": "DMS Connect Demo", "init": "project", "start": "chmod -R a+rwX . && docker compose up", "ready": "Local: +http://localhost:3001/" },
   { "name": "DMS Adonis", "init": "project", "start": "cp .env.example .env && node ace generate:key && pnpm dev", "ready": "No owner exists yet" }
 ]

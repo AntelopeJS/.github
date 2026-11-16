@@ -632,7 +632,9 @@ request in the template.
 name in the AntelopeJS/interfaces manifest, `project` or `module` init, the
 start command and the log line that means it is ready. The `Templates` job
 fails when the rows and the manifest's templates differ. Each template then
-runs in its own job beside a MongoDB on port 27017. It fails when the command
+runs in its own job beside a MongoDB on port 27017. The Docker templates
+run their container as uid 1000, which differs from the runner's user, so
+their rows make the project writable for every user before `docker compose up`. It fails when the command
 exits or prints an error line of `ajs` (one that starts with `✖ `, or
 `Failed to start modules` or `Failed to construct modules`) before the ready
 line or in the 10 seconds after it, and when 25 minutes pass without it.
