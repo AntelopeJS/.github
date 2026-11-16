@@ -388,6 +388,278 @@ describe("plan", () => {
     assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-moved, only ci commits since 1.0.1\n");
   });
 
+  test("--ref next reads a dependency move a promotion shipped as shipped after a released hotfix moved it again", () => {
+    const rehotfixed = repository("next-rehotfixed", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-rehotfixed", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "chore(deps): move to foo 2 (#2)", { "package.json": manifest("next-rehotfixed", "1.0.0", { dependencies: { foo: "^2.0.0" } }) });
+      const task = commit(path, "fix: read with foo 2 (#2)", { "src/foo.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with foo 2 (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-rehotfixed", "1.0.1", { dependencies: { foo: "^2.0.0" } }) });
+      git(path, "tag", "v1.0.1");
+      commit(path, "fix(deps): move to foo 2.0.1 (#5)", { "package.json": manifest("next-rehotfixed", "1.0.1", { dependencies: { foo: "^2.0.1" } }) });
+      commit(path, "chore(release): v1.0.2", { "package.json": manifest("next-rehotfixed", "1.0.2", { dependencies: { foo: "^2.0.1" } }) });
+      git(path, "tag", "v1.0.2");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#4)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-rehotfixed"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", rehotfixed], system), 0);
+    assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-rehotfixed, only ci commits since 1.0.2\n");
+  });
+
+  test("--ref next reads a move back to a spec an older promotion shipped as a change", () => {
+    const reverted = repository("next-reverted", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const promote = (spec: string, version: string, number: number): unknown => {
+        git(path, "checkout", "--quiet", "next");
+        commit(path, `chore(deps): move to foo ${spec} (#${number})`, { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: spec } }) });
+        const task = commit(path, `fix: read with foo ${spec} (#${number})`, { [`src/${number}.ts`]: "export {};\n" });
+        git(path, "checkout", "--quiet", "main");
+        git(path, "merge", "--quiet", "--squash", "-X", "theirs", "next");
+        const squash = commit(path, `fix: read with foo ${spec} (#${number + 1})`, {});
+        commit(path, `chore(release): v${version}`, { "package.json": manifest("next-reverted", version, { dependencies: { foo: spec } }) });
+        git(path, "tag", `v${version}`);
+        return { number: number + 1, mergeCommit: { oid: squash }, headRefOid: task };
+      };
+      const first = promote("^1.0.0", "1.0.1", 2);
+      const second = promote("^2.0.0", "1.0.2", 4);
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "chore(deps): go back to foo 1 (#6)", { "package.json": manifest("next-reverted", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-reverted"] = [second, first];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/next-reverted 1.0.2 -> 1.0.3 (patch)  AntelopeJS/next-reverted@${short(tip(reverted, "next"))}`,
+        "     moves dependencies foo ^2.0.0 -> ^1.0.0",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("--ref next replaces a pin whose range only the fork base held, which no stable tag published", () => {
+    const ids = { task: "" };
+    const dependency = repository("next-fork-dependency", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-fork-dependency", "1.0.0") });
+      git(path, "tag", "v1.0.0");
+      ids.task = commit(path, "feat: add the cursor", { "src/cursor.ts": "export {};\n" });
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-fork-dependency", "1.0.1") });
+      git(path, "tag", "v1.0.1");
+    });
+    const dependent = repository("next-fork-pinning", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      git(path, "tag", "v2.0.0");
+      commit(path, "build(deps): move to the dependency 1.0", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": ">=1.0.1 <1.1.0" } }) });
+      git(path, "branch", "next");
+      commit(path, "fix(deps): go back to the dependency 0.9", { "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      commit(path, "chore(release): v2.0.1", { "package.json": manifest("next-fork-pinning", "2.0.1", { dependencies: { "@antelopejs/next-fork-dependency": "^0.9.0" } }) });
+      git(path, "tag", "v2.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "build(deps): pin the dependency preview", {
+        "package.json": manifest("next-fork-pinning", "2.0.0", { dependencies: { "@antelopejs/next-fork-dependency": `1.0.1-next.3.g${short(ids.task)}` } }),
+      });
+      git(path, "checkout", "--quiet", "main");
+    });
+    git(dependency, "branch", "next");
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], system), 0);
+    assert.ok(
+      output().includes(
+        [
+          `1. @antelopejs/next-fork-pinning 2.0.1 -> 2.0.2 (patch)  AntelopeJS/next-fork-pinning@${short(tip(dependent, "next"))}`,
+          "     replaces preview pins",
+          `     @antelopejs/next-fork-dependency 1.0.1-next.3.g${short(ids.task)} -> >=1.0.1 <1.1.0`,
+        ].join("\n"),
+      ),
+      output(),
+    );
+  });
+
+  test("--ref next reads a pin the stable run already rewrote into its range as shipped", () => {
+    const ids = { task: "" };
+    const dependency = repository("next-pinned-dependency", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-pinned-dependency", "1.0.0") });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      ids.task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "feat: add the cursor (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-pinned-dependency", "1.0.1") });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-pinned-dependency"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: ids.task }];
+    });
+    const dependent = repository("next-pin-rewritten", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-pin-rewritten", "2.0.0") });
+      git(path, "tag", "v2.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const pin = { "@antelopejs/next-pinned-dependency": `1.0.1-next.3.g${short(ids.task)}` };
+      const task = commit(path, "fix: read with the cursor (#5)", { "package.json": manifest("next-pin-rewritten", "2.0.0", { dependencies: pin }) });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with the cursor (#6)", {});
+      commit(path, "chore(release): v2.0.1", {
+        "package.json": manifest("next-pin-rewritten", "2.0.1", { dependencies: { "@antelopejs/next-pinned-dependency": ">=1.0.1 <1.1.0" } }),
+      });
+      git(path, "tag", "v2.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "ci: cache the store (#7)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-pin-rewritten"] = [{ number: 6, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, nothing to release",
+        "",
+        "Unchanged: @antelopejs/next-pinned-dependency",
+        "Unchanged: @antelopejs/next-pin-rewritten, only ci commits since 2.0.1",
+        "",
+      ].join("\n"),
+    );
+    git(dependency, "checkout", "--quiet", "next");
+    commit(dependency, "feat: add the batch (#8)", { "src/batch.ts": "export {};\n" });
+    git(dependency, "checkout", "--quiet", "main");
+    const moved = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", dependency, dependent], moved.system), 0);
+    assert.ok(
+      moved.output().includes(
+        [
+          `2. @antelopejs/next-pin-rewritten 2.0.1 -> 2.0.2 (patch)  AntelopeJS/next-pin-rewritten@${short(tip(dependent, "next"))}`,
+          "     replaces preview pins",
+          `     @antelopejs/next-pinned-dependency 1.0.1-next.3.g${short(ids.task)} -> >=1.0.2 <1.1.0`,
+        ].join("\n"),
+      ),
+      moved.output(),
+    );
+  });
+
+  test("--ref next reads a move back to the spec next forked with, after a promotion moved it, as a change", () => {
+    const reverted = repository("next-forked-back", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-forked-back", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      commit(path, "chore(deps): move to foo 1 (#2)", { "package.json": manifest("next-forked-back", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      const task = commit(path, "fix: read with foo 1 (#2)", { "src/foo.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "fix: read with foo 1 (#3)", {});
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-forked-back", "1.0.1", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.1");
+      git(path, "checkout", "--quiet", "next");
+      commit(path, "chore(deps): go back to foo 0.9 (#4)", { "package.json": manifest("next-forked-back", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      pulls["AntelopeJS/next-forked-back"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
+    assert.equal(
+      output(),
+      [
+        "Release plan from next, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/next-forked-back 1.0.1 -> 1.0.2 (patch)  AntelopeJS/next-forked-back@${short(tip(reverted, "next"))}`,
+        "     moves dependencies foo ^1.0.0 -> ^0.9.0",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("--ref next reads a move back to the last promotion's spec, after the Next sync brought a later hotfix, as a change", () => {
+    const synced = repository("next-partly-synced", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^0.9.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const task = commit(path, "chore(deps): move to foo 1 (#2)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "chore(deps): move to foo 1 (#3)", {});
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "chore(deps): move to foo 1.1 (#4)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.1.0" } }) });
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", "main");
+      commit(path, "chore(deps): go back to foo 1.0 (#5)", { "package.json": manifest("next-partly-synced", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "chore(release): v1.0.1", { "package.json": manifest("next-partly-synced", "1.0.1", { dependencies: { foo: "^1.1.0" } }) });
+      git(path, "tag", "v1.0.1");
+      pulls["AntelopeJS/next-partly-synced"] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: task }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", synced], system), 0);
+    assert.ok(
+      output().includes(`1. @antelopejs/next-partly-synced 1.0.1 -> 1.0.2 (patch)  AntelopeJS/next-partly-synced@${short(tip(synced, "next"))}\n     moves dependencies foo ^1.1.0 -> ^1.0.0\n`),
+      output(),
+    );
+  });
+
+  test("a sibling whose package.json at the stable tag is no JSON or holds no semver version blocks no plan", () => {
+    for (const [name, broken] of [["unparsed", "{ not json\n"], ["unversioned", manifest("unversioned-sibling", "0.10")]] as const) {
+      const workspace = repository(`workspace-${name}-sibling`, (path) => {
+        commit(path, "feat: first", {
+          "package.json": { name: `workspace-${name}-sibling`, private: true },
+          "packages/a/package.json": broken,
+          "packages/a/.release-it.json": { git: { tagName: "a-v${version}" } },
+          "packages/b/package.json": manifest(`${name}-dependent`, "0.12.1", { dependencies: { [`@antelopejs/${name}-sibling`]: "workspace:^" } }),
+          "packages/b/.release-it.json": { git: { tagName: "b-v${version}" } },
+        });
+        git(path, "tag", "b-v0.12.1");
+        commit(path, "fix(a): repair the manifest", { "packages/a/package.json": manifest(`${name}-sibling`, "0.10.0") });
+        git(path, "tag", "a-v0.10.0");
+        commit(path, "fix(b): patch", { "packages/b/index.ts": "export {};\n" });
+      });
+      const { system, output, errors } = fakeSystem();
+      assert.equal(main(["plan", workspace], system), 0, errors());
+      assert.ok(output().includes(`1. @antelopejs/${name}-dependent 0.12.1 -> 0.12.2 (patch)`), output());
+    }
+  });
+
+  test("a sibling whose package.json at the stable tag names no version blocks no plan", () => {
+    const workspace = repository("workspace-unversioned", (path) => {
+      commit(path, "feat: first", {
+        "package.json": { name: "workspace-unversioned", private: true },
+        "packages/a/package.json": { name: "@antelopejs/unversioned-a", private: true },
+        "packages/a/.release-it.json": { git: { tagName: "a-v${version}" } },
+        "packages/b/package.json": manifest("unversioned-b", "0.12.1"),
+        "packages/b/.release-it.json": { git: { tagName: "b-v${version}" } },
+      });
+      git(path, "tag", "b-v0.12.1");
+      commit(path, "feat(a): first release", { "packages/a/package.json": manifest("unversioned-a", "0.1.0") });
+      git(path, "tag", "a-v0.1.0");
+      commit(path, "fix(b): patch", { "packages/b/index.ts": "export {};\n" });
+    });
+    const { system, output, errors } = fakeSystem();
+    assert.equal(main(["plan", workspace], system), 0, errors());
+    assert.equal(
+      output(),
+      [
+        "Release plan from main, 1 package: 1 to release",
+        "",
+        `1. @antelopejs/unversioned-b 0.12.1 -> 0.12.2 (patch)  AntelopeJS/workspace-unversioned:packages/b@${short(tip(workspace))}`,
+        "     fix(b): patch",
+        "Unchanged: @antelopejs/unversioned-a",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("--ref next counts neither a squashed pull request nor the one that reverts it, in the level or the notes", () => {
     type Stack = "none" | "fix-on-removal" | "removal-on-fix" | "removal-on-grown-fix";
     const cycle = (name: string, reverts: (squash: string) => string, listed: boolean, stack: Stack) =>
@@ -608,7 +880,7 @@ describe("plan", () => {
     const from = { repository: clone, slug: "AntelopeJS/partial", local: true };
     const merged = [{ number: 7, mergeCommit: ids.squash, head: ids.head, branch: "" }];
     const revision = resolveRevision(system, from, null);
-    const source = readSource(system, from, revision, { directory: ".", nested: [], merged, releases: revision.name });
+    const source = readSource(system, from, revision, { directory: ".", nested: [], siblings: [], merged, releases: revision.name });
     assert.deepEqual(source.notes.map((note) => note.subject), ["fix(io): retry the reads (#7)"]);
     assert.notEqual(spawnSync("git", ["-C", clone, "--no-lazy-fetch", "cat-file", "-e", `${ids.head}^{commit}`]).status, 0);
   });

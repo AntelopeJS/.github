@@ -93,13 +93,16 @@ function buildPlan(command: Command, system: System): Plan {
     const nested = targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
+    const siblings = targets
+      .filter((other) => location(other) === location(target) && other.directory !== target.directory)
+      .map((other) => other.directory);
     const releases = resolveRevision(system, from, null);
     const defaultBranch = releases.branch;
     const merged = pulls(from.slug, defaultBranch);
     if (merged === null) {
       throw new Error(`gh pr list --repo ${from.slug} --base ${defaultBranch} failed, so the plan cannot read the commits of the cycle.`);
     }
-    const source = readSource(system, from, revision, { directory: target.directory, nested, merged, releases: releases.name });
+    const source = readSource(system, from, revision, { directory: target.directory, nested, siblings, merged, releases: releases.name });
     sources.push(source);
     places.set(source.manifest.name, { from, revision, releases, source });
   }

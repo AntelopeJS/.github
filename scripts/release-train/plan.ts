@@ -50,11 +50,15 @@ export interface PackageSource {
   stableManifest: Manifest | null;
   /**
    * The manifests at the points where the branch read forked from the stable tag. The first is the merge base of the tag and
-   * the branch, which is the tag itself when the branch holds it. When the branch holds the head of the last pull request the
-   * tag shipped and that merge base is older than its merge, that head is a fork point too. A promotion carries a dependency
-   * spec of the branch only when the branch changed it since every fork point. Empty when none has a manifest.
+   * the branch, which is the tag itself when the branch holds it. When the branch does not hold the tag, the head of the last
+   * promotion that tag released replaces a merge base it contains, since a promotion squash-merges the branch as it was there.
+   * When that head does not contain the merge base, as after a Next sync that merged the default branch from before the
+   * promotion, both are fork points. A promotion carries a dependency spec of the branch only when the branch changed it
+   * since every fork point. Empty when none has a manifest.
    */
   baseManifests: Manifest[];
+  /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
+  stableSiblings: Record<string, string>;
   /** The commits on the branch since the stable tag. Off the default branch, a merge commit is a Next sync of the default branch and does not count. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -362,7 +366,27 @@ interface Resolution {
 
 type PinOutcome = { range: string } | { reason: string };
 
-function resolveSibling(source: PackageSource, { name, spec }: Dependency, context: Resolution): PinOutcome {
+type SiblingOutcome =
+  | {
+      range: string;
+      /** The range the stable release packed for the sibling when the version the plan gives it falls outside it, else null. */
+      published: string | null;
+    }
+  | { reason: string };
+
+function packedRange(operator: string, version: string): string {
+  return operator === "*" ? version : `${operator}${version}`;
+}
+
+function admits(operator: string, base: string, version: string): boolean {
+  const parts = ({ major, minor, patch }: Version): number[] => [major, minor, patch];
+  const from = parts(requireVersion(base));
+  const to = parts(requireVersion(version));
+  const fixed = operator === "*" ? 3 : operator === "~" ? 2 : from.findIndex((part) => part !== 0) + 1 || 3;
+  return from.slice(0, fixed).every((part, index) => part === to[index]);
+}
+
+function resolveSibling(source: PackageSource, { field, name, spec }: Dependency, context: Resolution): SiblingOutcome {
   const range = spec.slice(workspacePrefix.length);
   if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
   const sibling = context.listed.get(name);
@@ -376,7 +400,9 @@ function resolveSibling(source: PackageSource, { name, spec }: Dependency, conte
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
-  return { range: range === "*" ? version : `${range}${version}` };
+  const packed = source.stableManifest?.[field]?.[name] === spec && Object.hasOwn(source.stableSiblings, name) ? source.stableSiblings[name] : undefined;
+  const published = packed === undefined || admits(range, packed, version) ? null : packedRange(range, packed);
+  return { range: packedRange(range, version), published };
 }
 
 function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome {
@@ -408,12 +434,17 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const ranges: Record<string, string> = {};
   const kept: KeptPin[] = [];
   const siblings: Sibling[] = [];
+  const moves: string[] = [];
+  const pins: Dependency[] = [];
   for (const dependency of dependenciesOf(source.manifest)) {
     const { field, name, spec } = dependency;
     if (field !== "devDependencies" && spec.startsWith(workspacePrefix)) {
       const outcome = resolveSibling(source, dependency, context);
-      if ("range" in outcome) siblings.push({ name, spec, range: outcome.range });
-      else refusals.add(`depends on ${name}@${spec}, ${outcome.reason}`);
+      if ("reason" in outcome) refusals.add(`depends on ${name}@${spec}, ${outcome.reason}`);
+      else {
+        siblings.push({ name, spec, range: outcome.range });
+        if (outcome.published !== null) moves.push(`moves ${field} ${name} ${outcome.published} -> ${outcome.range}`);
+      }
       continue;
     }
     if (field !== "devDependencies" && !isRegistrySpec(spec)) {
@@ -422,8 +453,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     }
     if (!isPreviewSpec(spec)) continue;
     const outcome = resolvePin(dependency, context);
-    if ("range" in outcome) ranges[name] = outcome.range;
-    else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
+    if ("range" in outcome) {
+      ranges[name] = outcome.range;
+      pins.push(dependency);
+    } else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
     else refusals.add(`depends on preview ${name}@${spec}, ${outcome.reason}`);
   }
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
@@ -431,11 +464,13 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
   const reasons: string[] = [];
   let level = highestLevel([...source.commits, ...source.notes]);
   if (level === null) {
-    reasons.push(...dependencyChanges(source, ranges));
+    reasons.push(...dependencyChanges(source, ranges), ...moves);
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
-    if (Object.keys(ranges).length > 0) reasons.push("replaces preview pins");
+    const replaced = ({ field, name: pinned, spec }: Dependency): boolean =>
+      source.baseManifests.some((base) => base[field]?.[pinned] === spec) && source.stableManifest?.[field]?.[pinned] === ranges[pinned];
+    if (!pins.every(replaced)) reasons.push("replaces preview pins");
     if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
     level = "patch";
   }

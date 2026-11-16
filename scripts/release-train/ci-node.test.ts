@@ -11,9 +11,9 @@ const root = mkdtempSync(join(tmpdir(), "ci-node-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function tierScript(): string {
-  const start = workflow.indexOf("      - name: Pick the tier from the event, the target branch and the draft flag");
+  const start = workflow.indexOf("      - name: Pick the jobs and runners from the tier");
   const run = workflow.indexOf("        run: |", start);
-  assert.ok(start !== -1 && run !== -1, "tier step not found");
+  assert.ok(start !== -1 && run !== -1, "jobs step not found");
   const body: string[] = [];
   for (const line of workflow.slice(run + 1)) {
     if (line !== "" && !line.startsWith("          ")) break;
@@ -37,13 +37,8 @@ function fastTierTests(changed: string[]): string {
     encoding: "utf8",
     env: {
       ...process.env,
+      TIER: "fast",
       EVENT: "pull_request",
-      DEFAULT_BRANCH: "main",
-      REPOSITORY: "o/r",
-      HEAD_REPOSITORY: "o/r",
-      BASE_REF: "next",
-      HEAD_REF: "feature",
-      DRAFT: "false",
       WINDOWS: "false",
       WINDOWS_PULL_REQUESTS: "false",
       GITHUB_OUTPUT: output,
