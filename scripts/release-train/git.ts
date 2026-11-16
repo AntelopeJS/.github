@@ -33,6 +33,8 @@ export interface MergedPull {
 export interface Place {
   directory: string;
   nested: readonly string[];
+  /** The directories of the other listed packages of the same checkout. */
+  siblings: readonly string[];
   merged: readonly MergedPull[] | null;
   /** The ref of the default branch. Its tags are the stable releases of any branch the train reads. */
   releases: string;
@@ -120,6 +122,19 @@ export function workspacePackages(system: System, { repository }: Checkout, { na
     .map((file) => posix.dirname(file))
     .filter((inner) => inner !== directory && tracked.has(posix.join(inner, "package.json")));
   return released.length === 0 ? null : released.sort();
+}
+
+function packedVersion(system: System, repository: string, revision: string, directory: string): [string, string][] {
+  const file = posix.join(directory, "package.json");
+  if (exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim() === "") return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
+  } catch {
+    return [];
+  }
+  if (!isRecord(value) || typeof value.name !== "string" || typeof value.version !== "string" || parseVersion(value.version) === null) return [];
+  return [[value.name, value.version]];
 }
 
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
@@ -241,7 +256,7 @@ function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
  * through its remaining tasks, not its title. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
-  const { directory, nested, merged, releases } = place;
+  const { directory, nested, siblings, merged, releases } = place;
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
@@ -269,20 +284,24 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   if (forked !== null && forked.status !== 0 && forked.status !== 1) {
     throw new Error(`git -C ${repository} merge-base ${tag} ${revision} failed\n${forked.stderr.trim()}`);
   }
-  const base = forked?.status === 0 ? forked.stdout.trim() : null;
-  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
+  const forkPoint = forked?.status === 0 ? forked.stdout.trim() : null;
+  const stableSiblings = Object.fromEntries(siblings.flatMap((inner) => (tag === null ? [] : packedVersion(system, repository, tag, inner))));
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
   const shipped = (merged ?? [])
     .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
     .map((pull) => pull.head);
+  const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shipped.filter((sha) => isAncestor(system, repository, sha, revision));
+  const promoted = held.find((sha) => held.every((other) => isAncestor(system, repository, other, sha)));
+  const base = promoted !== undefined && (forkPoint === null || isAncestor(system, repository, forkPoint, promoted)) ? promoted : forkPoint;
+  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const log = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]), from.slug);
   const kept = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
   const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
   const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */
