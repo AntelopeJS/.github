@@ -528,8 +528,23 @@ for (const { file, text } of workflows) {
       assert.equal(published.status, 0, published.stderr);
       assert.equal(
         published.stdout,
-        `exec release-it --config ${join(root, "release-it.json")} --ci --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
+        `exec release-it --config ${join(root, "release-it.json")} --ci --verbose --git.requireBranch=main --git.tagExclude=*.*.*-* --increment=0.5.0\n`,
       );
+    });
+
+    test("Publish stable release prints the stdout and stderr of a hook that fails", () => {
+      const { directory } = repository(`${file}-failing-hook`, {
+        "package.json": JSON.stringify({ name: "@antelopejs/x", version: "0.4.2" }),
+        "lint.sh": "echo 'src/index.ts:3:7 error x is unused'\necho 'ELIFECYCLE Command failed with exit code 1.' >&2\nexit 1\n",
+      });
+      mkdirSync(join(directory, "node_modules", ".bin"), { recursive: true });
+      symlinkSync(releaseIt, join(directory, "node_modules", ".bin", "release-it"));
+      writeFileSync(join(root, "release-it.json"), JSON.stringify({ hooks: { "before:init": "sh lint.sh" }, npm: false, github: { release: false } }));
+      const published = runStep(text, "Publish stable release", directory, { ...hermeticGit, RELEASE_VERSION: "0.5.0", GITHUB_TOKEN: "token", GITHUB_REF_NAME: "main" });
+      assert.notEqual(published.status, 0);
+      const log = published.stdout + published.stderr;
+      assert.ok(log.includes("src/index.ts:3:7 error x is unused"), log);
+      assert.ok(log.includes("ELIFECYCLE Command failed with exit code 1."), log);
     });
 
     test("a stable run of a workspace package publishes it packed after release-it's bump, with each sibling's released range", () => {

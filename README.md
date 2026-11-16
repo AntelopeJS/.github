@@ -288,8 +288,10 @@ A stable run then does the following.
    release-it config from the repository's `.release-it.json`, without the
    `release-it-changelogen` plugin and with the notes as the GitHub release
    notes.
-7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
-   config. release-it bumps `package.json`. In place of release-it's own
+7. It runs `pnpm exec release-it --ci --verbose --increment=<release-version>`
+   with that config. `--verbose` prints the stdout and stderr of every hook,
+   so the log of a failed hook shows why it failed. release-it bumps
+   `package.json`. In place of release-it's own
    `npm publish`, a `before:npm:release` hook packs the package with
    `pnpm pack`, which resolves each `workspace:` and `catalog:` spec, and
    publishes the tarball under `latest`, as a preview does under `next`. The

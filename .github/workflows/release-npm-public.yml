@@ -675,4 +675,4 @@ jobs:
           trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
 
           prerelease_tags='*.*.*-*'
-          pnpm exec release-it --config "$RUNNER_TEMP/release-it.json" --ci "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION"
+          pnpm exec release-it --config "$RUNNER_TEMP/release-it.json" --ci --verbose "--git.requireBranch=$GITHUB_REF_NAME" "--git.tagExclude=$prerelease_tags" "--increment=$RELEASE_VERSION"
