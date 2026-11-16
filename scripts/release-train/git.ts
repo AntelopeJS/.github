@@ -257,7 +257,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   ];
   const baseManifests = bases.flatMap((base) => readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`) ?? []);
   const commits = parseCommits(
-    exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
+    exec(system, "git", ["-C", repository, "log", ...(revision === releases ? [] : ["--no-merges"]), logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
   );
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifests, commits, notes };

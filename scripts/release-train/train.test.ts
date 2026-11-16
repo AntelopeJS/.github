@@ -317,6 +317,23 @@ describe("plan", () => {
     }
   });
 
+  test("a pull request merged into main with a merge commit releases at the level of the merge commit's title", () => {
+    const name = "main-merged";
+    const path = repository(name, (path) => {
+      commit(path, "feat: first", { "package.json": manifest(name, "1.0.0"), "a.txt": "a\n", "b.txt": "b\n" });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "topic");
+      const head = commit(path, "wip", { "a.txt": "a2\n" });
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "ci: touch b", { "b.txt": "b2\n" });
+      git(path, "merge", "--quiet", "--no-ff", "-m", "fix: close the feed (#4)", "topic");
+      pulls[`AntelopeJS/${name}`] = [{ number: 4, mergeCommit: { oid: tip(path) }, headRefOid: head }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", path], system), 0);
+    assert.match(output(), /^1\. @antelopejs\/main-merged 1\.0\.0 -> 1\.0\.1 \(patch\) /m);
+  });
+
   test("--ref next reads a dependency move main made before the promotion as main's when the Next sync merged it late", () => {
     const name = "next-synced-move";
     const path = repository(name, (path) => {

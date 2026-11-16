@@ -50,7 +50,7 @@ export interface PackageSource {
    * spec of the branch only when the branch changed it since every fork point. Empty when none has a manifest.
    */
   baseManifests: Manifest[];
-  /** The commits on the branch since the stable tag. */
+  /** The commits on the branch since the stable tag. Off the default branch, a merge commit is a Next sync of the default branch and does not count. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
   notes: Commit[];

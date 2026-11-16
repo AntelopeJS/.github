@@ -100,9 +100,10 @@ accidental major release, is never the stable tag. When every tag is above
 that version, the plan stops and names them. The plan does not read npm, so it
 cannot see a stable version that npm holds without a tag. Release commits do not
 count, and neither do the `fix(deps): depend on the stable` commits of a stable
-run. A directory inside the package that holds another listed package does
-not count either, so a root package beside `packages/*` gets only its own
-commits. Each numbered line of the plan names the repository and the commit it
+run. On a branch other than the default branch, a merge commit is a Next sync
+of the default branch and does not count either. A directory inside the
+package that holds another listed package does not count either, so a root
+package beside `packages/*` gets only its own commits. Each numbered line of the plan names the repository and the commit it
 read, such as `AntelopeJS/mongodb@3f9a2c1`.
 
 `next` reaches the default branch as one squash commit per promotion, so the
