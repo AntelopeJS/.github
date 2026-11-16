@@ -1154,6 +1154,15 @@ describe("release-npm.yml", () => {
       assert.doesNotMatch(caller, /contents: write/, entry);
     }
   });
+
+  test("only the public entry point grants id-token: write, which npm trusted publishing and provenance need", () => {
+    const grant = (entry: string): string => {
+      const caller = workflowText(entry);
+      return caller.slice(caller.indexOf("    permissions:\n"), caller.indexOf("    uses: ./.github/workflows/release-npm.yml\n"));
+    };
+    assert.match(grant("release-npm-public.yml"), /^ {6}id-token: write$/m);
+    assert.doesNotMatch(grant("release-npm-private.yml"), /id-token/);
+  });
 });
 
 test("the starter workflow is the frozen caller that antelopejs-sync writes", () => {
