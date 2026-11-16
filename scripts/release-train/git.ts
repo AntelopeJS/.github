@@ -183,7 +183,7 @@ function cycleNotes(
   merged: readonly MergedPull[],
   shipped: readonly string[],
   cancelled: ReadonlySet<string>,
-): Commit[] {
+): { notes: Commit[]; superseded: Set<string> } {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
@@ -211,14 +211,24 @@ function cycleNotes(
       return exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", head, ...exclude, ...earlier]).split("\n");
     });
   const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled, ...tasks]);
-  return withoutReverts(parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha)));
+  const read = parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha));
+  const notes = withoutReverts(read);
+  const reverted = new Set(read.filter((commit) => !notes.includes(commit)).map((commit) => commit.sha));
+  const superseded = current.filter(
+    (pull) =>
+      reverted.size > 0 &&
+      !cancelled.has(pull.mergeCommit) &&
+      exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", `${pull.mergeCommit}^`, ...exclude]).split("\n").some((sha) => reverted.has(sha)),
+  );
+  return { notes, superseded: new Set(superseded.map((pull) => pull.mergeCommit)) };
 }
 
 /**
  * Reads one package at a revision: its manifest, its last stable tag, the commits since that tag and the
  * commits of the tasks the pull requests merged since that tag carried. Both leave out the `nested`
  * directories, which hold other listed packages, and each commit that reverts another of the range, with the one it
- * reverts and the tasks of their pull requests. With no merged pull request known, the notes are the commits.
+ * reverts and the tasks of their pull requests. A pull request whose own tasks hold such a pair, such as a promotion,
+ * counts through its remaining tasks, not its title. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
   const { directory, nested, merged, releases } = place;
@@ -257,10 +267,11 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
     .map((pull) => pull.head);
   const log = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]), from.slug);
-  const commits = withoutReverts(log);
-  const cancelled = new Set(log.filter((commit) => !commits.includes(commit)).map((commit) => commit.sha));
-  const notes =
-    merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
+  const kept = withoutReverts(log);
+  const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
+  const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
+  const commits = cycle === null ? kept : kept.filter((commit) => !cycle.superseded.has(commit.sha));
+  const notes = cycle === null ? kept : cycle.notes;
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, commits, notes };
 }
 
