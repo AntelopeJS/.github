@@ -329,6 +329,10 @@ notes skip that commit, so it releases nothing by itself.
 ### Workflow inputs
 
 `release-npm-public.yml` and `release-npm-private.yml` take the same inputs.
+Each forwards them to `release-npm.yml`, which holds the one release job, with
+`registry` set to `public` or `private`. The registry picks the npm registry,
+the scope and `publishConfig` that the metadata check asks for, and whether
+`NPM_ANTELOPE_TOKEN` is required. Callers keep calling the two entry points.
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
@@ -350,7 +354,9 @@ holds must name it in its own `repository.url` too.
 
 Both runs write to the repository only with `RELEASE_GITHUB_TOKEN`, so the job
 holds `contents: read`, and the public one also `id-token: write` for npm
-trusted publishing.
+trusted publishing. Each entry point grants these to its call of
+`release-npm.yml`, which declares no permissions and so holds exactly that
+grant.
 
 Runs share a concurrency group per repository, event and package directory,
 and a running release is never cancelled. Previews and stable releases sit in
