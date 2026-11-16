@@ -128,8 +128,10 @@ in dependency order.
   `feat`, `fix`, `perf`, `refactor`, `types` and `revert` ask for a patch.
   Tooling types (`build`, `ci`, `chore`, `test`, `docs`, `style`) and other
   types ask for nothing. The level is the highest one over the branch's
-  commits and the cycle's commits, so a promotion titled too low never
-  releases too little. A release never changes the major version.
+  commits and the cycle's commits. The squash commit of a promotion, a pull
+  request from `next` whose head the checkout holds, counts through the
+  cycle's commits alone, so its title neither raises nor lowers the level.
+  A release never changes the major version.
 - A commit whose message holds `This reverts commit <sha>` or
   `Reverts <owner>/<repo>#<n>`, as a squash merge of a revert pull request
   writes it, counts for nothing when the commit it reverts is in the same
