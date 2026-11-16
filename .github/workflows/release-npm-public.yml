@@ -540,7 +540,7 @@ jobs:
           const squashes = new Set(current.map((pull) => pull.mergeCommit.oid))
           const machinery = /^(?:(?:chore\(release\)|release): |fix\(deps\): depend on the stable )/
           const header = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/
-          const commits = git('log', '--no-merges', '--format=%H%x1f%s%x1f%b%x1f%an%x1e', 'HEAD', ...current.map((pull) => pull.headRefOid), '--not', ...exclude, '--', '.', ...nested)
+          const log = (...revisions) => git('log', '--no-merges', '--format=%H%x1f%s%x1f%b%x1f%an%x1e', ...revisions, '--not', ...exclude, '--', '.', ...nested)
             .split('\x1e')
             .map((record) => record.replace(/^\n/, ''))
             .filter(Boolean)
@@ -548,7 +548,31 @@ jobs:
               const [sha, subject, body, author] = record.split('\x1f')
               return { sha, subject, body, author }
             })
-            .filter((commit) => !squashes.has(commit.sha) && !machinery.test(commit.subject))
+            .filter((commit) => !machinery.test(commit.subject))
+          const reverts = (commit, older) =>
+            [...commit.body.matchAll(/^This reverts commit ([0-9a-f]{7,40})\b/gm)].some((match) => older.sha.startsWith(match[1])) ||
+            [...commit.body.matchAll(/^Reverts ([\w.-]+\/[\w.-]+)#(\d+)\s*$/gm)].some((match) => match[1].toLowerCase() === slug.toLowerCase() && older.subject.endsWith(` (#${match[2]})`))
+          const withoutReverts = (newestFirst) => {
+            const cancelled = new Set()
+            newestFirst.forEach((commit, index) => {
+              if (cancelled.has(commit.sha)) return
+              const targets = newestFirst.slice(index + 1).filter((older) => !cancelled.has(older.sha) && reverts(commit, older))
+              if (targets.length > 0) [commit, ...targets].forEach((reverting) => cancelled.add(reverting.sha))
+            })
+            return newestFirst.filter((commit) => !cancelled.has(commit.sha))
+          }
+          const own = log('HEAD')
+          const kept = withoutReverts(own)
+          const cancelled = new Set(own.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha))
+          const tasks = new Set(current.filter((pull) => cancelled.has(pull.mergeCommit.oid)).flatMap((pull) => {
+            const earlier = current
+              .filter((other) => other !== pull && holds('merge-base', '--is-ancestor', other.mergeCommit.oid, pull.mergeCommit.oid))
+              .map((other) => other.headRefOid)
+            return git('rev-list', pull.headRefOid, '--not', 'HEAD', ...exclude, ...earlier).split('\n')
+          }))
+          const commits = withoutReverts(
+            log('HEAD', ...current.map((pull) => pull.headRefOid)).filter((commit) => !squashes.has(commit.sha) && !cancelled.has(commit.sha) && !tasks.has(commit.sha)),
+          )
           const sections = [
             ['feat', '🚀 Enhancements'], ['perf', '🔥 Performance'], ['fix', '🩹 Fixes'], ['refactor', '💅 Refactors'],
             ['docs', '📖 Documentation'], ['build', '📦 Build'], ['types', '🌊 Types'], ['revert', '⏪ Reverts'],

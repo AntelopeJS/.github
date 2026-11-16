@@ -514,6 +514,57 @@ for (const { file, text } of workflows) {
       assert.ok(notes.includes(sections), notes);
     });
 
+    test("Write release notes leave out a reverted commit and its revert, with the tasks of their pull requests", () => {
+      const repo = join(root, `${file}-reverts`);
+      mkdirSync(repo);
+      git(repo, "init", "--quiet", "--initial-branch=main");
+      commitFiles(repo, "feat: first", { "package.json": "{}\n" });
+      git(repo, "tag", "v1.24.2");
+      git(repo, "checkout", "--quiet", "-b", "next");
+      const reordered = commitFiles(repo, "fix(modules): stop consumers before the providers they are bound to (#516)", { "stop.js": "consumers\n" });
+      writeFileSync(join(repo, "stop.js"), "providers\n");
+      git(repo, "commit", "--quiet", "--all", "-m", "refactor(modules): restore the stop order of 1.24.2 (#522)", "-m", `This reverts commit ${reordered}.\nReverts AntelopeJS/antelopejs#516`);
+      const kept = commitFiles(repo, "fix(modules): converge install --fix on a prerelease interface (#525)", { "install.js": "\n" });
+      git(repo, "checkout", "--quiet", "main");
+      git(repo, "merge", "--quiet", "--squash", "next");
+      git(repo, "commit", "--quiet", "-m", "feat: promote next to main (#524)");
+      const promotion = git(repo, "rev-parse", "HEAD");
+      git(repo, "checkout", "--quiet", "-b", "cache");
+      const task = commitFiles(repo, "fix(cache): drop the lock folder", { "cache.js": "drop\n" });
+      git(repo, "checkout", "--quiet", "main");
+      git(repo, "merge", "--quiet", "--squash", "cache");
+      git(repo, "commit", "--quiet", "-m", "fix(cache): drop the lock folder (#530)");
+      const dropped = git(repo, "rev-parse", "HEAD");
+      git(repo, "checkout", "--quiet", "-b", "restore");
+      git(repo, "revert", "--no-edit", dropped);
+      const revertTask = git(repo, "rev-parse", "HEAD");
+      git(repo, "checkout", "--quiet", "main");
+      git(repo, "merge", "--quiet", "--squash", "restore");
+      git(repo, "commit", "--quiet", "-m", "fix(cache): keep the lock folder (#531)", "-m", `This reverts commit ${dropped}.`);
+      const restored = git(repo, "rev-parse", "HEAD");
+      const pulls = [
+        { number: 531, mergeCommit: { oid: restored }, headRefOid: revertTask },
+        { number: 530, mergeCommit: { oid: dropped }, headRefOid: task },
+        { number: 524, mergeCommit: { oid: promotion }, headRefOid: kept },
+      ];
+      const env = { PATH: `${fakeNpm}:${process.env.PATH ?? ""}`, FAKE_PULLS: JSON.stringify(pulls), GITHUB_REPOSITORY: "AntelopeJS/antelopejs", DEFAULT_BRANCH: "main", RELEASE_VERSION: "1.24.3", ...hermeticGit };
+      const result = runStep(text, "Write release notes", repo, env);
+      assert.equal(result.status, 0, result.stderr);
+      const notes = [
+        "[compare changes](https://github.com/AntelopeJS/antelopejs/compare/v1.24.2...v1.24.3)",
+        "",
+        "### 🩹 Fixes",
+        "",
+        "- **modules:** Converge install --fix on a prerelease interface ([#525](https://github.com/AntelopeJS/antelopejs/pull/525))",
+        "",
+        "### ❤️ Contributors",
+        "",
+        "- Test",
+      ].join("\n");
+      assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), notes);
+      assert.equal(readFileSync(join(repo, "CHANGELOG.md"), "utf8"), `# Changelog\n\n## v1.24.3\n\n${notes}\n\n`);
+    });
+
     test("Publish stable release runs release-it with the written config", () => {
       const bin = join(root, `${file}-pnpm`);
       mkdirSync(bin);
