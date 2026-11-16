@@ -1,11 +1,14 @@
 import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
-import type { Release } from "./plan.ts";
+import type { Run } from "./plan.ts";
 import { isRecord, type System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
 const runViewRetries = 8;
 const dispatchPollMilliseconds = 5_000;
 const dispatchPollAttempts = 24;
+const registryPollMilliseconds = 15_000;
+/** How many times the train asks npm for a version it released: 80 polls 15 seconds apart, 20 minutes. */
+const registryPollAttempts = 80;
 
 /**
  * How a dispatched release ended. `failed` means nothing was published. `incomplete` means the run failed
@@ -57,14 +60,27 @@ function npmHolds(system: System, name: string, version: string): boolean | null
   return /\bE404\b/.test(result.stderr) ? false : null;
 }
 
-function failedRun(system: System, entry: Release, detail: string, url: string): RunOutcome {
+/**
+ * Polls npm until it serves a version, for up to {@link registryPollAttempts} polls. npm can serve a version
+ * minutes after `npm publish` returned, and a dependent's install fails until it does. Answers whether it served it.
+ */
+export function awaitRegistry(system: System, name: string, version: string): boolean {
+  for (let attempt = 0; attempt < registryPollAttempts; attempt += 1) {
+    if (npmHolds(system, name, version) === true) return true;
+    system.sleep(registryPollMilliseconds);
+  }
+  return false;
+}
+
+function failedRun(system: System, entry: Run, detail: string, url: string): RunOutcome {
+  if (entry.status === "repin") return { kind: "failed", detail };
   const held = npmHolds(system, entry.source.manifest.name, entry.to);
   if (held === false) return { kind: "failed", detail };
   if (held === true) return { kind: "incomplete", detail };
   return { kind: "unknown", detail: `${detail}, and npm view ${entry.source.manifest.name}@${entry.to} failed`, url };
 }
 
-function awaitRun(system: System, entry: Release, id: number): RunOutcome {
+function awaitRun(system: System, entry: Run, id: number): RunOutcome {
   const { slug } = entry.source;
   const url = `https://github.com/${slug}/actions/runs/${id}`;
   let failures = 0;
@@ -83,15 +99,18 @@ function awaitRun(system: System, entry: Release, id: number): RunOutcome {
   }
 }
 
-/** Dispatches the `release.yml` run of a release entry and waits until the train knows how it ended. */
-export function releaseRun(system: System, entry: Release): RunOutcome {
+/**
+ * Dispatches the `release.yml` run of an entry and waits until the train knows how it ended. A repin run gets no
+ * `release-version`, so it rewrites the pins and publishes nothing.
+ */
+export function releaseRun(system: System, entry: Run): RunOutcome {
   const { slug, directory, branch, head } = entry.source;
   const before = listRuns(system, slug);
   if (before === null) return { kind: "failed", detail: `gh run list --repo ${slug} failed, so nothing was dispatched` };
   const known = new Set(before.map((run) => run.id));
   const dispatched = system.run("gh", [
     "workflow", "run", "release.yml", "--repo", slug, "--ref", branch,
-    "-f", `release-version=${entry.to}`,
+    ...(entry.status === "release" ? ["-f", `release-version=${entry.to}`] : []),
     "-f", `release-commit=${head}`,
     "-f", `dependency-ranges=${JSON.stringify(entry.ranges)}`,
     ...(directory === "." ? [] : ["-f", `package-directory=${directory}`]),

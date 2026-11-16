@@ -179,9 +179,10 @@ jobs:
 ```
 
 A repository with a [`next` branch](README.md#next-branch) calls
-`next-sync.yml` on each push to `main`. The job must grant `issues: write`,
-which the sync uses to open and close the conflict issue when no `NOTION_TOKEN`
-secret exists:
+`next-sync.yml` on each push to `main`, and on demand by `workflow_dispatch`,
+which catches `next` up when GitHub dropped the push event of a merge. The job
+must grant `issues: write`, which the sync uses to open and close the conflict
+issue when no `NOTION_TOKEN` secret exists:
 
 ```yaml
 name: Next sync
@@ -189,6 +190,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 permissions: {}
 jobs:
   next-sync:
@@ -264,9 +266,9 @@ The squash commit is the only commit of the cycle on `main`. The release train
 reads each task's commit from the head of the promotion pull request instead,
 so the changelog lists every task. Title the pull request with the highest
 change type of the cycle, `feat!:` when it holds a breaking change, then
-`feat:`, then `fix:`. The release level reads that title beside the tasks'
-commits, so a title that is too low never releases too little. A breaking
-change gives a minor release, never a major one.
+`feat:`, then `fix:`. The release level reads the tasks' commits alone, so the
+title neither raises nor lowers it. A breaking change gives a minor release,
+never a major one.
 
 ### Stable fixes during a cycle
 

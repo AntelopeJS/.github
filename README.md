@@ -19,7 +19,7 @@ starts the run decides what it publishes. A caller only declares the triggers.
 | Event | Branch | Publishes |
 | ----- | ------ | --------- |
 | `push` | any branch but the default one, normally `next` | a preview under the npm dist-tag `next` |
-| `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest` |
+| `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest`, or nothing without `release-version` |
 
 Any other event or branch fails the run with the reason. Anyone allowed to run
 the workflow can dispatch a stable release with any `release-version` above
@@ -128,8 +128,10 @@ in dependency order.
   `feat`, `fix`, `perf`, `refactor`, `types` and `revert` ask for a patch.
   Tooling types (`build`, `ci`, `chore`, `test`, `docs`, `style`) and other
   types ask for nothing. The level is the highest one over the branch's
-  commits and the cycle's commits, so a promotion titled too low never
-  releases too little. A release never changes the major version.
+  commits and the cycle's commits. The squash commit of a promotion, a pull
+  request from `next` whose head the checkout holds, counts through the
+  cycle's commits alone, so its title neither raises nor lowers the level.
+  A release never changes the major version.
 - A commit whose message holds `This reverts commit <sha>` or
   `Reverts <owner>/<repo>#<n>`, as a squash merge of a revert pull request
   writes it, counts for nothing when the commit it reverts is in the same
@@ -163,10 +165,14 @@ in dependency order.
 - Each preview pin moves to the stable range of the version its dependency
   gets, such as `>=0.5.0 <0.6.0`. That is the version the plan releases, or the
   last stable release of a dependency the plan leaves unchanged. The
-  dependency must be one of the listed packages. A pin alone makes a patch
+  dependency must be one of the listed packages. A pin in `dependencies`,
+  `peerDependencies` or `optionalDependencies` alone makes a patch
   release, unless the branch forked with the same pin and the last stable
   release published the range it moves to now, as when the stable run
   rewrote a promoted pin and `next` has not merged that release back.
+  A `devDependencies` pin alone makes no release, since npm does not install
+  it. The plan lists the package as `repins devDependencies, publishes nothing`
+  with each pin and its range, and `go` commits the ranges without a release.
 - A pin moves only to a stable release that holds the pinned code. The last
   part of a preview version, `g<short sha>`, names its commit. A dependency the
   plan releases must contain that commit at the head of the branch the plan
@@ -216,7 +222,7 @@ in dependency order.
   they form a cycle, the plan orders its packages again on the first three
   fields alone. A cycle that remains is refused, and the plan names its
   packages. A left-out package is never part of a cycle.
-- A package with no releasable commit, no preview pin, no change to its
+- A package with no releasable commit, no preview pin to move, no change to its
   runtime dependencies and no dependent that pins a newer preview of it is
   unchanged.
 - `--exclude <name>` leaves a package out of this release. It is listed under
@@ -226,14 +232,18 @@ in dependency order.
 default branch of each package to release, one at a time, with the planned
 `release-version`, `release-commit` and `dependency-ranges`, plus
 `package-directory` for a package not at the root. Those are the only inputs a
-caller declares. It waits for each
-run to finish before it dispatches the next one, so a dependent installs a
-dependency that is already published. After the last one it prints what it
-published and, when the plan refused a package, what it did not publish.
+caller declares. A package the plan repins gets no `release-version`, so its
+run commits the ranges and publishes nothing. It waits for each
+run to finish before it dispatches the next one. npm can serve a version
+minutes after `npm publish` returned, so when a package left to run
+depends on the one just released, `go` also polls `npm view <name>@<version>`
+every 15 seconds until npm serves it, then dispatches the dependent. After the
+last one it prints what it published, what it repinned and, when the plan
+refused a package, what it did not publish.
 
 `go` stops at the first release that does not succeed. A dispatch that GitHub
-refused published nothing. For a run that concluded with anything but
-success, `go` asks npm with `npm view <name>@<version>` whether it holds the
+refused published nothing, and so did a repin run. For a release run that
+concluded with anything but success, `go` asks npm with `npm view <name>@<version>` whether it holds the
 version. When npm does not, nothing was published. When it does, the run
 failed after the publish, and `go` lists the package as published. Run `go`
 again: the plan still lacks its tag, so the stable run writes the release
@@ -243,11 +253,13 @@ unknown. That happens when no run appears after the dispatch, when
 `gh run view` fails more than 8 times in a row, 15 seconds apart, or when
 `npm view` fails. The stop message lists what was published, what was not,
 and the unknown package with its run. Check an unknown run before you run `go`
-again. After a failure, fix it and run `go` again. The plan is read again from
+again. `go` also stops when npm does not serve a release within 20 minutes:
+the release is published, and its dependents are not. Run `go` again once
+`npm view` prints the version. After a failure, fix it and run `go` again. The plan is read again from
 the tags, so the train continues where it stopped.
 
-A stable run commits to the default branch of its repository. So after each
-release, when the rest of the plan holds another package of the same
+A stable or repin run commits to the default branch of its repository. So
+after each run, when the rest of the plan holds another package of the same
 repository, `go` reads the plan again. It goes on from the new head when the
 packages, versions and ranges left to release are the same. It stops when they
 changed, and when the repository did not move, which happens with a local
@@ -286,16 +298,19 @@ A stable run then does the following.
    oldest first, the breaking changes and the contributors. It reads the tasks
    the way the plan does, from the heads of the pull requests merged into the
    default branch since the last stable tag (`gh pr list` with
-   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. A subject that is not
-   conventional is left out. When the release writes stable ranges, the notes
+   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. It leaves out a revert
+   and the commit it reverts, with the tasks of their pull requests, as the
+   plan does. A subject that is not conventional is left out. When the release writes stable ranges, the notes
    also list `Depend on the stable <names>` under Fixes. It writes them under a
    `## v<version>` heading on top of the changelog, the `output` of
    `changelogen.config.json` or `CHANGELOG.md`, and stages it. It writes a
    release-it config from the repository's `.release-it.json`, without the
    `release-it-changelogen` plugin and with the notes as the GitHub release
    notes.
-7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
-   config. release-it bumps `package.json`. In place of release-it's own
+7. It runs `pnpm exec release-it --ci --verbose --increment=<release-version>`
+   with that config. `--verbose` prints the stdout and stderr of every hook,
+   so the log of a failed hook shows why it failed. release-it bumps
+   `package.json`. In place of release-it's own
    `npm publish`, a `before:npm:release` hook packs the package with
    `pnpm pack`, which resolves each `workspace:` and `catalog:` spec, and
    publishes the tarball under `latest`, as a preview does under `next`. The
@@ -307,18 +322,32 @@ A stable run then does the following.
    `npm.publish` to `false` because it publishes itself, get no hook. It never
    runs the repository's `release` script, so no tests run.
 
+A dispatch without `release-version` is a repin run. It needs `release-commit`
+and refuses a branch that moved past it, like a stable run. It refuses a
+`dependency-ranges` that is empty or names a preview in `dependencies`,
+`peerDependencies` or `optionalDependencies`, which only a release may move.
+It writes the ranges into `package.json` as step 3 does, updates the lockfile
+with `pnpm install --lockfile-only`, pushes the same
+`fix(deps): depend on the stable <names>` commit to the `integration-branch`
+and to the default branch, and publishes nothing. The plan and the release
+notes skip that commit, so it releases nothing by itself.
+
 ### Workflow inputs
 
 `release-npm-public.yml` and `release-npm-private.yml` take the same inputs.
+Each forwards them to `release-npm.yml`, which holds the one release job, with
+`registry` set to `public` or `private`. The registry picks the npm registry,
+the scope and `publishConfig` that the metadata check asks for, and whether
+`NPM_ANTELOPE_TOKEN` is required. Callers keep calling the two entry points.
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
-| `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. A preview ignores it. |
+| `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. Empty, a dispatch only moves `devDependencies` pins. A preview ignores it. |
 | `release-commit` | `""` | Commit SHA a `workflow_dispatch` run releases, 40 hexadecimal characters. The release train sets it to the commit it planned. A stable run fails when the branch moved past it. A preview ignores it. |
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
 | `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
-| `integration-branch` | `next` | Branch that receives the `fix(deps)` commit of a stable run. A repository without it gets nothing. |
+| `integration-branch` | `next` | Branch that receives the `fix(deps)` commit of a stable or repin run. A repository without it gets nothing. |
 
 The public workflow publishes to npmjs with public access and provenance and
 needs the `RELEASE_GITHUB_TOKEN` secret for a stable release. The private
@@ -331,7 +360,9 @@ holds must name it in its own `repository.url` too.
 
 Both runs write to the repository only with `RELEASE_GITHUB_TOKEN`, so the job
 holds `contents: read`, and the public one also `id-token: write` for npm
-trusted publishing.
+trusted publishing. Each entry point grants these to its call of
+`release-npm.yml`, which declares no permissions and so holds exactly that
+grant.
 
 Runs share a concurrency group per repository, event and package directory,
 and a running release is never cancelled. Previews and stable releases sit in
@@ -503,10 +534,9 @@ It accepts these optional inputs:
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
-| `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
+| `renovate-sync` | `false` | Accepted and ignored. Every caller passes `false` and runs the [Renovate sync](#renovate-sync) from its own job. |
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job then adds `test` to `ANTELOPEJS_CHECKS_SKIP` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
 | `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-pull-requests` | `false` | With `windows`, also run the Windows jobs in the `fast` and `full` tiers of pull requests and manual runs. |
 
@@ -600,11 +630,6 @@ head whose sync output was not applied fails `ci / checks`, and a pushed head
 whose dispatched result was not reported has no `ci / checks` the ruleset
 counts.
 
-Callers still on a single `ci` job that grants `contents: write`,
-`actions: write` and `statuses: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
-`ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
-its failure or cancellation still fails `ci / checks`.
-
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
@@ -656,6 +681,16 @@ pull request would squash it, and the same conflict would come back.
 The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
 called workflow cannot ask for more than its caller grants, so GitHub refuses
 to start the sync otherwise.
+
+GitHub sometimes drops the push event of a merge, for instance when the merge
+call answers a 502 and lands anyway: no `Next sync` runs and `next` stays
+behind `main`. The caller therefore also listens to `workflow_dispatch`, and
+`gh workflow run next-sync.yml --repo <owner/repo>` merges `main` into `next`.
+The sync reads the default branch from the repository, not from the event, so a
+dispatch needs no input and is a no-op when `next` already holds `main`. Check
+that `next` holds `main` after a promotion with
+`gh api repos/<owner/repo>/compare/main...next --jq .behind_by`, which must
+print `0`.
 
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge

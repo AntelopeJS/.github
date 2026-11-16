@@ -100,14 +100,14 @@ jobs:
           git add -A
           git commit --no-verify -q -m "chore(deps): apply antelopejs-sync output"
           if ! git push --no-verify -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${HEAD_REF}"; then
-            echo "::error::The sync commit could not be pushed. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant contents: write."
+            echo "::error::The sync commit could not be pushed. The job that calls ci-renovate-sync.yml must grant contents: write."
             exit 1
           fi
           sha=$(git rev-parse HEAD)
           caller="${GITHUB_WORKFLOW_REF#"${GH_REPO}/"}"
           caller="${caller%%@*}"
           if ! gh workflow run "$caller" --ref "$HEAD_REF" > /dev/null; then
-            echo "::error::The sync commit is pushed, but ${caller} could not be dispatched. The caller workflow must declare workflow_dispatch and the job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant actions: write."
+            echo "::error::The sync commit is pushed, but ${caller} could not be dispatched. The caller workflow must declare workflow_dispatch and the job that calls ci-renovate-sync.yml must grant actions: write."
             exit 1
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
@@ -164,7 +164,7 @@ jobs:
               *) state=error ;;
             esac
             if ! retry gh api -X POST "repos/${GH_REPO}/statuses/${SHA}" -f state="$state" -f context="$context" -f target_url="$url" -f description="${conclusion} in the workflow_dispatch run" > /dev/null; then
-              echo "::error::The sync commit's checks ran, but ${context} could not be reported on it. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant statuses: write."
+              echo "::error::The sync commit's checks ran, but ${context} could not be reported on it. The job that calls ci-renovate-sync.yml must grant statuses: write."
               exit 1
             fi
           done <<< "$reports"

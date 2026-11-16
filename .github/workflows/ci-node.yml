@@ -35,17 +35,9 @@ on:
         description: Multiline shell commands to run after checks
         default: ""
         type: string
-      skill-eval-offline:
-        description: Run the offline skill evals when the package's skills change
-        default: true
-        type: boolean
-      skill-eval-ref:
-        description: Ref of AntelopeJS/agent-skills that supplies the skill evals
-        default: main
-        type: string
       renovate-sync:
-        description: Run the Renovate sync inside this workflow; callers that call ci-renovate-sync.yml from their own job pass false
-        default: true
+        description: Accepted and ignored; every caller passes false and runs the Renovate sync from its own job calling ci-renovate-sync.yml
+        default: false
         type: boolean
       test-job:
         description: Run the test step in its own job, in parallel with the other checks
@@ -55,10 +47,6 @@ on:
         description: Run extra-commands in their own job, in parallel with the other checks
         default: false
         type: boolean
-      extra-job-timeout-minutes:
-        description: Minutes the extra-commands job may run before GitHub cancels it
-        default: 360
-        type: number
       windows:
         description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
@@ -312,9 +300,7 @@ jobs:
         run: pnpm run checks
 
       - name: Skill eval, offline
-        if: inputs.skill-eval-offline && runner.os != 'Windows'
-        env:
-          SKILL_EVAL_REF: ${{ inputs.skill-eval-ref }}
+        if: runner.os != 'Windows'
         run: |
           mapfile -t dirs < <(git ls-files ':(glob)package.json' ':(glob)**/package.json' | node -e 'const fs = require("fs"); const path = require("path"); for (const file of fs.readFileSync(0, "utf8").split("\n").filter(Boolean)) { const skills = JSON.parse(fs.readFileSync(file, "utf8")).antelopeJs?.skills; for (const dir of Array.isArray(skills) ? skills : []) console.log(path.posix.join(path.posix.dirname(file), dir)); }')
           if [ "${#dirs[@]}" -eq 0 ]; then
@@ -327,7 +313,7 @@ jobs:
           for dir in "${dirs[@]}"; do
             args+=(--skills "$dir")
           done
-          cli="github:AntelopeJS/agent-skills#${SKILL_EVAL_REF}"
+          cli="github:AntelopeJS/agent-skills#main"
           npx -y "$cli" evals check "${args[@]}"
           npx -y "$cli" evals --published "${args[@]}" --min-recall 0.5 --min-precision 0.5
 
@@ -472,7 +458,7 @@ jobs:
     needs: [tier, lint]
     if: inputs.extra-commands-job && inputs.extra-commands != '' && needs.tier.outputs.checks == 'true'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ inputs.extra-job-timeout-minutes }}
+    timeout-minutes: 360
     permissions:
       contents: read
     strategy:
@@ -732,13 +718,9 @@ jobs:
           fi
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 --log-opts="--remerge-diff ${base}..${head}" .
 
-  renovate-sync:
-    if: inputs.renovate-sync
-    uses: ./.github/workflows/ci-renovate-sync.yml
-
   checks:
     if: always()
-    needs: [tier, lint, node, test, extra, stress, gitleaks, renovate-sync]
+    needs: [tier, lint, node, test, extra, stress, gitleaks]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

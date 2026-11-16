@@ -13,7 +13,7 @@ describe("go", () => {
     assert.deepEqual(dispatches(calls), [
       ["AntelopeJS/interface-database", "release-version=0.5.0", `release-commit=${tip(interfaceDatabase)}`, "dependency-ranges={}"],
       ["AntelopeJS/mongodb", "release-version=1.8.7", `release-commit=${tip(mongodb)}`, 'dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}'],
-      ["AntelopeJS/dms-database", "release-version=0.5.4", `release-commit=${tip(dmsDatabase)}`, 'dependency-ranges={"@antelopejs/mongodb":">=1.8.7 <1.9.0"}'],
+      ["AntelopeJS/dms-database", `release-commit=${tip(dmsDatabase)}`, 'dependency-ranges={"@antelopejs/mongodb":">=1.8.7 <1.9.0"}'],
       ["AntelopeJS/dms", "release-version=0.11.2", `release-commit=${tip(dms)}`, "dependency-ranges={}", "package-directory=packages/automation"],
     ]);
     assert.ok(calls.filter((args) => args[0] === "workflow").every((args) => args[6] === "main"));
@@ -21,9 +21,10 @@ describe("go", () => {
       output(),
       `${expectedPlan()}published @antelopejs/interface-database 0.5.0  https://github.com/AntelopeJS/interface-database/actions/runs/100\n` +
         "published @antelopejs/mongodb 1.8.7  https://github.com/AntelopeJS/mongodb/actions/runs/101\n" +
-        "published @antelopejs/dms-database 0.5.4  https://github.com/AntelopeJS/dms-database/actions/runs/102\n" +
+        "repinned @antelopejs/dms-database devDependencies  https://github.com/AntelopeJS/dms-database/actions/runs/102\n" +
         "published @antelopejs/dms-automation 0.11.2  https://github.com/AntelopeJS/dms/actions/runs/103\n" +
-        "Published: @antelopejs/interface-database 0.5.0, @antelopejs/mongodb 1.8.7, @antelopejs/dms-database 0.5.4, @antelopejs/dms-automation 0.11.2.\n",
+        "Published: @antelopejs/interface-database 0.5.0, @antelopejs/mongodb 1.8.7, @antelopejs/dms-automation 0.11.2.\n" +
+        "Repinned, not published: @antelopejs/dms-database.\n",
     );
   });
 
@@ -40,7 +41,7 @@ describe("go", () => {
       [
         "failed @antelopejs/mongodb 1.8.7 (failure)  https://github.com/AntelopeJS/mongodb/actions/runs/101",
         "Published: @antelopejs/interface-database 0.5.0.",
-        "Not published: @antelopejs/mongodb 1.8.7, @antelopejs/dms-database 0.5.4.",
+        "Not published: @antelopejs/mongodb 1.8.7, @antelopejs/dms-database devDependencies.",
         "Fix the failure, then run go again to continue.",
         "",
       ].join("\n"),
@@ -55,8 +56,24 @@ describe("go", () => {
       [
         "failed @antelopejs/mongodb 1.8.7 after npm published it (failure)  https://github.com/AntelopeJS/mongodb/actions/runs/101",
         "Published: @antelopejs/interface-database 0.5.0, @antelopejs/mongodb 1.8.7.",
-        "Not published: @antelopejs/dms-database 0.5.4.",
+        "Not published: @antelopejs/dms-database devDependencies.",
         "Run go again: the stable run writes the release commit, tag and GitHub release of @antelopejs/mongodb 1.8.7 without publishing it again, then the train continues. If its tag is on the default branch already, only its GitHub release is missing.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a failed repin run published nothing, so the train stops without asking npm", () => {
+    const { system, calls, errors } = fakeSystem({ "AntelopeJS/dms-database": "failure" });
+    assert.equal(main(["go", interfaceDatabase, mongodb, dmsDatabase], system), 1);
+    assert.equal(calls.filter((args) => args[0] === "view" && args[1]?.startsWith("@antelopejs/dms-database")).length, 0);
+    assert.equal(
+      errors(),
+      [
+        "failed @antelopejs/dms-database devDependencies (failure)  https://github.com/AntelopeJS/dms-database/actions/runs/102",
+        "Published: @antelopejs/interface-database 0.5.0, @antelopejs/mongodb 1.8.7.",
+        "Not published: @antelopejs/dms-database devDependencies.",
+        "Fix the failure, then run go again to continue.",
         "",
       ].join("\n"),
     );
@@ -132,6 +149,36 @@ describe("go", () => {
         "Not published: nothing.",
         "Unknown: @antelopejs/mongodb 1.8.7 (https://github.com/AntelopeJS/mongodb/actions).",
         "Check that run before you run go again.",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("waits until npm serves a release before it dispatches the release that depends on it", () => {
+    const { system, calls } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 3 } });
+    assert.equal(main(["go", interfaceDatabase, mongodb], system), 0);
+    const steps = calls
+      .filter((args) => args[0] === "view" || args[0] === "workflow")
+      .map((args) => (args[0] === "view" ? `view ${args[1]}` : `dispatch ${args[4]}`));
+    assert.deepEqual(steps, [
+      "dispatch AntelopeJS/interface-database",
+      ...Array.from({ length: 4 }, () => "view @antelopejs/interface-database@0.5.0"),
+      "dispatch AntelopeJS/mongodb",
+    ]);
+  });
+
+  test("stops when npm does not serve a release within 20 minutes, before the release that depends on it", () => {
+    const { system, calls, errors } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 80 } });
+    assert.equal(main(["go", interfaceDatabase, mongodb], system), 1);
+    assert.equal(calls.filter((args) => args[0] === "view").length, 80);
+    assert.deepEqual(dispatches(calls).map(([repo]) => repo), ["AntelopeJS/interface-database"]);
+    assert.equal(
+      errors(),
+      [
+        "npm did not serve @antelopejs/interface-database 0.5.0 within 20 minutes of its release, so @antelopejs/mongodb 1.8.7, which depends on it, was not dispatched.",
+        "Published: @antelopejs/interface-database 0.5.0.",
+        "Not published: @antelopejs/mongodb 1.8.7.",
+        "Run go again once npm view @antelopejs/interface-database@0.5.0 version prints 0.5.0.",
         "",
       ].join("\n"),
     );

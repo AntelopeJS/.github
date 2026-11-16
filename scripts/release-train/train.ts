@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openCheckout, readSource, resolveRevision, workspacePackages, type Checkout, type Revision, type Target } from "./git.ts";
-import { commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
-import { computePlan, renderPlan, type Holder, type PackageSource, type Plan, type Release } from "./plan.ts";
+import { awaitRegistry, commitSearch, mergedPulls, releaseRun, type RunOutcome } from "./github.ts";
+import { computePlan, renderPlan, type Holder, type PackageSource, type Plan, type Run } from "./plan.ts";
 import type { System } from "./system.ts";
 
 interface Command {
@@ -123,29 +123,35 @@ function buildPlan(command: Command, system: System): Plan {
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
 
-function label(entry: Release): string {
-  return `${entry.source.manifest.name} ${entry.to}`;
+function label(entry: Run): string {
+  return `${entry.source.manifest.name} ${entry.status === "release" ? entry.to : "devDependencies"}`;
 }
 
-function list(releases: readonly Release[]): string {
-  return releases.length === 0 ? "nothing" : releases.map(label).join(", ");
+function list(runs: readonly Run[]): string {
+  return runs.length === 0 ? "nothing" : runs.map(label).join(", ");
 }
 
-function releasesOf(plan: Plan): Release[] {
-  return plan.entries.filter((entry) => entry.status === "release");
+function runsOf(plan: Plan): Run[] {
+  return plan.entries.filter((entry) => entry.status === "release" || entry.status === "repin");
 }
 
-function sameReleases(left: readonly Release[], right: readonly Release[]): boolean {
-  const keys = (entries: readonly Release[]): string =>
-    entries.map((entry) => `${label(entry)} ${JSON.stringify(entry.ranges)} ${JSON.stringify(entry.siblings)}`).join("\n");
+function sameRuns(left: readonly Run[], right: readonly Run[]): boolean {
+  const keys = (entries: readonly Run[]): string =>
+    entries
+      .map((entry) => `${label(entry)} ${JSON.stringify(entry.ranges)} ${entry.status === "release" ? JSON.stringify(entry.siblings) : ""}`)
+      .join("\n");
   return keys(left) === keys(right);
 }
 
-function stopLines(outcome: Exclude<RunOutcome, { kind: "success" }>, entry: Release, published: readonly Release[], rest: readonly Release[]): string[] {
+function published(done: readonly Run[], also: readonly Run[] = []): string {
+  return `Published: ${list([...done, ...also].filter((run) => run.status === "release"))}.`;
+}
+
+function stopLines(outcome: Exclude<RunOutcome, { kind: "success" }>, entry: Run, done: readonly Run[], rest: readonly Run[]): string[] {
   if (outcome.kind === "failed") {
     return [
       `failed ${label(entry)} ${outcome.detail}`,
-      `Published: ${list(published)}.`,
+      published(done),
       `Not published: ${list([entry, ...rest])}.`,
       "Fix the failure, then run go again to continue.",
     ];
@@ -153,14 +159,14 @@ function stopLines(outcome: Exclude<RunOutcome, { kind: "success" }>, entry: Rel
   if (outcome.kind === "incomplete") {
     return [
       `failed ${label(entry)} after npm published it ${outcome.detail}`,
-      `Published: ${list([...published, entry])}.`,
+      published(done, [entry]),
       `Not published: ${list(rest)}.`,
       `Run go again: the stable run writes the release commit, tag and GitHub release of ${label(entry)} without publishing it again, then the train continues. If its tag is on the default branch already, only its GitHub release is missing.`,
     ];
   }
   return [
     `unknown ${label(entry)}, ${outcome.detail}`,
-    `Published: ${list(published)}.`,
+    published(done),
     `Not published: ${list(rest)}.`,
     `Unknown: ${label(entry)} (${outcome.url}).`,
     "Check that run before you run go again.",
@@ -168,41 +174,56 @@ function stopLines(outcome: Exclude<RunOutcome, { kind: "success" }>, entry: Rel
 }
 
 function go(plan: Plan, replan: () => Plan, system: System): number {
-  const published: Release[] = [];
-  let pending = releasesOf(plan);
+  const done: Run[] = [];
+  let pending = runsOf(plan);
   for (let entry = pending[0]; entry !== undefined; entry = pending[0]) {
     const rest = pending.slice(1);
     const outcome = releaseRun(system, entry);
     if (outcome.kind !== "success") {
-      system.err(stopLines(outcome, entry, published, rest).join("\n"));
+      system.err(stopLines(outcome, entry, done, rest).join("\n"));
       return 1;
     }
-    system.out(`published ${label(entry)}  ${outcome.url}\n`);
-    published.push(entry);
+    system.out(`${entry.status === "release" ? "published" : "repinned"} ${label(entry)}  ${outcome.url}\n`);
+    done.push(entry);
     pending = rest;
+    const { name } = entry.source.manifest;
+    const dependent = rest.find(
+      (other) => Object.hasOwn(other.ranges, name) || (other.status === "release" && other.siblings.some((sibling) => sibling.name === name)),
+    );
+    if (entry.status === "release" && dependent !== undefined && !awaitRegistry(system, name, entry.to)) {
+      system.err(
+        [
+          `npm did not serve ${label(entry)} within 20 minutes of its release, so ${label(dependent)}, which depends on it, was not dispatched.`,
+          published(done),
+          `Not published: ${list(rest)}.`,
+          `Run go again once npm view ${name}@${entry.to} version prints ${entry.to}.`,
+        ].join("\n"),
+      );
+      return 1;
+    }
     const { slug, head } = entry.source;
     if (!rest.some((other) => other.source.slug === slug)) continue;
-    let next: Release[];
+    let next: Run[];
     try {
-      next = releasesOf(replan());
+      next = runsOf(replan());
     } catch (error) {
       system.err(
         [
           `The plan could not be read again after the release of ${label(entry)}: ${error instanceof Error ? error.message : String(error)}`,
-          `Published: ${list(published)}.`,
+          published(done),
           `Not published: ${list(rest)}.`,
         ].join("\n"),
       );
       return 1;
     }
     const moved = next.filter((other) => other.source.slug === slug).every((other) => other.source.head !== head);
-    if (!moved || !sameReleases(rest, next)) {
+    if (!moved || !sameRuns(rest, next)) {
       system.err(
         [
           moved
             ? `The plan changed after the release of ${label(entry)}. Read it with plan, then run go again.`
             : `${slug} did not move after the release of ${label(entry)}. Fetch its checkout, then run go again.`,
-          `Published: ${list(published)}.`,
+          published(done),
           `Not published: ${list(rest)}.`,
         ].join("\n"),
       );
@@ -211,7 +232,9 @@ function go(plan: Plan, replan: () => Plan, system: System): number {
     pending = next;
   }
   const refused = plan.entries.filter((entry) => entry.status === "refused").map((entry) => entry.source.manifest.name);
-  system.out(`Published: ${list(published)}.\n`);
+  const repinned = done.filter((run) => run.status === "repin");
+  system.out(`${published(done)}\n`);
+  if (repinned.length > 0) system.out(`Repinned, not published: ${repinned.map((run) => run.source.manifest.name).join(", ")}.\n`);
   if (refused.length > 0) system.out(`Refused, not published: ${refused.join(", ")}.\n`);
   return 0;
 }

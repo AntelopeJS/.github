@@ -406,6 +406,54 @@ describe("computePlan", () => {
     });
   });
 
+  test("a devDependency pin on an unchanged package is rewritten without a release, and a runtime pin beside it still releases", () => {
+    const x = source("x", "0.2.1", ["chore: tidy"]);
+    const tooling = source("dms-api", "0.20.2", ["chore: tidy"], { devDependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" } });
+    const result = plan([tooling, x]);
+    assert.deepEqual(entry(result.entries, "dms-api"), {
+      status: "repin",
+      source: tooling,
+      ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
+    });
+    assert.equal(
+      renderPlan(result),
+      [
+        "Release plan from main, 1 package: 1 to repin",
+        "",
+        `1. @antelopejs/dms-api repins devDependencies, publishes nothing  AntelopeJS/dms-api@${at("dms-api")}`,
+        "     @antelopejs/x 0.2.1-next.3.gabc1234 -> >=0.2.1 <0.3.0",
+        "Unchanged: @antelopejs/x, only chore commits since 0.2.1",
+        "",
+      ].join("\n"),
+    );
+    const runtime = source("dms", "0.20.2", [], {
+      dependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" },
+      devDependencies: { "@antelopejs/y": "0.4.0-next.1.gabc1234" },
+    });
+    const both = entry(plan([runtime, x, source("y", "0.4.0", [])]).entries, "dms");
+    assert.deepEqual(both.status === "release" && [both.to, both.reasons, both.ranges], [
+      "0.20.3",
+      ["replaces preview pins"],
+      { "@antelopejs/x": ">=0.2.1 <0.3.0", "@antelopejs/y": ">=0.4.0 <0.5.0" },
+    ]);
+  });
+
+  test("a runtime range change on the name of a devDependency pin still releases", () => {
+    const core = source("core", "1.1.0", []);
+    const accepting = source(
+      "dms-api",
+      "0.20.2",
+      ["chore(deps): accept core 1.1"],
+      { peerDependencies: { "@antelopejs/core": ">=1.1.0 <1.2.0" }, devDependencies: { "@antelopejs/core": "1.1.0-next.4.gabc1234" } },
+      { peerDependencies: { "@antelopejs/core": ">=1.0.0 <1.1.0" } },
+    );
+    const found = entry(plan([accepting, core]).entries, "dms-api");
+    assert.deepEqual(found.status === "release" && [found.to, found.reasons], [
+      "0.20.3",
+      ["moves peerDependencies @antelopejs/core >=1.0.0 <1.1.0 -> >=1.1.0 <1.2.0"],
+    ]);
+  });
+
   test("refuses a package whose preview dependency is left out, unlisted or has no stable release", () => {
     const excluded = plan([interfaceDatabase, mongodb], ["@antelopejs/interface-database"]).entries;
     assert.equal(entry(excluded, "interface-database").status, "excluded");

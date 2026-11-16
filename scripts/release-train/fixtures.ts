@@ -91,6 +91,7 @@ interface Run {
   id: number;
   repo: string;
   branch: string;
+  version: string;
   views: number;
 }
 
@@ -111,6 +112,8 @@ interface Fakes {
   compareDown?: boolean;
   views?: Record<string, View[]>;
   npm?: Record<string, string>;
+  /** How many polls npm answers E404 for a name@version after its run succeeded. */
+  lag?: Record<string, number>;
   dispatched?: (repo: string, fields: Record<string, string>) => void;
 }
 
@@ -118,6 +121,8 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   const calls: string[][] = [];
   const sleeps: number[] = [];
   const runs: Run[] = [];
+  const released = new Set<string>();
+  const lags = { ...gh.lag };
   let out = "";
   let err = "";
   const answer = (stdout: string, status = 0): RunResult => ({ status, stdout, stderr: status === 0 ? "" : "failed" });
@@ -130,7 +135,11 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       }
       calls.push([...args]);
       if (command === "npm") {
-        const held = gh.npm?.[args[1] ?? ""];
+        const spec = args[1] ?? "";
+        const version = spec.slice(spec.lastIndexOf("@") + 1);
+        const lag = lags[spec] ?? 0;
+        if (released.has(version) && lag > 0) lags[spec] = lag - 1;
+        const held = gh.npm?.[spec] ?? (released.has(version) && lag === 0 ? version : undefined);
         if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
         return held === "error" ? answer("", 1) : answer(`${held}\n`);
       }
@@ -140,7 +149,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);
-        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), views: 0 });
+        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0 });
         const fields = Object.fromEntries(
           args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
         );
@@ -158,6 +167,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       if (view === "fail") return answer("", 1);
       const status = view === "running" ? "in_progress" : "completed";
       const conclusion = status === "completed" ? (conclusions[repo] ?? "success") : "";
+      if (conclusion === "success") released.add(run.version);
       return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
     },
     sleep: (milliseconds) => {
@@ -189,15 +199,14 @@ export function short(sha: string): string {
 }
 
 export const expectedPlan = (): string => [
-  "Release plan from main, 4 packages: 4 to release",
+  "Release plan from main, 4 packages: 3 to release, 1 to repin",
   "",
   `1. @antelopejs/interface-database 0.4.2 -> 0.5.0 (minor)  AntelopeJS/interface-database@${short(tip(interfaceDatabase))}`,
   "     feat(query)!: drop the legacy cursor",
   `2. @antelopejs/mongodb 1.8.6 -> 1.8.7 (patch)  AntelopeJS/mongodb@${short(tip(mongodb))}`,
   "     fix(database): close the change feed",
   `     @antelopejs/interface-database 0.4.3-next.12.g${short(commits.cursor)} -> >=0.5.0 <0.6.0`,
-  `3. @antelopejs/dms-database 0.5.3 -> 0.5.4 (patch)  AntelopeJS/dms-database@${short(tip(dmsDatabase))}`,
-  "     replaces preview pins",
+  `3. @antelopejs/dms-database repins devDependencies, publishes nothing  AntelopeJS/dms-database@${short(tip(dmsDatabase))}`,
   `     @antelopejs/mongodb 1.8.7-next.40.g${short(commits.feed)} -> >=1.8.7 <1.9.0`,
   `4. @antelopejs/dms-automation 0.11.1 -> 0.11.2 (patch)  AntelopeJS/dms:packages/automation@${short(tip(dms))}`,
   "     perf(automation): faster",

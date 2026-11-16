@@ -9,6 +9,7 @@ import { main } from "./train.ts";
 
 const read = (path: string): string => readFileSync(new URL(path, import.meta.url), "utf8");
 const caller = read("./frozen-caller.yml");
+const release = read("../../.github/workflows/release-npm.yml");
 const scratch = mkdtempSync(join(tmpdir(), "release-caller-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -58,28 +59,38 @@ describe("the frozen caller", () => {
 
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
-    const shared = read(`../../.github/workflows/${file}`);
+    const entry = read(`../../.github/workflows/${file}`);
     const job = registry === "public" ? caller : caller.replace("release-npm-public.yml", file).replace("  id-token: write\n", "");
 
     test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
       assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
-      const accepted = entries(shared, ["workflow_call", "inputs"]);
+      const accepted = entries(entry, ["workflow_call", "inputs"]);
       const passed = [...entries(job, ["jobs", "release", "with"]).keys()];
       assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
       const required = [...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name);
       assert.deepEqual(required.filter((name) => !passed.includes(name)), []);
-      const secrets = [...entries(shared, ["workflow_call", "secrets"])].filter(([, lines]) => lines.includes("required: true"));
+      const secrets = [...entries(entry, ["workflow_call", "secrets"])].filter(([, lines]) => lines.includes("required: true"));
       assert.deepEqual(secrets, []);
       const granted = entries(job, ["permissions"]);
-      for (const [scope, [level = ""]] of entries(shared, ["jobs", "release", "permissions"])) {
+      for (const [scope, [level = ""]] of entries(entry, ["jobs", "release", "permissions"])) {
         const grant = granted.get(scope)?.[0];
         assert.ok(level === "read" ? grant === "read" || grant === "write" : grant === level, `${file} asks ${scope}: ${level}, the caller grants ${grant}`);
       }
     });
 
+    test(`${file} forwards every input and secret it declares to release-npm.yml, and names its registry`, () => {
+      const forwarded = entries(entry, ["jobs", "release", "with"]);
+      assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
+      assert.deepEqual(forwarded.get("registry"), [registry]);
+      for (const name of entries(entry, ["workflow_call", "inputs"]).keys()) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
+      const secrets = entries(entry, ["jobs", "release", "secrets"]);
+      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
+      for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
+    });
+
     test(`${file} resolves the caller's push and dispatch without any other input`, () => {
       const step = (() => {
-        const lines = shared.split("\n");
+        const lines = release.split("\n");
         const start = lines.indexOf("      - name: Resolve release mode");
         const run = lines.indexOf("        run: |", start);
         const body: string[] = [];
@@ -90,9 +101,10 @@ describe("the frozen caller", () => {
         return body.join("\n");
       })();
       writeFileSync(join(scratch, "mode.sh"), step);
-      const accepted = entries(shared, ["workflow_call", "inputs"]);
+      const accepted = entries(entry, ["workflow_call", "inputs"]);
       const wired = entries(job, ["jobs", "release", "with"]);
-      const stepEnv = entries(shared.slice(shared.indexOf("      - name: Resolve release mode")), ["env"]);
+      const forwarded = entries(entry, ["jobs", "release", "with"]);
+      const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
       const resolve = (event: string, ref: string, dispatched: Record<string, string>) => {
         const input = (name: string): string => {
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
@@ -104,7 +116,9 @@ describe("the frozen caller", () => {
           if (value === "${{ github.event.repository.default_branch }}") return "main";
           const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
           assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
-          return input(name);
+          const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(forwarded.get(name)?.[0] ?? "")?.[1];
+          assert.ok(passed !== undefined, `${file} does not forward ${name}`);
+          return input(passed);
         };
         const env = Object.fromEntries([...stepEnv].map(([name, [value = ""]]) => [name, expression(value)]));
         const output = join(scratch, `output-${event}`);
