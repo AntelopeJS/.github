@@ -406,6 +406,22 @@ describe("computePlan", () => {
     ]);
   });
 
+  test("a runtime range change on the name of a devDependency pin still releases", () => {
+    const core = source("core", "1.1.0", []);
+    const accepting = source(
+      "dms-api",
+      "0.20.2",
+      ["chore(deps): accept core 1.1"],
+      { peerDependencies: { "@antelopejs/core": ">=1.1.0 <1.2.0" }, devDependencies: { "@antelopejs/core": "1.1.0-next.4.gabc1234" } },
+      { peerDependencies: { "@antelopejs/core": ">=1.0.0 <1.1.0" } },
+    );
+    const found = entry(plan([accepting, core]).entries, "dms-api");
+    assert.deepEqual(found.status === "release" && [found.to, found.reasons], [
+      "0.20.3",
+      ["moves peerDependencies @antelopejs/core >=1.0.0 <1.1.0 -> >=1.1.0 <1.2.0"],
+    ]);
+  });
+
   test("refuses a package whose preview dependency is left out, unlisted or has no stable release", () => {
     const excluded = plan([interfaceDatabase, mongodb], ["@antelopejs/interface-database"]).entries;
     assert.equal(entry(excluded, "interface-database").status, "excluded");

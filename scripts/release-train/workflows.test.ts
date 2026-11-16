@@ -248,7 +248,7 @@ for (const { file, text } of workflows) {
         devDependencies: { "@antelopejs/c": "^2.0.0-beta.1" },
       });
       const warned = runStep(text, "Apply dependency ranges", dev);
-      assert.deepEqual([warned.status, warned.stdout], [0, "::warning::The stable release keeps the devDependency preview @antelopejs/c ^2.0.0-beta.1.\n"]);
+      assert.deepEqual([warned.status, warned.stdout], [0, "::warning::This run keeps the devDependency preview @antelopejs/c ^2.0.0-beta.1.\n"]);
       const clean = packageDirectory(`${file}-clean`, { name: "@antelopejs/x", dependencies: { "@antelopejs/b": "~1.8.6" } });
       const passed = runStep(text, "Apply dependency ranges", clean);
       assert.deepEqual([passed.status, passed.stdout], [0, ""]);

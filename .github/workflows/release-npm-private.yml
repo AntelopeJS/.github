@@ -438,7 +438,7 @@ jobs:
           }
           const specsOf = (field) => Object.entries(pkg[field] ?? {})
           for (const [name, spec] of specsOf('devDependencies').filter(([, spec]) => isPreview(spec))) {
-            console.log(`::warning::The stable release keeps the devDependency preview ${name} ${spec}.`)
+            console.log(`::warning::This run keeps the devDependency preview ${name} ${spec}.`)
           }
           const refused = fields.slice(0, 3).flatMap((field) =>
             specsOf(field).filter(([, spec]) => isPreview(spec) || (!isRegistrySpec(spec) && !spec.startsWith('workspace:'))).map(([name, spec]) => `${field} ${name} ${spec}`),

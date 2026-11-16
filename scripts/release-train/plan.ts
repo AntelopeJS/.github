@@ -340,7 +340,7 @@ function dependencyChanges(source: PackageSource, ranges: Record<string, string>
     const before = stable[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && bases.every((base) => base[field]?.[name] !== after[name]))
+      .filter((name) => !(Object.hasOwn(ranges, name) && isPreviewSpec(after[name] ?? "")) && before[name] !== after[name] && bases.every((base) => base[field]?.[name] !== after[name]))
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;
