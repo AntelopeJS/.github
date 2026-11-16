@@ -280,8 +280,9 @@ A stable run then does the following.
    oldest first, the breaking changes and the contributors. It reads the tasks
    the way the plan does, from the heads of the pull requests merged into the
    default branch since the last stable tag (`gh pr list` with
-   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. A subject that is not
-   conventional is left out. When the release writes stable ranges, the notes
+   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. It leaves out a revert
+   and the commit it reverts, with the tasks of their pull requests, as the
+   plan does. A subject that is not conventional is left out. When the release writes stable ranges, the notes
    also list `Depend on the stable <names>` under Fixes. It writes them under a
    `## v<version>` heading on top of the changelog, the `output` of
    `changelogen.config.json` or `CHANGELOG.md`, and stages it. It writes a
