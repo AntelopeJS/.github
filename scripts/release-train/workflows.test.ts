@@ -447,7 +447,8 @@ for (const { file, text } of workflows) {
       const pulls = [
         { number: 122, mergeCommit: { oid: squash }, headRefOid: head },
         { number: 90, mergeCommit: { oid: oldSquash }, headRefOid: oldHead },
-        { number: 7, mergeCommit: { oid: "e".repeat(40) }, headRefOid: "f".repeat(40) },
+        { number: 89, mergeCommit: { oid: oldSquash }, headRefOid: "d".repeat(40) },
+        { number: 7,mergeCommit: { oid: "e".repeat(40) }, headRefOid: "f".repeat(40) },
       ];
       const env = {
         PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
@@ -459,7 +460,7 @@ for (const { file, text } of workflows) {
         ...hermeticGit,
       };
       const result = runStep(text, "Write release notes", repo, env);
-      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual([result.status, result.stderr], [0, ""]);
       const pull = (number: number): string => `[#${number}](https://github.com/AntelopeJS/interface-database/pull/${number})`;
       const commitLink = (sha: string): string => `[${sha.slice(0, 7)}](https://github.com/AntelopeJS/interface-database/commit/${sha})`;
       const closeOnError = `- **cursor:** Close on error (${commitLink(close)})`;
