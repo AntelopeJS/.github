@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
   commitLevel,
   computePlan,
   isRegistrySpec,
   renderPlan,
+  revertedCommits,
+  withoutReverts,
   type Commit,
   type Entry,
   type Manifest,
@@ -13,8 +16,8 @@ import {
 } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
-function commit(subject: string, body = ""): Commit {
-  return { sha: subject.length.toString(16).padStart(40, "0"), subject, level: commitLevel(subject, body) };
+function commit(subject: string, body = "", reverts: readonly string[] = []): Commit {
+  return { sha: createHash("sha1").update(subject).digest("hex"), subject, level: commitLevel(subject, body), reverts };
 }
 
 function source(
@@ -79,10 +82,58 @@ describe("commitLevel", () => {
     }
   });
 
+  test("the pull request title check accepts a revert, which releases a patch", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/ci-node.yml", import.meta.url), "utf8");
+    const pattern = /pattern='([^']+)'/.exec(workflow)?.[1];
+    assert.ok(pattern, "ci-node.yml has a title pattern");
+    assert.match("revert(builder): restore the sample rows", new RegExp(pattern));
+    assert.equal(commitLevel("revert(builder): restore the sample rows", ""), "patch");
+  });
+
   test("tooling types, unparsed subjects and merges release nothing", () => {
     for (const subject of ["build: x", "ci(release): x", "chore: x", "test: x", "docs: x", "style: x", "Update README", "Merge pull request #12 from a/b"]) {
       assert.equal(commitLevel(subject, ""), null, subject);
     }
+  });
+});
+
+describe("withoutReverts", () => {
+  const breaking = commit("refactor(builder)!: remove the sample rows (#1093)");
+  const fix = commit("fix(builder): close the cursor (#1094)");
+  const restore = commit("refactor(builder): restore the sample rows (#1098)", "", [breaking.sha]);
+  const levelOf = (commits: Commit[]) => {
+    const found = plan([{ ...source("builder", "0.5.2", []), commits: withoutReverts(commits), notes: withoutReverts(commits) }]).entries[0];
+    return found?.status === "release" ? found.level : found?.status;
+  };
+
+  test("a commit and its revert in the same range count for nothing, so the level is the other commits'", () => {
+    assert.deepEqual(withoutReverts([restore, fix, breaking]), [fix]);
+    assert.equal(levelOf([restore, fix, breaking]), "patch");
+    assert.equal(levelOf([restore, breaking]), "unchanged");
+  });
+
+  test("an abbreviated SHA names the commit it reverts", () => {
+    const short = commit("revert: remove the sample rows", "", [breaking.sha.slice(0, 9)]);
+    assert.deepEqual(withoutReverts([short, fix, breaking]), [fix]);
+  });
+
+  test("a revert of a commit older than the range counts as a change", () => {
+    const older = commit("revert: drop the cursor", "", ["0123456789abcdef0123456789abcdef01234567"]);
+    assert.deepEqual(withoutReverts([older]), [older]);
+    assert.equal(levelOf([older]), "patch");
+  });
+
+  test("a revert of a revert cancels that revert and leaves the first commit", () => {
+    const again = commit("refactor(builder)!: remove the sample rows again (#1100)", "", [restore.sha]);
+    assert.deepEqual(withoutReverts([again, restore, fix, breaking]), [fix, breaking]);
+    assert.equal(levelOf([again, restore, fix, breaking]), "minor");
+  });
+
+  test("reads the commits a message reverts from git's line and from a pull request reference it can resolve", () => {
+    const merges = new Map([["antelopejs/dms#1093", "daa3203f433e0985e65a61e91f3e51295204890a"]]);
+    const body = "Restores it.\n\nThis reverts commit daa3203f4.\nReverts AntelopeJS/dms#1093\nReverts AntelopeJS/dms#7\nReverts AntelopeJS/other#1093";
+    assert.deepEqual(revertedCommits(body, merges), ["daa3203f4", "daa3203f433e0985e65a61e91f3e51295204890a"]);
+    assert.deepEqual(revertedCommits("Mentions This reverts commit daa3203f4 inline.", merges), []);
   });
 });
 

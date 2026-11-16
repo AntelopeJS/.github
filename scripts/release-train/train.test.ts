@@ -304,6 +304,49 @@ describe("plan", () => {
     assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-moved, only ci commits since 1.0.1\n");
   });
 
+  test("--ref next counts neither a squashed pull request nor the one that reverts it, in the level or the notes", () => {
+    const cycle = (name: string, reverts: (squash: string) => string) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "0.5.2"), "src/rows.ts": "export const rows = 1;\n" });
+        git(path, "tag", "v0.5.2");
+        git(path, "checkout", "--quiet", "-b", "next");
+        const land = (branch: string, task: string, title: string, files: Record<string, string>): { head: string; squash: string } => {
+          git(path, "checkout", "--quiet", "-b", branch, "next");
+          const head = commit(path, task, files);
+          git(path, "checkout", "--quiet", "next");
+          git(path, "merge", "--quiet", "--squash", branch);
+          return { head, squash: commit(path, title, {}) };
+        };
+        const removal = land("remove", "refactor(builder)!: remove the sample rows", "refactor(builder)!: remove the sample rows (#1093)", { "src/rows.ts": "export {};\n" });
+        const fix = land("fix", "fix(builder): close the cursor", "fix(builder): close the cursor (#1094)", { "src/cursor.ts": "export {};\n" });
+        const restore = land("restore", `revert: remove the sample rows (#1093)\n\nThis reverts commit ${removal.squash.slice(0, 9)}.`, `refactor(builder): restore the sample rows (#1098)\n\nPuts it back.\n\n${reverts(removal.squash)}`, {
+          "src/rows.ts": "export const rows = 1;\n",
+        });
+        git(path, "checkout", "--quiet", "main");
+        pulls[`AntelopeJS/${name}`] = [removal, fix, restore].map(({ head, squash }, index) => ({ number: [1093, 1094, 1098][index], mergeCommit: { oid: squash }, headRefOid: head }));
+      });
+    const bodies: [string, (squash: string) => string][] = [
+      ["revert-both", (squash) => `This reverts commit ${squash}.\nReverts AntelopeJS/revert-both#1093`],
+      ["revert-pull", () => "Reverts AntelopeJS/revert-pull#1093"],
+    ];
+    for (const [name, reverts] of bodies) {
+      const reverted = cycle(name, reverts);
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
+      assert.equal(
+        output(),
+        [
+          "Release plan from next, 1 package: 1 to release",
+          "",
+          `1. @antelopejs/${name} 0.5.2 -> 0.5.3 (patch)  AntelopeJS/${name}@${short(tip(reverted, "next"))}`,
+          "     fix(builder): close the cursor",
+          "",
+        ].join("\n"),
+        name,
+      );
+    }
+  });
+
   test("--ref next moves a pin to the stable release that shipped the pinned commit through a promotion", () => {
     const ids = { task: "" };
     const dependency = repository("next-shipped", (path) => {

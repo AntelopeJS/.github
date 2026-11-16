@@ -172,9 +172,9 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          pattern='^(feat|fix|refactor|perf|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
           if [[ ! "$PR_TITLE" =~ $pattern ]]; then
-            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore."
+            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
             exit 1
           fi
 

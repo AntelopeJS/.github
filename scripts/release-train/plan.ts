@@ -6,6 +6,8 @@ export interface Commit {
   sha: string;
   subject: string;
   level: Level | null;
+  /** The commits, by full or abbreviated SHA, that this commit's message says it reverts. */
+  reverts: readonly string[];
 }
 
 /** Where a dependency must hold a preview's commit: at its planned head, or at its last stable tag. */
@@ -119,6 +121,8 @@ const previewPattern = /\d+\.\d+\.\d+-/;
 const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
+const revertedCommitPattern = /^This reverts commit ([0-9a-f]{7,40})\b/gm;
+const revertedPullPattern = /^Reverts ([\w.-]+\/[\w.-]+#\d+)\s*$/gm;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "types", "revert"]);
 const runtimeFields = dependencyFields.filter((field) => field !== "devDependencies");
 const versionPart = "(?:0|[1-9]\\d*|[xX*])";
@@ -203,6 +207,31 @@ export function commitLevel(subject: string, body: string): Level | null {
   if (header === null) return null;
   if (header.breaking || breakingFooterPattern.test(body)) return "minor";
   return patchTypes.has(header.type) ? "patch" : null;
+}
+
+/**
+ * The commits a commit message says it reverts: each `This reverts commit <sha>` line, and each
+ * `Reverts <owner>/<repo>#<n>` line whose pull request `mergeCommits` maps to its merge commit.
+ */
+export function revertedCommits(body: string, mergeCommits: ReadonlyMap<string, string>): string[] {
+  const pulls = [...body.matchAll(revertedPullPattern)].flatMap((match) => mergeCommits.get(match[1]?.toLowerCase() ?? "") ?? []);
+  return [...[...body.matchAll(revertedCommitPattern)].map((match) => match[1] ?? ""), ...pulls];
+}
+
+/**
+ * The commits less each one that reverts another of them, and the one it reverts. The commits run newest
+ * first, as git log lists them, so a revert that a later commit reverts cancels nothing.
+ */
+export function withoutReverts(commits: readonly Commit[]): Commit[] {
+  const cancelled = new Set<string>();
+  commits.forEach((commit, index) => {
+    if (cancelled.has(commit.sha)) return;
+    const target = commits
+      .slice(index + 1)
+      .find((older) => !cancelled.has(older.sha) && commit.reverts.some((sha) => older.sha.startsWith(sha)));
+    if (target !== undefined) cancelled.add(commit.sha).add(target.sha);
+  });
+  return commits.filter((commit) => !cancelled.has(commit.sha));
 }
 
 interface Dependency {
