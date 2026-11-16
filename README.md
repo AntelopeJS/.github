@@ -619,8 +619,10 @@ and file.
 
 ## Templates from a fresh clone
 
-`templates-fresh-clone.yml` runs every night in this repository, on demand by
-`workflow_dispatch`, and on a pull request that changes it. For each template
+`templates-fresh-clone.yml` runs every night in this repository, and on demand
+by `workflow_dispatch`. A pull request does not run it, so whoever edits the
+workflow or its table runs it on their branch before asking for a merge:
+`gh workflow run templates-fresh-clone.yml --ref <branch>`. For each template
 that `ajs project init` offers, it does what a new user does: it creates a
 project with `npx @antelopejs/core@latest`, which clones the template's `main`
 and installs it, then starts it the way the template's README says. The

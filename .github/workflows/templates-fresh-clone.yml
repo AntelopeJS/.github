@@ -4,16 +4,12 @@ on:
   schedule:
     - cron: "23 4 * * *"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/templates-fresh-clone.yml
-      - .github/templates-fresh-clone/**
 
 permissions: {}
 
 concurrency:
-  group: templates-fresh-clone-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: templates-fresh-clone-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   templates:
