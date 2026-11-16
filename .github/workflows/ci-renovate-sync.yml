@@ -11,7 +11,7 @@ jobs:
       && startsWith(github.head_ref, 'renovate/')
       && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
     concurrency:
       group: ci-renovate-sync-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -90,6 +90,7 @@ jobs:
           fi
 
       - name: Commit the sync output and start checks
+        id: push
         if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -105,13 +106,66 @@ jobs:
           sha=$(git rev-parse HEAD)
           caller="${GITHUB_WORKFLOW_REF#"${GH_REPO}/"}"
           caller="${caller%%@*}"
-          for _ in $(seq 1 12); do
-            if [ "$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${sha}&event=pull_request" --jq '.total_count')" != "0" ]; then
-              break
-            fi
-            sleep 5
-          done
           if ! gh workflow run "$caller" --ref "$HEAD_REF" > /dev/null; then
             echo "::error::The sync commit is pushed, but ${caller} could not be dispatched. The caller workflow must declare workflow_dispatch and the job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant actions: write."
             exit 1
           fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Report the dispatched checks on the sync commit
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.push.outputs.sha }}
+        run: |
+          retry() {
+            for _ in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              sleep 10
+            done
+            return 1
+          }
+          run=""
+          for _ in $(seq 1 24); do
+            run=$(gh api "repos/${GH_REPO}/actions/runs?head_sha=${SHA}&event=workflow_dispatch" --jq '.workflow_runs[0].id // empty' || true)
+            if [ -n "$run" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$run" ]; then
+            echo "::error::No workflow_dispatch run started on the sync commit ${SHA}."
+            exit 1
+          fi
+          until [ "$(gh api "repos/${GH_REPO}/actions/runs/${run}" --jq '.status' || true)" = completed ]; do
+            sleep 30
+          done
+          required=$(retry gh api "repos/${GH_REPO}/rules/branches/${BASE_REF}" --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.integration_id == null or .integration_id == 15368) | .context] | unique')
+          retry gh api --paginate "repos/${GH_REPO}/actions/runs/${run}/jobs" --jq '.jobs[] | {name, conclusion, html_url}' > "$RUNNER_TEMP/jobs.json"
+          reports=$(jq -rn --argjson required "$required" --slurpfile jobs "$RUNNER_TEMP/jobs.json" '
+            $required[] as $context
+            | [$jobs[] | select(.name == $context)] as $matches
+            | if ($matches | length) == 1 then [$context, $matches[0].conclusion, $matches[0].html_url] else [$context, "", ""] end
+            | @tsv')
+          missing=0
+          while IFS=$'\t' read -r context conclusion url; do
+            if [ -z "$context" ]; then
+              continue
+            fi
+            if [ -z "$url" ]; then
+              echo "::error::${BASE_REF} requires ${context}, which is not a single job of the dispatched run ${run}."
+              missing=1
+              continue
+            fi
+            case "$conclusion" in
+              success | failure) state=$conclusion ;;
+              *) state=error ;;
+            esac
+            if ! retry gh api -X POST "repos/${GH_REPO}/statuses/${SHA}" -f state="$state" -f context="$context" -f target_url="$url" -f description="${conclusion} in the workflow_dispatch run" > /dev/null; then
+              echo "::error::The sync commit's checks ran, but ${context} could not be reported on it. The job that calls ci-renovate-sync.yml (or ci-node.yml, when it runs the sync) must grant statuses: write."
+              exit 1
+            fi
+          done <<< "$reports"
+          exit "$missing"

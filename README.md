@@ -520,7 +520,12 @@ custom property is `template`) and commits the output to the branch as
 `github-actions[bot]`, so the bump pull request becomes conformant on its own.
 A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
-`checks` on the new head. When the sync output touches `.github/workflows/**`
+`checks` on the new head. A check from a `workflow_dispatch` run does not count
+for the pull request's required status checks, so the job waits for that run and
+reports, for each status check the base branch's rulesets require from GitHub
+Actions or from any source, the result of the run's job of that name on the new
+head as a commit status of the same name, which the ruleset counts. A required
+check the run has no single job for fails the job. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
 its summary: the pull request stays One-tap. On any other event the job is
 skipped.
@@ -529,9 +534,9 @@ The workflow declares no permissions: it inherits the token permissions of the
 job that calls it, so a caller that grants less keeps working and only a bump
 whose sync output must be pushed fails, with the missing permission named in the
 log. Call it from its own job, next to `ci-node.yml` with
-`renovate-sync: false`, so that only that job holds `contents: write` and
-`actions: write`, and only on Renovate pull requests. The caller must declare
-the `workflow_dispatch` trigger:
+`renovate-sync: false`, so that only that job holds `contents: write`,
+`actions: write` and `statuses: write`, and only on Renovate pull requests. The
+caller must declare the `workflow_dispatch` trigger:
 
 ```yaml
 name: ci
@@ -564,16 +569,18 @@ jobs:
     permissions:
       contents: write
       actions: write
+      statuses: write
     uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
 ```
 
 A sync failure then shows on `renovate-sync / Renovate sync` rather than on
 `ci / checks`. The bump stays gated: `pnpm run checks` runs `sync:check`, so a
-head whose sync output was not applied fails `ci / checks`, and a head pushed
-without a successful dispatch has no `ci / checks` at all.
+head whose sync output was not applied fails `ci / checks`, and a pushed head
+whose dispatched result was not reported has no `ci / checks` the ruleset
+counts.
 
-Callers still on a single `ci` job that grants `contents: write` and
-`actions: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
+Callers still on a single `ci` job that grants `contents: write`,
+`actions: write` and `statuses: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
 `ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
 its failure or cancellation still fails `ci / checks`.
 
