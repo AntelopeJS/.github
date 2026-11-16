@@ -131,6 +131,7 @@ jobs:
               tests=false
               while IFS= read -r file; do
                 case "$file" in
+                  packages/*/playground/checks/*) tests=true ;;
                   README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
                   *) tests=true ;;
                 esac
