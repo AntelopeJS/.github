@@ -198,7 +198,7 @@ function cycleNotes(
   merged: readonly MergedPull[],
   shipped: readonly string[],
   cancelled: ReadonlySet<string>,
-): { notes: Commit[]; explained: Map<string, Commit[]> } {
+): { notes: Commit[]; explained: Map<string, Commit[]>; promotions: Set<string> } {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
@@ -239,7 +239,8 @@ function cycleNotes(
           .flatMap((sha) => reverted.get(sha) ?? []),
       ]),
   );
-  return { notes, explained };
+  const promotions = new Set(current.filter((pull) => pull.branch === "next").map((pull) => pull.mergeCommit));
+  return { notes, explained, promotions };
 }
 
 function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
@@ -253,7 +254,8 @@ function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
  * directories, which hold other listed packages, and each commit that reverts another of the range, with the one it
  * reverts and the tasks of their pull requests. The squash commit of a pull request whose own tasks hold a reverted
  * commit that asks for at least the level of its title, such as a promotion titled from every commit of a cycle, counts
- * through its remaining tasks, not its title. With no merged pull request known, the notes are the commits.
+ * through its remaining tasks, not its title. The squash commit of a promotion, a pull request from next whose head the
+ * checkout holds, counts through its tasks alone, whatever its title. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
   const { directory, nested, siblings, merged, releases } = place;
@@ -310,7 +312,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const kept = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
   const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
-  const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
+  const commits = cycle === null ? kept : kept.filter((commit) => !cycle.promotions.has(commit.sha) && !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifests, stableSiblings, commits, notes };
 }

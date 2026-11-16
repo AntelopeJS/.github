@@ -966,6 +966,22 @@ describe("plan", () => {
     );
   });
 
+  test("a promotion titled fix whose cycle holds only test commits releases nothing", () => {
+    const promoted = repository("promotion-tests", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("promotion-tests", "1.1.2") });
+      git(path, "tag", "v1.1.2");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const head = commit(path, "test: add the stop-after-failed-start journey (#67)", { "test/journey.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      git(path, "merge", "--quiet", "--squash", "next");
+      git(path, "commit", "--quiet", "-m", "fix: promote next to main (#68)");
+      pulls["AntelopeJS/promotion-tests"] = [{ number: 68, mergeCommit: { oid: git(path, "rev-parse", "HEAD") }, headRefOid: head, headRefName: "next" }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", promoted], system), 0);
+    assert.equal(output(), "Release plan from main, nothing to release\n\nUnchanged: @antelopejs/promotion-tests, only test commits since 1.1.2\n");
+  });
+
   test("a pin moves to an unchanged dependency's stable only when that stable tag holds the preview's commit", () => {
     let cursor = "";
     const dependency = repository("hotfixed", (path) => {

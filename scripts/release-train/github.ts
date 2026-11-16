@@ -6,6 +6,9 @@ const runPollMilliseconds = 15_000;
 const runViewRetries = 8;
 const dispatchPollMilliseconds = 5_000;
 const dispatchPollAttempts = 24;
+const registryPollMilliseconds = 15_000;
+/** How many times the train asks npm for a version it released: 80 polls 15 seconds apart, 20 minutes. */
+const registryPollAttempts = 80;
 
 /**
  * How a dispatched release ended. `failed` means nothing was published. `incomplete` means the run failed
@@ -55,6 +58,18 @@ function npmHolds(system: System, name: string, version: string): boolean | null
   const result = system.run("npm", ["view", `${name}@${version}`, "version"]);
   if (result.status === 0) return result.stdout.trim() === version;
   return /\bE404\b/.test(result.stderr) ? false : null;
+}
+
+/**
+ * Polls npm until it serves a version, for up to {@link registryPollAttempts} polls. npm can serve a version
+ * minutes after `npm publish` returned, and a dependent's install fails until it does. Answers whether it served it.
+ */
+export function awaitRegistry(system: System, name: string, version: string): boolean {
+  for (let attempt = 0; attempt < registryPollAttempts; attempt += 1) {
+    if (npmHolds(system, name, version) === true) return true;
+    system.sleep(registryPollMilliseconds);
+  }
+  return false;
 }
 
 function failedRun(system: System, entry: Release, detail: string, url: string): RunOutcome {

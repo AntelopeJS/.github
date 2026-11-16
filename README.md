@@ -128,8 +128,10 @@ in dependency order.
   `feat`, `fix`, `perf`, `refactor`, `types` and `revert` ask for a patch.
   Tooling types (`build`, `ci`, `chore`, `test`, `docs`, `style`) and other
   types ask for nothing. The level is the highest one over the branch's
-  commits and the cycle's commits, so a promotion titled too low never
-  releases too little. A release never changes the major version.
+  commits and the cycle's commits. The squash commit of a promotion, a pull
+  request from `next` whose head the checkout holds, counts through the
+  cycle's commits alone, so its title neither raises nor lowers the level.
+  A release never changes the major version.
 - A commit whose message holds `This reverts commit <sha>` or
   `Reverts <owner>/<repo>#<n>`, as a squash merge of a revert pull request
   writes it, counts for nothing when the commit it reverts is in the same
@@ -221,9 +223,12 @@ default branch of each package to release, one at a time, with the planned
 `release-version`, `release-commit` and `dependency-ranges`, plus
 `package-directory` for a package not at the root. Those are the only inputs a
 caller declares. It waits for each
-run to finish before it dispatches the next one, so a dependent installs a
-dependency that is already published. After the last one it prints what it
-published and, when the plan refused a package, what it did not publish.
+run to finish before it dispatches the next one. npm can serve a version
+minutes after `npm publish` returned, so when a package left to release
+depends on the one just released, `go` also polls `npm view <name>@<version>`
+every 15 seconds until npm serves it, then dispatches the dependent. After the
+last one it prints what it published and, when the plan refused a package,
+what it did not publish.
 
 `go` stops at the first release that does not succeed. A dispatch that GitHub
 refused published nothing. For a run that concluded with anything but
@@ -237,7 +242,9 @@ unknown. That happens when no run appears after the dispatch, when
 `gh run view` fails more than 8 times in a row, 15 seconds apart, or when
 `npm view` fails. The stop message lists what was published, what was not,
 and the unknown package with its run. Check an unknown run before you run `go`
-again. After a failure, fix it and run `go` again. The plan is read again from
+again. `go` also stops when npm does not serve a release within 20 minutes:
+the release is published, and its dependents are not. Run `go` again once
+`npm view` prints the version. After a failure, fix it and run `go` again. The plan is read again from
 the tags, so the train continues where it stopped.
 
 A stable run commits to the default branch of its repository. So after each
@@ -280,16 +287,19 @@ A stable run then does the following.
    oldest first, the breaking changes and the contributors. It reads the tasks
    the way the plan does, from the heads of the pull requests merged into the
    default branch since the last stable tag (`gh pr list` with
-   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. A subject that is not
-   conventional is left out. When the release writes stable ranges, the notes
+   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. It leaves out a revert
+   and the commit it reverts, with the tasks of their pull requests, as the
+   plan does. A subject that is not conventional is left out. When the release writes stable ranges, the notes
    also list `Depend on the stable <names>` under Fixes. It writes them under a
    `## v<version>` heading on top of the changelog, the `output` of
    `changelogen.config.json` or `CHANGELOG.md`, and stages it. It writes a
    release-it config from the repository's `.release-it.json`, without the
    `release-it-changelogen` plugin and with the notes as the GitHub release
    notes.
-7. It runs `pnpm exec release-it --ci --increment=<release-version>` with that
-   config. release-it bumps `package.json`. In place of release-it's own
+7. It runs `pnpm exec release-it --ci --verbose --increment=<release-version>`
+   with that config. `--verbose` prints the stdout and stderr of every hook,
+   so the log of a failed hook shows why it failed. release-it bumps
+   `package.json`. In place of release-it's own
    `npm publish`, a `before:npm:release` hook packs the package with
    `pnpm pack`, which resolves each `workspace:` and `catalog:` spec, and
    publishes the tarball under `latest`, as a preview does under `next`. The
@@ -650,6 +660,16 @@ pull request would squash it, and the same conflict would come back.
 The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
 called workflow cannot ask for more than its caller grants, so GitHub refuses
 to start the sync otherwise.
+
+GitHub sometimes drops the push event of a merge, for instance when the merge
+call answers a 502 and lands anyway: no `Next sync` runs and `next` stays
+behind `main`. The caller therefore also listens to `workflow_dispatch`, and
+`gh workflow run next-sync.yml --repo <owner/repo>` merges `main` into `next`.
+The sync reads the default branch from the repository, not from the event, so a
+dispatch needs no input and is a no-op when `next` already holds `main`. Check
+that `next` holds `main` after a promotion with
+`gh api repos/<owner/repo>/compare/main...next --jq .behind_by`, which must
+print `0`.
 
 Merge the pull request from `next` to `main` with **Squash and merge**. `main`
 requires a linear history, so a merge commit cannot land there, and the merge
