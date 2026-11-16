@@ -412,7 +412,7 @@ types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
 | Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
 | Push to the default branch | `none` | none; `checks` succeeds |
 | Push to any other branch, such as `next` | `full` | as above |
-| `schedule` | `nightly` | `full`, plus the Windows jobs |
+| `schedule` | `nightly` | `full`, plus the Windows jobs and `Stress` |
 | `workflow_dispatch` and any other event | `full` | as above |
 
 The rule lives in the `ci-tier` composite action, which `Tier` calls. A caller
@@ -442,6 +442,15 @@ inside `pnpm run checks`. The Node.js jobs run `pnpm run checks` with `lint` in
 `typecheck`, whose build output later steps may read.
 `Lint and typecheck` runs `checks:prepare` when the repository defines it, then
 `typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
+
+In the `nightly` tier only, the `Stress` job looks for tests that pass alone
+but time out under load. On Linux, with the first `node-versions` entry or
+`.nvmrc`, it installs, runs `setup-commands`, `checks:prepare` and `typecheck`,
+starts the services, then runs `pnpm run test` three times beside four busy
+loops per CPU. The loops take CPU time from the test runner's workers, as a
+loaded machine does, while the workers keep the count the runner picks from
+the CPUs it sees. It fails when any run fails, and its summary counts the
+failed runs. A pull request never runs it, and a caller sets nothing for it.
 
 Every Node.js, test and extra-commands job sets two variables for the commands
 it runs:

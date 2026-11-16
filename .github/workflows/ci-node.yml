@@ -591,6 +591,115 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+  stress:
+    name: Stress
+    needs: [tier, lint]
+    if: needs.tier.outputs.tier == 'nightly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' }}
+      STRESS_RUNS: 3
+      STRESS_LOOPS_PER_CPU: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start services in the background
+        if: env.START_SERVICES == 'true'
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
+            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions || '[""]')[0] }}
+          node-version-file: ${{ fromJSON(inputs.node-versions || '[""]')[0] == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run setup commands
+        if: inputs.setup-commands != ''
+        env:
+          SETUP_COMMANDS: ${{ inputs.setup-commands }}
+        run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Restore cache
+        if: inputs.cache-paths != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-
+
+      - name: Build what the tests read
+        run: |
+          pnpm run --if-present checks:prepare
+          pnpm run typecheck
+
+      - name: Start services
+        id: services
+        if: env.START_SERVICES == 'true'
+        run: |
+          deadline=$((SECONDS + 900))
+          until [ -s "$RUNNER_TEMP/services.status" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              cat "$RUNNER_TEMP/services.log"
+              echo "::error::Services did not start within 15 minutes."
+              exit 1
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/services.log"
+          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
+
+      - name: Run the tests ${{ env.STRESS_RUNS }} times beside ${{ env.STRESS_LOOPS_PER_CPU }} busy loops per CPU
+        env:
+          CI: "1"
+        run: |
+          loops=$((STRESS_LOOPS_PER_CPU * $(nproc)))
+          for _ in $(seq "$loops"); do
+            (while :; do :; done) &
+          done
+          trap 'kill $(jobs -p) 2> /dev/null' EXIT
+          failed=0
+          for run in $(seq "$STRESS_RUNS"); do
+            echo "::group::Run ${run} of ${STRESS_RUNS}"
+            if ! pnpm run test; then
+              failed=$((failed + 1))
+              echo "::error::Run ${run} of ${STRESS_RUNS} of pnpm run test failed beside ${loops} busy loops."
+            fi
+            echo "::endgroup::"
+          done
+          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on $(nproc) CPUs" >> "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$FILE" down -v
+
   gitleaks:
     name: Gitleaks
     if: github.event_name == 'pull_request'
@@ -627,7 +736,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [tier, lint, node, test, extra, gitleaks, renovate-sync]
+    needs: [tier, lint, node, test, extra, stress, gitleaks, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
