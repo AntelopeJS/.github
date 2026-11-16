@@ -90,38 +90,18 @@ jobs:
           fetch-depth: 2
 
       - name: Pick the tier from the event, the target branch and the draft flag
+        id: pick
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+
+      - name: Pick the jobs and runners from the tier
         id: tier
         env:
+          TIER: ${{ steps.pick.outputs.tier }}
           EVENT: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REPOSITORY: ${{ github.repository }}
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          DRAFT: ${{ github.event.pull_request.draft }}
           WINDOWS: ${{ inputs.windows }}
           WINDOWS_PULL_REQUESTS: ${{ inputs.windows-pull-requests }}
         run: |
-          case "$EVENT" in
-            pull_request)
-              if [[ "$BASE_REF" == "$DEFAULT_BRANCH" && "$HEAD_REPOSITORY" == "$REPOSITORY" && "$HEAD_REF" =~ ^(next|develop)$ ]]; then
-                tier=none
-              elif [[ "$DRAFT" == true ]]; then
-                tier=draft
-              elif [[ "$BASE_REF" == "$DEFAULT_BRANCH" ]]; then
-                tier=full
-              else
-                tier=fast
-              fi
-              ;;
-            push)
-              if [[ "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then tier=none; else tier=full; fi
-              ;;
-            schedule) tier=nightly ;;
-            *) tier=full ;;
-          esac
-
+          tier="$TIER"
           lint=true checks=true tests=true test_base=""
           case "$tier" in
             none) lint=false checks=false tests=false ;;
@@ -131,6 +111,7 @@ jobs:
               tests=false
               while IFS= read -r file; do
                 case "$file" in
+                  packages/*/playground/checks/*) tests=true ;;
                   README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
                   *) tests=true ;;
                 esac
@@ -172,9 +153,9 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          pattern='^(feat|fix|refactor|perf|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
           if [[ ! "$PR_TITLE" =~ $pattern ]]; then
-            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, docs, test, build, ci, chore."
+            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
             exit 1
           fi
 
@@ -611,6 +592,116 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+  stress:
+    name: Stress
+    needs: [tier, lint]
+    if: needs.tier.outputs.tier == 'nightly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' }}
+      STRESS_RUNS: 3
+      STRESS_LOOPS_PER_CPU: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Start services in the background
+        if: env.START_SERVICES == 'true'
+        env:
+          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
+        run: |
+          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
+          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
+          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
+            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+            exit 1
+          fi
+          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
+            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions || '[""]')[0] }}
+          node-version-file: ${{ fromJSON(inputs.node-versions || '[""]')[0] == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run setup commands
+        if: inputs.setup-commands != ''
+        env:
+          SETUP_COMMANDS: ${{ inputs.setup-commands }}
+        run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Restore cache
+        if: inputs.cache-paths != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          restore-keys: |
+            ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-
+
+      - name: Build what the tests read
+        run: |
+          pnpm run --if-present checks:prepare
+          pnpm run typecheck
+
+      - name: Start services
+        id: services
+        if: env.START_SERVICES == 'true'
+        run: |
+          deadline=$((SECONDS + 900))
+          until [ -s "$RUNNER_TEMP/services.status" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              cat "$RUNNER_TEMP/services.log"
+              echo "::error::Services did not start within 15 minutes."
+              exit 1
+            fi
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/services.log"
+          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
+
+      - name: Run the tests ${{ env.STRESS_RUNS }} times beside ${{ env.STRESS_LOOPS_PER_CPU }} busy loops per CPU
+        env:
+          CI: "1"
+        run: |
+          loops=$((STRESS_LOOPS_PER_CPU * $(nproc)))
+          for _ in $(seq "$loops"); do
+            (while :; do :; done) &
+          done
+          trap 'kill $(jobs -p) 2> /dev/null' EXIT
+          failed=0
+          for run in $(seq "$STRESS_RUNS"); do
+            echo "::group::Run ${run} of ${STRESS_RUNS}"
+            if ! pnpm run test; then
+              failed=$((failed + 1))
+              echo "::error::Run ${run} of ${STRESS_RUNS} of pnpm run test failed beside ${loops} busy loops."
+            fi
+            echo "::endgroup::"
+          done
+          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on $(nproc) CPUs" >> "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+
+      - name: Stop services
+        if: always() && steps.services.outcome == 'success'
+        env:
+          FILE: ${{ inputs.services-compose-file }}
+        run: docker compose -f "$FILE" down -v
+
   gitleaks:
     name: Gitleaks
     if: github.event_name == 'pull_request'
@@ -647,7 +738,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [tier, lint, node, test, extra, gitleaks, renovate-sync]
+    needs: [tier, lint, node, test, extra, stress, gitleaks, renovate-sync]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

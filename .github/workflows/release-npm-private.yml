@@ -213,8 +213,6 @@ jobs:
           node-version: 24
           registry-url: https://npm.antelopejs.cloud/
           scope: "@antelopejs-private"
-          cache: pnpm
-          cache-dependency-path: ${{ steps.lockfile.outputs.path }}
 
       - name: Validate package publication metadata
         working-directory: ${{ inputs.package-directory }}
@@ -439,6 +437,14 @@ jobs:
             process.exit(1)
           }
           NODE
+
+      - name: Restore the pnpm store
+        if: steps.version.outputs.version != ''
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ${{ steps.lockfile.outputs.path }}
 
       - name: Install dependencies
         if: steps.version.outputs.version != ''

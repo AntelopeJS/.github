@@ -129,6 +129,13 @@ in dependency order.
   types ask for nothing. The level is the highest one over the branch's
   commits and the cycle's commits, so a promotion titled too low never
   releases too little. A release never changes the major version.
+- A commit whose message holds `This reverts commit <sha>` or
+  `Reverts <owner>/<repo>#<n>`, as a squash merge of a revert pull request
+  writes it, counts for nothing when the commit it reverts is in the same
+  range, and that commit counts for nothing too. Neither sets the level or
+  shows in the notes, and the tasks of their two pull requests do not either.
+  A revert of a revert leaves the first commit counted. A revert of a commit
+  older than the last stable tag counts as a change.
 - A package whose commits ask for nothing still gets a patch when its
   `dependencies`, `peerDependencies` or `optionalDependencies` hold a spec
   that differs from the `package.json` of its last stable tag, which npm
@@ -423,8 +430,25 @@ types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
 | Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
 | Push to the default branch | `none` | none; `checks` succeeds |
 | Push to any other branch, such as `next` | `full` | as above |
-| `schedule` | `nightly` | `full`, plus the Windows jobs |
+| `schedule` | `nightly` | `full`, plus the Windows jobs and `Stress` |
 | `workflow_dispatch` and any other event | `full` | as above |
+
+The rule lives in the `ci-tier` composite action, which `Tier` calls. A caller
+cannot read `ci-node.yml`'s outputs before the whole call ends, so a repository
+that declares jobs of its own picks the same tier in its own job with that
+action, which needs no checkout and no input:
+
+```yaml
+jobs:
+  tier:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
+    steps:
+      - id: tier
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+```
 
 The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
 the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
@@ -436,6 +460,15 @@ inside `pnpm run checks`. The Node.js jobs run `pnpm run checks` with `lint` in
 `typecheck`, whose build output later steps may read.
 `Lint and typecheck` runs `checks:prepare` when the repository defines it, then
 `typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
+
+In the `nightly` tier only, the `Stress` job looks for tests that pass alone
+but time out under load. On Linux, with the first `node-versions` entry or
+`.nvmrc`, it installs, runs `setup-commands`, `checks:prepare` and `typecheck`,
+starts the services, then runs `pnpm run test` three times beside four busy
+loops per CPU. The loops take CPU time from the test runner's workers, as a
+loaded machine does, while the workers keep the count the runner picks from
+the CPUs it sees. It fails when any run fails, and its summary counts the
+failed runs. A pull request never runs it, and a caller sets nothing for it.
 
 Every Node.js, test and extra-commands job sets two variables for the commands
 it runs:
@@ -498,7 +531,12 @@ custom property is `template`) and commits the output to the branch as
 `github-actions[bot]`, so the bump pull request becomes conformant on its own.
 A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
-`checks` on the new head. When the sync output touches `.github/workflows/**`
+`checks` on the new head. A check from a `workflow_dispatch` run does not count
+for the pull request's required status checks, so the job waits for that run and
+reports, for each status check the base branch's rulesets require from GitHub
+Actions or from any source, the result of the run's job of that name on the new
+head as a commit status of the same name, which the ruleset counts. A required
+check the run has no single job for fails the job. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
 its summary: the pull request stays One-tap. On any other event the job is
 skipped.
@@ -507,9 +545,9 @@ The workflow declares no permissions: it inherits the token permissions of the
 job that calls it, so a caller that grants less keeps working and only a bump
 whose sync output must be pushed fails, with the missing permission named in the
 log. Call it from its own job, next to `ci-node.yml` with
-`renovate-sync: false`, so that only that job holds `contents: write` and
-`actions: write`, and only on Renovate pull requests. The caller must declare
-the `workflow_dispatch` trigger:
+`renovate-sync: false`, so that only that job holds `contents: write`,
+`actions: write` and `statuses: write`, and only on Renovate pull requests. The
+caller must declare the `workflow_dispatch` trigger:
 
 ```yaml
 name: ci
@@ -542,16 +580,18 @@ jobs:
     permissions:
       contents: write
       actions: write
+      statuses: write
     uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
 ```
 
 A sync failure then shows on `renovate-sync / Renovate sync` rather than on
 `ci / checks`. The bump stays gated: `pnpm run checks` runs `sync:check`, so a
-head whose sync output was not applied fails `ci / checks`, and a head pushed
-without a successful dispatch has no `ci / checks` at all.
+head whose sync output was not applied fails `ci / checks`, and a pushed head
+whose dispatched result was not reported has no `ci / checks` the ruleset
+counts.
 
-Callers still on a single `ci` job that grants `contents: write` and
-`actions: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
+Callers still on a single `ci` job that grants `contents: write`,
+`actions: write` and `statuses: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
 `ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
 its failure or cancellation still fails `ci / checks`.
 
@@ -627,6 +667,31 @@ custom property is not `none`, with lychee. Dead links never fail the run; only
 a crash does. Links to npmjs.com are skipped because it rejects automated
 requests. The run uploads one JSON artifact, `link-rot`, keyed by repository
 and file.
+
+## Templates from a fresh clone
+
+`templates-fresh-clone.yml` runs every night in this repository, and on demand
+by `workflow_dispatch`. A pull request does not run it, so whoever edits the
+workflow or its table runs it on their branch before asking for a merge:
+`gh workflow run templates-fresh-clone.yml --ref <branch>`. For each template
+that `ajs project init` offers, it does what a new user does: it creates a
+project with `npx @antelopejs/core@latest`, which clones the template's `main`
+and installs it, then starts it the way the template's README says. The
+AntelopeJS modules of `antelope.config.ts` install from npm at that start, so
+a module release that breaks a template shows up the next night, with no pull
+request in the template.
+
+`.github/templates-fresh-clone/templates.json` holds one row per template: its
+name in the AntelopeJS/interfaces manifest, `project` or `module` init, the
+start command and the log line that means it is ready. The `Templates` job
+fails when the rows and the manifest's templates differ. Each template then
+runs in its own job beside a MongoDB on port 27017. The Docker templates
+run their container as uid 1000, which differs from the runner's user, so
+their rows make the project writable for every user before `docker compose up`. It fails when the command
+exits or prints an error line of `ajs` (one that starts with `✖ `, or
+`Failed to start modules` or `Failed to construct modules`), or the AdonisJS
+watcher's `Underlying HTTP server died`, before the ready
+line or in the 10 seconds after it, and when 25 minutes pass without it.
 
 ## Stale issues
 
