@@ -522,10 +522,9 @@ It accepts these optional inputs:
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
-| `renovate-sync` | `true` | Run the [Renovate sync](#renovate-sync) inside this workflow. Callers that call `ci-renovate-sync.yml` from their own job pass `false`. |
+| `renovate-sync` | `false` | Accepted and ignored. Every caller passes `false` and runs the [Renovate sync](#renovate-sync) from its own job. |
 | `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job then adds `test` to `ANTELOPEJS_CHECKS_SKIP` for `pnpm run checks`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `extra-job-timeout-minutes` | `360` | Minutes the `extra-commands-job` job may run before GitHub cancels it. |
 | `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-pull-requests` | `false` | With `windows`, also run the Windows jobs in the `fast` and `full` tiers of pull requests and manual runs. |
 
@@ -618,11 +617,6 @@ A sync failure then shows on `renovate-sync / Renovate sync` rather than on
 head whose sync output was not applied fails `ci / checks`, and a pushed head
 whose dispatched result was not reported has no `ci / checks` the ruleset
 counts.
-
-Callers still on a single `ci` job that grants `contents: write`,
-`actions: write` and `statuses: write` and calls `ci-node.yml` without inputs keep the Renovate sync:
-`ci-node.yml` runs the same sync as a nested call of `ci-renovate-sync.yml`, and
-its failure or cancellation still fails `ci / checks`.
 
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
