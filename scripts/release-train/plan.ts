@@ -44,11 +44,12 @@ export interface PackageSource {
   /** The manifest at the stable tag, which npm published, or null when there is no stable tag or the tag has no `package.json` in the directory. */
   stableManifest: Manifest | null;
   /**
-   * The manifest at the merge base of the stable tag and the branch read, which is the tag itself when the branch holds it.
-   * When the branch holds the head of the last pull request the tag shipped and that merge base is older than its merge,
-   * the base is that head. A promotion carries a dependency spec of the branch only when the branch changed it since that base.
+   * The manifests at the points where the branch read forked from the stable tag. The first is the merge base of the tag and
+   * the branch, which is the tag itself when the branch holds it. When the branch holds the head of the last pull request the
+   * tag shipped and that merge base is older than its merge, that head is a fork point too. A promotion carries a dependency
+   * spec of the branch only when the branch changed it since every fork point. Empty when none has a manifest.
    */
-  baseManifest: Manifest | null;
+  baseManifests: Manifest[];
   /** The commits on the branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -277,14 +278,14 @@ function highestLevel(commits: readonly Commit[]): Level | null {
 }
 
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const { stableManifest: stable, baseManifest: base } = source;
+  const { stableManifest: stable, baseManifests } = source;
   if (stable === null) return [];
+  const bases = baseManifests.length === 0 ? [stable] : baseManifests;
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
-    const forked = (base ?? stable)[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && forked[name] !== after[name])
+      .filter((name) => !Object.hasOwn(ranges, name) && before[name] !== after[name] && bases.every((base) => base[field]?.[name] !== after[name]))
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;

@@ -135,7 +135,8 @@ in dependency order.
   published, and that the branch changed since it forked from that tag. A
   branch that holds the tag forked at the tag itself. A branch that holds the
   head of the last pull request the tag shipped, but merged the default branch
-  only from before that pull request, forked at that head. It also gets a
+  only from before that pull request, forked at both: that head and its merge
+  base with the tag. A spec equal to either one is not the branch's change. It also gets a
   patch when a listed package pins a preview of it in `dependencies`,
   `peerDependencies` or `optionalDependencies` that is newer than its last
   stable release. The plan names each change and each pin. Otherwise the plan

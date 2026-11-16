@@ -317,6 +317,38 @@ describe("plan", () => {
     }
   });
 
+  test("--ref next reads a dependency move main made before the promotion as main's when the Next sync merged it late", () => {
+    const name = "next-synced-move";
+    const path = repository(name, (path) => {
+      commit(path, "feat: first", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      const moved = commit(path, "fix(deps): move to foo 1.5 (#5)", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^1.5.0" } }) });
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "feat: add the cursor (#3)", {});
+      commit(path, "chore(release): v1.1.0", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^1.5.0" } }) });
+      git(path, "tag", "v1.1.0");
+      const hotfix = commit(path, "fix(deps): move to foo 1.6 (#7)", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^1.6.0" } }) });
+      commit(path, "chore(release): v1.1.1", { "package.json": manifest(name, "1.1.1", { dependencies: { foo: "^1.6.0" } }) });
+      git(path, "tag", "v1.1.1");
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", moved);
+      commit(path, "ci: cache the store (#6)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls[`AntelopeJS/${name}`] = [
+        { number: 7, mergeCommit: { oid: hotfix }, headRefOid: hotfix },
+        { number: 5, mergeCommit: { oid: moved }, headRefOid: moved },
+        { number: 3, mergeCommit: { oid: squash }, headRefOid: task },
+      ];
+    });
+    git(path, "update-ref", "refs/remotes/origin/next", "next");
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", path], system), 0);
+    assert.equal(output(), `Release plan from next, nothing to release\n\nUnchanged: @antelopejs/${name}, only ci commits since 1.1.1\n`);
+  });
+
   test("--ref next reads a dependency move the stable release shipped through a promotion as shipped", () => {
     const promoted = repository("next-moved", (path) => {
       commit(path, "feat: first", { "package.json": manifest("next-moved", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
