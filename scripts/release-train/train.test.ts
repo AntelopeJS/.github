@@ -430,6 +430,40 @@ describe("plan", () => {
     assert.match(output(), /0\.5\.1 -> 0\.6\.0 \(minor\)/);
   });
 
+  test("a task pull request keeps its title's level over a reverted pair of a lower level in its own or a stacked branch", () => {
+    const titled = (name: string, stacked: boolean) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "0.5.1") });
+        git(path, "tag", "v0.5.1");
+        git(path, "checkout", "--quiet", "-b", "a");
+        const tried = commit(path, "fix: try", { "src/a.ts": "export const a = 1;\n" });
+        commit(path, `revert: drop the try\n\nThis reverts commit ${tried}.`, { "src/a.ts": "export {};\n" });
+        const a = commit(path, "fix: real", { "src/real.ts": "export {};\n" });
+        if (stacked) {
+          git(path, "checkout", "--quiet", "main");
+          git(path, "merge", "--quiet", "--squash", "a");
+          const squashA = commit(path, "fix: a (#1)", {});
+          git(path, "checkout", "--quiet", "-b", "b", a);
+          const b = commit(path, "wip", { "src/api.ts": "export {};\n" });
+          git(path, "checkout", "--quiet", "main");
+          git(path, "merge", "--quiet", "--squash", "b");
+          const squashB = commit(path, "feat(api)!: rename read to fetch (#2)", {});
+          pulls[`AntelopeJS/${name}`] = [{ number: 2, mergeCommit: { oid: squashB }, headRefOid: b }, { number: 1, mergeCommit: { oid: squashA }, headRefOid: a }];
+        } else {
+          const head = commit(path, "wip", { "src/api.ts": "export {};\n" });
+          git(path, "checkout", "--quiet", "main");
+          git(path, "merge", "--quiet", "--squash", "a");
+          const squash = commit(path, "feat(api)!: rename read to fetch (#3)", {});
+          pulls[`AntelopeJS/${name}`] = [{ number: 3, mergeCommit: { oid: squash }, headRefOid: head }];
+        }
+      });
+    for (const [name, stacked] of [["titled-own-pair", false], ["titled-stacked-pair", true]] as const) {
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", titled(name, stacked)], system), 0);
+      assert.match(output(), /0\.5\.1 -> 0\.6\.0 \(minor\)/, name);
+    }
+  });
+
   test("--ref next moves a pin to the stable release that shipped the pinned commit through a promotion", () => {
     const ids = { task: "" };
     const dependency = repository("next-shipped", (path) => {

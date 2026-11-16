@@ -307,7 +307,8 @@ function releaseOrder(sources: readonly PackageSource[], exclude: ReadonlySet<st
   );
 }
 
-function highestLevel(commits: readonly Commit[]): Level | null {
+/** The highest level the commits ask for, or null when none asks for one. */
+export function highestLevel(commits: readonly Commit[]): Level | null {
   if (commits.some((commit) => commit.level === "minor")) return "minor";
   if (commits.some((commit) => commit.level === "patch")) return "patch";
   return null;
