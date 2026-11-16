@@ -385,7 +385,7 @@ jobs:
           const fs = require('node:fs')
           const path = require('node:path')
           const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies']
-          const part ='(?:0|[1-9]\\d*|[xX*])'
+          const part = '(?:0|[1-9]\\d*|[xX*])'
           const identifiers = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*'
           const partial = `v?${part}(?:\\.${part}(?:\\.${part}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`
           const partialPattern = new RegExp(`^${partial}$`)
@@ -433,7 +433,7 @@ jobs:
             console.error(`A stable release names each workspace sibling as workspace:^, which pnpm pack turns into the range of the version it releases. Replace each literal range with workspace:^:\n${literal.join('\n')}`)
             process.exit(1)
           }
-          const previewFields =(name) => fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && isPreview(pkg[field][name]))
+          const previewFields = (name) => fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && isPreview(pkg[field][name]))
           const names = Object.keys(ranges)
           const missing = names.filter((name) => previewFields(name).length === 0)
           if (missing.length) {
