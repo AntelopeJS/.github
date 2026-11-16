@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
-import { commitLevel, compareCore, dependencyFields, parseVersion, type Commit, type Manifest, type PackageSource } from "./plan.ts";
+import { commitLevel, compareCore, dependencyFields, highestLevel, parseVersion, revertedCommits, withoutReverts, type Commit, type Manifest, type PackageSource } from "./plan.ts";
 import { exec, isRecord, type System } from "./system.ts";
 
 /** A package named on the command line: a GitHub repository or a local checkout, and a directory in it. */
@@ -144,14 +144,14 @@ function tagPattern(tagName: string): RegExp {
   return new RegExp(`^${escaped[0]}(\\d+\\.\\d+\\.\\d+)${escaped[1]}$`);
 }
 
-function parseCommits(log: string): Commit[] {
+function parseCommits(log: string, slug: string): Commit[] {
   return log
     .split("\x1e")
     .map((record) => record.replace(/^\n/, ""))
     .filter((record) => record !== "")
     .map((record) => {
       const [sha = "", subject = "", body = ""] = record.split("\x1f");
-      return { sha, subject, level: commitLevel(subject, body) };
+      return { sha, subject, level: commitLevel(subject, body), reverts: revertedCommits(body, slug) };
     })
     .filter((commit) => !releaseSubjectPattern.test(commit.subject));
 }
@@ -182,7 +182,8 @@ function cycleNotes(
   paths: readonly string[],
   merged: readonly MergedPull[],
   shipped: readonly string[],
-): Commit[] {
+  cancelled: ReadonlySet<string>,
+): { notes: Commit[]; explained: Map<string, Commit[]> } {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
@@ -203,14 +204,41 @@ function cycleNotes(
   const include = [head, ...current.map((pull) => pull.head)];
   const exclude = [...(tag === null ? [] : [tag]), ...shipped];
   const log = exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, ...include, "--not", ...exclude, "--", ...paths]);
-  const replaced = new Set(current.map((pull) => pull.mergeCommit));
-  return parseCommits(log).filter((commit) => !replaced.has(commit.sha));
+  const tasks = current
+    .filter((pull) => cancelled.has(pull.mergeCommit))
+    .flatMap((pull) => {
+      const earlier = current.filter((other) => other !== pull && isAncestor(system, repository, other.mergeCommit, pull.mergeCommit)).map((other) => other.head);
+      return exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", head, ...exclude, ...earlier]).split("\n");
+    });
+  const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled, ...tasks]);
+  const read = parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha));
+  const notes = withoutReverts(read);
+  const reverted = new Map(read.filter((commit) => !notes.includes(commit)).map((commit) => [commit.sha, commit]));
+  const explained = new Map(
+    current
+      .filter((pull) => reverted.size > 0 && !cancelled.has(pull.mergeCommit))
+      .map((pull): [string, Commit[]] => [
+        pull.mergeCommit,
+        exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", `${pull.mergeCommit}^`, ...exclude])
+          .split("\n")
+          .flatMap((sha) => reverted.get(sha) ?? []),
+      ]),
+  );
+  return { notes, explained };
+}
+
+function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
+  const level = highestLevel(reverted);
+  return level !== null && (level === "minor" || squash.level !== "minor");
 }
 
 /**
  * Reads one package at a revision: its manifest, its last stable tag, the commits since that tag and the
  * commits of the tasks the pull requests merged since that tag carried. Both leave out the `nested`
- * directories, which hold other listed packages. With no merged pull request known, the notes are the commits.
+ * directories, which hold other listed packages, and each commit that reverts another of the range, with the one it
+ * reverts and the tasks of their pull requests. The squash commit of a pull request whose own tasks hold a reverted
+ * commit that asks for at least the level of its title, such as a promotion titled from every commit of a cycle, counts
+ * through its remaining tasks, not its title. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
   const { directory, nested, merged, releases } = place;
@@ -256,10 +284,15 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
     ...(promoted !== null && (mergeBase === null || !isAncestor(system, repository, promoted.mergeCommit, mergeBase)) ? [promoted.head] : []),
   ];
   const baseManifests = bases.flatMap((base) => readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`) ?? []);
-  const commits = parseCommits(
+  const log = parseCommits(
     exec(system, "git", ["-C", repository, "log", ...(revision === releases ? [] : ["--no-merges"]), logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
+    from.slug,
   );
-  const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
+  const kept = withoutReverts(log);
+  const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
+  const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
+  const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
+  const notes = cycle === null ? kept : cycle.notes;
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifests, commits, notes };
 }
 

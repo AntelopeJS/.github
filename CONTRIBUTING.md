@@ -81,8 +81,8 @@ file shrinks.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for commit and
 pull request titles, for example `fix(api): handle an empty response`.
-CI accepts the types `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`,
-`ci`, and `chore`, with an optional scope and `!` for breaking changes.
+CI accepts the types `feat`, `fix`, `refactor`, `perf`, `revert`, `docs`, `test`,
+`build`, `ci`, and `chore`, with an optional scope and `!` for breaking changes.
 
 Pull requests should:
 
@@ -135,6 +135,7 @@ jobs:
     permissions:
       contents: write
       actions: write
+      statuses: write
     uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
 ```
 
