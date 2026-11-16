@@ -9,7 +9,7 @@ fi
 directory=$1
 command=$2
 ready=$3
-failed='(^|\| )✖ |Failed to (start|construct) modules'
+failed='(^|\| )✖ |Failed to (start|construct) modules|Underlying HTTP server died'
 deadline=$((SECONDS + ${START_TIMEOUT_SECONDS:-600}))
 settle=${SETTLE_SECONDS:-10}
 log=$(mktemp)
@@ -38,7 +38,7 @@ fail() {
 
 until grep -qE -- "$ready" "$log"; do
   kill -0 "$group" 2> /dev/null || fail "${command} exited before printing /${ready}/."
-  grep -qE -- "$failed" "$log" && fail "${command} printed /${failed}/ before /${ready}/."
+  grep -qE -- "$failed" "$log" && ! grep -qE -- "$ready" "$log" && fail "${command} printed /${failed}/ before /${ready}/."
   [ "$SECONDS" -lt "$deadline" ] || fail "${command} did not print /${ready}/ within ${START_TIMEOUT_SECONDS:-600} s."
   sleep 1
 done

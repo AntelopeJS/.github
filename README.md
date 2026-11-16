@@ -636,7 +636,8 @@ runs in its own job beside a MongoDB on port 27017. The Docker templates
 run their container as uid 1000, which differs from the runner's user, so
 their rows make the project writable for every user before `docker compose up`. It fails when the command
 exits or prints an error line of `ajs` (one that starts with `✖ `, or
-`Failed to start modules` or `Failed to construct modules`) before the ready
+`Failed to start modules` or `Failed to construct modules`), or the AdonisJS
+watcher's `Underlying HTTP server died`, before the ready
 line or in the 10 seconds after it, and when 25 minutes pass without it.
 
 ## Stale issues
