@@ -447,6 +447,10 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
       }
       continue;
     }
+    if (field !== "devDependencies" && name !== source.manifest.name && context.listed.get(name)?.slug === source.slug) {
+      refusals.add(`depends on ${name}@${spec}, a sibling of its workspace it must name as workspace:^`);
+      continue;
+    }
     if (field !== "devDependencies" && !isRegistrySpec(spec)) {
       refusals.add(`depends on ${name}@${spec}, which is not a registry version range`);
       continue;

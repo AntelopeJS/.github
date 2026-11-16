@@ -140,7 +140,7 @@ describe("go", () => {
   test("releases every listed package of a repository, each from the head the release before it left", () => {
     const workspace = repository("go-workspace", (path) => {
       commit(path, "feat: first", {
-        "package.json": manifest("go-root", "1.0.0", { dependencies: { "@antelopejs/go-inner": ">=0.2.0 <0.3.0" } }),
+        "package.json": manifest("go-root", "1.0.0", { dependencies: { "@antelopejs/go-inner": "workspace:^" } }),
         "packages/inner/package.json": manifest("go-inner", "0.2.0"),
         "packages/inner/.release-it.json": { git: { tagName: "inner-v${version}" } },
       });
@@ -265,7 +265,7 @@ describe("go", () => {
   test("a re-plan that fails still says what was published and what was not", () => {
     const workspace = repository("go-replan", (path) => {
       commit(path, "feat: first", {
-        "package.json": manifest("replan-root", "1.0.0", { dependencies: { "@antelopejs/replan-inner": ">=0.2.0 <0.3.0" } }),
+        "package.json": manifest("replan-root", "1.0.0", { dependencies: { "@antelopejs/replan-inner": "workspace:^" } }),
         "packages/inner/package.json": manifest("replan-inner", "0.2.0"),
         "packages/inner/.release-it.json": { git: { tagName: "inner-v${version}" } },
       });

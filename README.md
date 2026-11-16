@@ -194,6 +194,12 @@ in dependency order.
   does not release it. Any other `workspace:` form is refused too, such as
   `workspace:^0.10.0`, which the plan cannot check against the sibling's
   version, a path or an alias.
+- A package is refused when one of those fields names a sibling listed from
+  the same repository with anything but a `workspace:` spec, such as
+  `>=0.4.0 <0.5.0`. Such a range stays behind when the sibling releases, so
+  name the sibling as `workspace:^`. The stable run refuses it too, for any
+  package of the checkout that has a `.release-it.json` beside its
+  `package.json`.
 - A package is refused when a preview pin in `dependencies`,
   `peerDependencies` or `optionalDependencies` cannot move. That happens when
   the dependency is not listed, is left out, is refused itself, has no stable

@@ -254,6 +254,45 @@ for (const { file, text } of workflows) {
       assert.deepEqual([passed.status, passed.stdout], [0, ""]);
     });
 
+    test("Apply dependency ranges refuses a runtime spec on a released workspace sibling that is not workspace:", () => {
+      const manifest = (name: string, fields: object = {}) => `${JSON.stringify({ name, version: "0.1.0", ...fields })}\n`;
+      const own = {
+        dependencies: { "@antelopejs/interface-x": ">=0.7.0 <0.8.0", "@antelopejs/interface-y": "workspace:^", "@antelopejs/fixture": "^1.0.0", "@antelopejs/b": "~1.8.6" },
+        peerDependencies: { "@antelopejs/interface-y": "^0.4.0" },
+        optionalDependencies: { "@antelopejs/interface-x": "0.7.1-next.1.gabc1234" },
+        devDependencies: { "@antelopejs/interface-y": "^0.4.0" },
+      };
+      const { directory } = repository(`${file}-literal-siblings`, {
+        "package.json": JSON.stringify({ name: "workspace", private: true }),
+        "packages/interface-x/package.json": manifest("@antelopejs/interface-x"),
+        "packages/interface-x/.release-it.json": "{}\n",
+        "packages/interface-y/package.json": manifest("@antelopejs/interface-y"),
+        "packages/interface-y/.release-it.json": "{}\n",
+        "packages/x/test/fixture/package.json": manifest("@antelopejs/fixture"),
+        "packages/x/package.json": manifest("@antelopejs/x", own),
+        "packages/x/.release-it.json": "{}\n",
+      });
+      const refused = runStep(text, "Apply dependency ranges", join(directory, "packages", "x"), {
+        ...hermeticGit,
+        DEPENDENCY_RANGES: '{"@antelopejs/interface-x":">=0.7.1 <0.8.0"}',
+      });
+      assert.deepEqual([refused.status, refused.stderr], [
+        1,
+        "A stable release names each workspace sibling as workspace:^, which pnpm pack turns into the range of the version it releases. Replace each literal range with workspace:^:\n" +
+          "dependencies @antelopejs/interface-x >=0.7.0 <0.8.0\npeerDependencies @antelopejs/interface-y ^0.4.0\noptionalDependencies @antelopejs/interface-x 0.7.1-next.1.gabc1234\n",
+      ]);
+      commitFiles(directory, "fix(x): name the siblings as workspace:^", {
+        "packages/x/package.json": manifest("@antelopejs/x", {
+          ...own,
+          dependencies: { ...own.dependencies, "@antelopejs/interface-x": "workspace:^" },
+          peerDependencies: { "@antelopejs/interface-y": "workspace:^" },
+          optionalDependencies: {},
+        }),
+      });
+      const passed = runStep(text, "Apply dependency ranges", join(directory, "packages", "x"), hermeticGit);
+      assert.deepEqual([passed.status, passed.stderr], [0, ""]);
+    });
+
     test("Apply dependency ranges rewrites only the preview specs of a name and names the commit", () => {
       const directory = packageDirectory(`${file}-ranges`, {
         name: "@antelopejs/x",

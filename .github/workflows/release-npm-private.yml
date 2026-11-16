@@ -381,9 +381,11 @@ jobs:
           DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
         run: |
           node <<'NODE'
+          const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
+          const path = require('node:path')
           const fields = ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies']
-          const part = '(?:0|[1-9]\\d*|[xX*])'
+          const part ='(?:0|[1-9]\\d*|[xX*])'
           const identifiers = '[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*'
           const partial = `v?${part}(?:\\.${part}(?:\\.${part}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`
           const partialPattern = new RegExp(`^${partial}$`)
@@ -410,7 +412,28 @@ jobs:
             process.exit(1)
           }
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          const previewFields = (name) => fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && isPreview(pkg[field][name]))
+          const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+          let top = null
+          try {
+            top = git(['rev-parse', '--show-toplevel']).trim()
+          } catch {}
+          const nameOf = (file) => {
+            try {
+              return [JSON.parse(fs.readFileSync(path.join(top, path.dirname(file), 'package.json'), 'utf8')).name]
+            } catch {
+              return []
+            }
+          }
+          const siblings = new Set(top === null ? [] : git(['ls-files', '-z', '--', ':(glob)**/.release-it.json'], top).split('\0').filter(Boolean).flatMap(nameOf))
+          siblings.delete(pkg.name)
+          const literal = fields.slice(0, 3).flatMap((field) =>
+            Object.entries(pkg[field] ?? {}).filter(([name, spec]) => siblings.has(name) && !spec.startsWith('workspace:')).map(([name, spec]) => `${field} ${name} ${spec}`),
+          )
+          if (literal.length) {
+            console.error(`A stable release names each workspace sibling as workspace:^, which pnpm pack turns into the range of the version it releases. Replace each literal range with workspace:^:\n${literal.join('\n')}`)
+            process.exit(1)
+          }
+          const previewFields =(name) => fields.filter((field) => Object.hasOwn(pkg[field] ?? {}, name) && isPreview(pkg[field][name]))
           const names = Object.keys(ranges)
           const missing = names.filter((name) => previewFields(name).length === 0)
           if (missing.length) {
