@@ -129,6 +129,13 @@ in dependency order.
   types ask for nothing. The level is the highest one over the branch's
   commits and the cycle's commits, so a promotion titled too low never
   releases too little. A release never changes the major version.
+- A commit whose message holds `This reverts commit <sha>` or
+  `Reverts <owner>/<repo>#<n>`, as a squash merge of a revert pull request
+  writes it, counts for nothing when the commit it reverts is in the same
+  range, and that commit counts for nothing too. Neither sets the level or
+  shows in the notes, and the tasks of their two pull requests do not either.
+  A revert of a revert leaves the first commit counted. A revert of a commit
+  older than the last stable tag counts as a change.
 - A package whose commits ask for nothing still gets a patch when its
   `dependencies`, `peerDependencies` or `optionalDependencies` hold a spec
   that differs from the `package.json` of its last stable tag, which npm
