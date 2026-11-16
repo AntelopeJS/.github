@@ -207,8 +207,8 @@ function cycleNotes(
   const tasks = current
     .filter((pull) => cancelled.has(pull.mergeCommit))
     .flatMap((pull) => {
-      const under = current.filter((other) => other !== pull && isAncestor(system, repository, other.head, pull.head)).map((other) => other.head);
-      return exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", head, ...exclude, ...under]).split("\n");
+      const earlier = current.filter((other) => other !== pull && isAncestor(system, repository, other.mergeCommit, pull.mergeCommit)).map((other) => other.head);
+      return exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", head, ...exclude, ...earlier]).split("\n");
     });
   const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled, ...tasks]);
   return withoutReverts(parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha)));
