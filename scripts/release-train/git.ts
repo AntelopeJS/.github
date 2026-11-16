@@ -241,14 +241,21 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   if (forked !== null && forked.status !== 0 && forked.status !== 1) {
     throw new Error(`git -C ${repository} merge-base ${tag} ${revision} failed\n${forked.stderr.trim()}`);
   }
-  const base = forked?.status === 0 ? forked.stdout.trim() : null;
-  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
-  const shipped = (merged ?? [])
-    .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
-    .map((pull) => pull.head);
-  const commits = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]));
+  const shippedPulls = (merged ?? []).filter(
+    (pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head),
+  );
+  const shipped = shippedPulls.map((pull) => pull.head);
+  const promoted = shippedPulls
+    .filter((pull) => isAncestor(system, repository, pull.head, head))
+    .reduce<MergedPull | null>((latest, pull) => (latest === null || isAncestor(system, repository, latest.mergeCommit, pull.mergeCommit) ? pull : latest), null);
+  const mergeBase = forked?.status === 0 ? forked.stdout.trim() : null;
+  const base = promoted !== null && (mergeBase === null || !isAncestor(system, repository, promoted.mergeCommit, mergeBase)) ? promoted.head : mergeBase;
+  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
+  const commits = parseCommits(
+    exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
+  );
   const notes = merged === null || merged.length === 0 ? commits : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped);
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, commits, notes };
 }

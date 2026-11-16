@@ -45,7 +45,8 @@ export interface PackageSource {
   stableManifest: Manifest | null;
   /**
    * The manifest at the merge base of the stable tag and the branch read, which is the tag itself when the branch holds it.
-   * A promotion carries a dependency spec of the branch only when the branch changed it since that base.
+   * When the branch holds the head of the last pull request the tag shipped and that merge base is older than its merge,
+   * the base is that head. A promotion carries a dependency spec of the branch only when the branch changed it since that base.
    */
   baseManifest: Manifest | null;
   /** The commits on the branch since the stable tag. */
