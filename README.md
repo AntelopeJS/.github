@@ -617,6 +617,26 @@ a crash does. Links to npmjs.com are skipped because it rejects automated
 requests. The run uploads one JSON artifact, `link-rot`, keyed by repository
 and file.
 
+## Templates from a fresh clone
+
+`templates-fresh-clone.yml` runs every night in this repository, on demand by
+`workflow_dispatch`, and on a pull request that changes it. For each template
+that `ajs project init` offers, it does what a new user does: it creates a
+project with `npx @antelopejs/core@latest`, which clones the template's `main`
+and installs it, then starts it the way the template's README says. The
+AntelopeJS modules of `antelope.config.ts` install from npm at that start, so
+a module release that breaks a template shows up the next night, with no pull
+request in the template.
+
+`.github/templates-fresh-clone/templates.json` holds one row per template: its
+name in the AntelopeJS/interfaces manifest, `project` or `module` init, the
+start command and the log line that means it is ready. The `Templates` job
+fails when the rows and the manifest's templates differ. Each template then
+runs in its own job beside a MongoDB on port 27017. It fails when the command
+exits or prints an error line of `ajs` (one that starts with `✖ `, or
+`Failed to start modules` or `Failed to construct modules`) before the ready
+line or in the 10 seconds after it, and when 25 minutes pass without it.
+
 ## Stale issues
 
 The reusable `stale.yml` workflow takes no inputs. Call it once a day with job

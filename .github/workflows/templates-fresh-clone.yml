@@ -1,0 +1,91 @@
+name: Templates from a fresh clone
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/templates-fresh-clone.yml
+      - .github/templates-fresh-clone/**
+
+permissions: {}
+
+concurrency:
+  group: templates-fresh-clone-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  templates:
+    name: Templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      templates: ${{ steps.templates.outputs.templates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Match the table with the templates ajs project init offers
+        id: templates
+        run: |
+          manifest=$(curl -fsSL https://raw.githubusercontent.com/AntelopeJS/interfaces/main/manifest.json)
+          offered=$(jq -c '[.templates[], .projectTemplates[] | .name] | sort' <<< "$manifest")
+          table=$(jq -c '[.[].name] | sort' .github/templates-fresh-clone/templates.json)
+          if [ "$offered" != "$table" ]; then
+            echo "::error::.github/templates-fresh-clone/templates.json must list the templates of the AntelopeJS/interfaces manifest. Missing: $(jq -nc --argjson a "$offered" --argjson b "$table" '$a - $b'). Not offered: $(jq -nc --argjson a "$offered" --argjson b "$table" '$b - $a')."
+            exit 1
+          fi
+          echo "templates=$(jq -c . .github/templates-fresh-clone/templates.json)" >> "$GITHUB_OUTPUT"
+
+  start:
+    name: ${{ matrix.template.name }}
+    needs: templates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        template: ${{ fromJSON(needs.templates.outputs.templates) }}
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: workflow
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Create the project with the latest ajs
+        env:
+          INIT: ${{ matrix.template.init }}
+          TEMPLATE: ${{ matrix.template.name }}
+        run: |
+          corepack enable
+          npx -y @antelopejs/core@latest "$INIT" init app --template "$TEMPLATE" --pm pnpm --no-git-init --yes
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: app/.nvmrc
+
+      - name: Start it until it is ready
+        env:
+          START: ${{ matrix.template.start }}
+          READY: ${{ matrix.template.ready }}
+          START_TIMEOUT_SECONDS: "1500"
+        run: |
+          corepack enable
+          workflow/.github/templates-fresh-clone/start.sh app "$START" "$READY"
