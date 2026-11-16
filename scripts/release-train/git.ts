@@ -201,10 +201,13 @@ function cycleNotes(
     );
   }
   const current = landed.filter((pull) => !released(pull) && present(pull));
-  const include = [head, ...current.filter((pull) => !cancelled.has(pull.mergeCommit)).map((pull) => pull.head)];
+  const include = [head, ...current.map((pull) => pull.head)];
   const exclude = [...(tag === null ? [] : [tag]), ...shipped];
   const log = exec(system, "git", ["-C", repository, "log", "--no-merges", logFormat, ...include, "--not", ...exclude, "--", ...paths]);
-  const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled]);
+  const tasks = current
+    .filter((pull) => cancelled.has(pull.mergeCommit))
+    .flatMap((pull) => exec(system, "git", ["-C", repository, "rev-list", pull.head, "--not", head, ...exclude]).split("\n"));
+  const replaced = new Set([...current.map((pull) => pull.mergeCommit), ...cancelled, ...tasks]);
   return withoutReverts(parseCommits(log, slug).filter((commit) => !replaced.has(commit.sha)));
 }
 

@@ -228,17 +228,17 @@ function names(commit: Commit, reverted: Reverted): boolean {
 }
 
 /**
- * The commits less each one that reverts another of them, and the one it reverts. The commits run newest
+ * The commits less each one that reverts others of them, and the ones it reverts. The commits run newest
  * first, as git log lists them, so a revert that a later commit reverts cancels nothing.
  */
 export function withoutReverts(commits: readonly Commit[]): Commit[] {
   const cancelled = new Set<string>();
   commits.forEach((commit, index) => {
     if (cancelled.has(commit.sha)) return;
-    const target = commits
+    const targets = commits
       .slice(index + 1)
-      .find((older) => !cancelled.has(older.sha) && commit.reverts.some((reverted) => names(older, reverted)));
-    if (target !== undefined) cancelled.add(commit.sha).add(target.sha);
+      .filter((older) => !cancelled.has(older.sha) && commit.reverts.some((reverted) => names(older, reverted)));
+    if (targets.length > 0) [commit, ...targets].forEach((reverting) => cancelled.add(reverting.sha));
   });
   return commits.filter((commit) => !cancelled.has(commit.sha));
 }

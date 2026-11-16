@@ -113,6 +113,12 @@ describe("withoutReverts", () => {
     assert.equal(levelOf([restore, breaking]), "unchanged");
   });
 
+  test("a revert that names two commits cancels both", () => {
+    const other = commit("feat(builder)!: drop the cursor (#1095)");
+    const both = commit("revert: restore the rows and the cursor (#1099)", "", [{ sha: breaking.sha }, { sha: other.sha }]);
+    assert.deepEqual(withoutReverts([both, other, fix, breaking]), [fix]);
+  });
+
   test("an abbreviated SHA names the commit it reverts", () => {
     const short = commit("revert: remove the sample rows", "", [{ sha: breaking.sha.slice(0, 9) }]);
     assert.deepEqual(withoutReverts([short, fix, breaking]), [fix]);

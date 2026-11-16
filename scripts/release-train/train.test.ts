@@ -305,20 +305,20 @@ describe("plan", () => {
   });
 
   test("--ref next counts neither a squashed pull request nor the one that reverts it, in the level or the notes", () => {
-    const cycle = (name: string, reverts: (squash: string) => string, listed: boolean) =>
+    const cycle = (name: string, reverts: (squash: string) => string, listed: boolean, fixBase: string) =>
       repository(name, (path) => {
         commit(path, "feat: first", { "package.json": manifest(name, "0.5.2"), "src/rows.ts": "export const rows = 1;\n" });
         git(path, "tag", "v0.5.2");
         git(path, "checkout", "--quiet", "-b", "next");
-        const land = (branch: string, task: string, title: string, files: Record<string, string>): { head: string; squash: string } => {
-          git(path, "checkout", "--quiet", "-b", branch, "next");
+        const land = (branch: string, task: string, title: string, files: Record<string, string>, base = "next"): { head: string; squash: string } => {
+          git(path, "checkout", "--quiet", "-b", branch, base);
           const head = commit(path, task, files);
           git(path, "checkout", "--quiet", "next");
           git(path, "merge", "--quiet", "--squash", branch);
           return { head, squash: commit(path, title, {}) };
         };
         const removal = land("remove", "refactor(builder)!: remove the sample rows", "refactor(builder)!: remove the sample rows (#1093)", { "src/rows.ts": "export {};\n" });
-        const fix = land("fix", "fix(builder): close the cursor", "fix(builder): close the cursor (#1094)", { "src/cursor.ts": "export {};\n" });
+        const fix = land("fix", "fix(builder): close the cursor", "fix(builder): close the cursor (#1094)", { "src/cursor.ts": "export {};\n" }, fixBase);
         const restore = land("restore", `revert: remove the sample rows (#1093)\n\nThis reverts commit ${removal.squash.slice(0, 9)}.`, `refactor(builder): restore the sample rows (#1098)\n\nPuts it back.\n\n${reverts(removal.squash)}`, {
           "src/rows.ts": "export const rows = 1;\n",
         });
@@ -326,12 +326,14 @@ describe("plan", () => {
         const merged = [removal, fix, restore].map(({ head, squash }, index) => ({ number: [1093, 1094, 1098][index], mergeCommit: { oid: squash }, headRefOid: head }));
         pulls[`AntelopeJS/${name}`] = listed ? merged : [];
       });
-    const bodies: [string, (squash: string) => string, boolean, string][] = [
-      ["revert-both", (squash) => `This reverts commit ${squash}.\nReverts AntelopeJS/revert-both#1093`, true, "fix(builder): close the cursor"],
-      ["revert-pull", () => "Reverts AntelopeJS/revert-pull#1093", false, "fix(builder): close the cursor (#1094)"],
+    const both = (name: string) => (squash: string) => `This reverts commit ${squash}.\nReverts AntelopeJS/${name}#1093`;
+    const bodies: [string, (squash: string) => string, boolean, string, string][] = [
+      ["revert-both", both("revert-both"), true, "fix(builder): close the cursor", "next"],
+      ["revert-pull", () => "Reverts AntelopeJS/revert-pull#1093", false, "fix(builder): close the cursor (#1094)", "next"],
+      ["revert-stacked", both("revert-stacked"), true, "fix(builder): close the cursor", "remove"],
     ];
-    for (const [name, reverts, listed, note] of bodies) {
-      const reverted = cycle(name, reverts, listed);
+    for (const [name, reverts, listed, note, fixBase] of bodies) {
+      const reverted = cycle(name, reverts, listed, fixBase);
       const { system, output } = fakeSystem();
       assert.equal(main(["plan", "--ref", "next", reverted], system), 0);
       assert.equal(
