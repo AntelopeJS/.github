@@ -221,9 +221,12 @@ default branch of each package to release, one at a time, with the planned
 `release-version`, `release-commit` and `dependency-ranges`, plus
 `package-directory` for a package not at the root. Those are the only inputs a
 caller declares. It waits for each
-run to finish before it dispatches the next one, so a dependent installs a
-dependency that is already published. After the last one it prints what it
-published and, when the plan refused a package, what it did not publish.
+run to finish before it dispatches the next one. npm can serve a version
+minutes after `npm publish` returned, so when a package left to release
+depends on the one just released, `go` also polls `npm view <name>@<version>`
+every 15 seconds until npm serves it, then dispatches the dependent. After the
+last one it prints what it published and, when the plan refused a package,
+what it did not publish.
 
 `go` stops at the first release that does not succeed. A dispatch that GitHub
 refused published nothing. For a run that concluded with anything but
@@ -237,7 +240,9 @@ unknown. That happens when no run appears after the dispatch, when
 `gh run view` fails more than 8 times in a row, 15 seconds apart, or when
 `npm view` fails. The stop message lists what was published, what was not,
 and the unknown package with its run. Check an unknown run before you run `go`
-again. After a failure, fix it and run `go` again. The plan is read again from
+again. `go` also stops when npm does not serve a release within 20 minutes:
+the release is published, and its dependents are not. Run `go` again once
+`npm view` prints the version. After a failure, fix it and run `go` again. The plan is read again from
 the tags, so the train continues where it stopped.
 
 A stable run commits to the default branch of its repository. So after each
