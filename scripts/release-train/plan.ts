@@ -93,6 +93,12 @@ export type Entry =
       siblings: Sibling[];
     }
   | {
+      /** Only devDependency preview pins moved to a stable range: a commit rewrites them, and nothing is published. */
+      status: "repin";
+      source: PackageSource;
+      ranges: Record<string, string>;
+    }
+  | {
       status: "unchanged";
       source: PackageSource;
       /** Why the commits since the stable tag release nothing, or null when there are none. */
@@ -103,6 +109,12 @@ export type Entry =
 
 /** The entry of a package this plan releases. */
 export type Release = Extract<Entry, { status: "release" }>;
+
+/** The entry of a package whose devDependency pins this plan rewrites without a release. */
+export type Repin = Extract<Entry, { status: "repin" }>;
+
+/** An entry the train dispatches a run of `release.yml` for. */
+export type Run = Release | Repin;
 
 /** One release plan: an entry per package, dependencies first. */
 export interface Plan {
@@ -470,8 +482,11 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
     const replaced = ({ field, name: pinned, spec }: Dependency): boolean =>
       source.baseManifests.some((base) => base[field]?.[pinned] === spec) && source.stableManifest?.[field]?.[pinned] === ranges[pinned];
-    if (!pins.every(replaced)) reasons.push("replaces preview pins");
-    if (reasons.length === 0) return { status: "unchanged", source, reason: quietReason(source) };
+    const stale = pins.filter((pin) => !replaced(pin));
+    if (stale.some(({ field }) => field !== "devDependencies")) reasons.push("replaces preview pins");
+    if (reasons.length === 0) {
+      return stale.length === 0 ? { status: "unchanged", source, reason: quietReason(source) } : { status: "repin", source, ranges };
+    }
     level = "patch";
   }
   const to =
@@ -540,12 +555,22 @@ function specOf(manifest: Manifest, name: string): string {
   return found?.spec ?? "";
 }
 
+function rangeLines(entry: Run): string[] {
+  return Object.entries(entry.ranges).map(([name, range]) => `     ${name} ${specOf(entry.source.manifest, name)} -> ${range}`);
+}
+
 function renderEntry(entry: Entry, position: number): string[] {
   const { manifest } = entry.source;
   if (entry.status === "refused") {
     return [
       `${position}. ${manifest.name} refused  ${location(entry.source)}`,
       ...entry.reasons.map((reason) => `     ${reason}`),
+    ];
+  }
+  if (entry.status === "repin") {
+    return [
+      `${position}. ${manifest.name} repins devDependencies, publishes nothing  ${location(entry.source)}`,
+      ...rangeLines(entry),
     ];
   }
   if (entry.status !== "release") return [];
@@ -555,9 +580,7 @@ function renderEntry(entry: Entry, position: number): string[] {
       .filter((commit) => commit.level !== null)
       .map((commit) => `     ${commit.subject}`),
     ...entry.reasons.map((reason) => `     ${reason}`),
-    ...Object.entries(entry.ranges).map(
-      ([name, range]) => `     ${name} ${specOf(manifest, name)} -> ${range}`,
-    ),
+    ...rangeLines(entry),
     ...entry.siblings.map(({ name, spec, range }) => `     ${name} ${spec} -> ${range}`),
     ...entry.kept.map(({ name, spec, reason }) => `     keeps devDependency ${name}@${spec}, ${reason}`),
   ];
@@ -566,13 +589,13 @@ function renderEntry(entry: Entry, position: number): string[] {
 /** Renders a plan as the plain text an operator reads before saying go. */
 export function renderPlan(plan: Plan): string {
   const numbered = plan.entries.filter(
-    (entry) => entry.status === "release" || entry.status === "refused",
+    (entry) => entry.status === "release" || entry.status === "repin" || entry.status === "refused",
   );
-  const releases = numbered.filter((entry) => entry.status === "release").length;
-  const refused = numbered.length - releases;
+  const count = (status: Entry["status"]): number => numbered.filter((entry) => entry.status === status).length;
   const counts = [
-    releases > 0 ? `${releases} to release` : "",
-    refused > 0 ? `${refused} refused` : "",
+    count("release") > 0 ? `${count("release")} to release` : "",
+    count("repin") > 0 ? `${count("repin")} to repin` : "",
+    count("refused") > 0 ? `${count("refused")} refused` : "",
   ].filter(Boolean);
   const header =
     numbered.length === 0

@@ -58,15 +58,19 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "mode=preview" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
-            [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            [ -z "$RELEASE_VERSION" ] || [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
               echo "A stable release needs release-version as M.m.p, got '$RELEASE_VERSION'." >&2
               exit 1
             }
             [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-              echo "A stable release needs release-commit as the 40-character SHA of the planned commit, got '$RELEASE_COMMIT'." >&2
+              echo "A dispatch of $DEFAULT_BRANCH needs release-commit as the 40-character SHA of the planned commit, got '$RELEASE_COMMIT'." >&2
               exit 1
             }
-            echo "mode=stable" >> "$GITHUB_OUTPUT"
+            if [ -z "$RELEASE_VERSION" ]; then
+              echo "mode=repin" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=stable" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "A push to a branch other than $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
@@ -82,7 +86,7 @@ jobs:
             echo "NPM_ANTELOPE_TOKEN is not configured." >&2
             exit 1
           }
-          if [ "$MODE" = stable ] && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
+          if [ "$MODE" != preview ] && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
             echo "RELEASE_GITHUB_TOKEN is not configured." >&2
             exit 1
           fi
@@ -93,7 +97,7 @@ jobs:
           persist-credentials: false
 
       - name: Check the planned commit
-        if: steps.mode.outputs.mode == 'stable'
+        if: steps.mode.outputs.mode != 'preview'
         env:
           RELEASE_COMMIT: ${{ inputs.release-commit }}
         run: |
@@ -248,6 +252,7 @@ jobs:
 
       - name: Resolve release version
         id: version
+        if: steps.mode.outputs.mode != 'repin'
         working-directory: ${{ inputs.package-directory }}
         env:
           MODE: ${{ steps.mode.outputs.mode }}
@@ -375,9 +380,10 @@ jobs:
 
       - name: Apply dependency ranges
         id: ranges
-        if: steps.mode.outputs.mode == 'stable'
+        if: steps.mode.outputs.mode != 'preview'
         working-directory: ${{ inputs.package-directory }}
         env:
+          MODE: ${{ steps.mode.outputs.mode }}
           DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
         run: |
           node <<'NODE'
@@ -417,6 +423,11 @@ jobs:
             console.error(`dependency-ranges names packages that package.json does not pin to a preview: ${missing.join(', ')}`)
             process.exit(1)
           }
+          const runtime = names.filter((name) => previewFields(name).some((field) => field !== 'devDependencies'))
+          if (process.env.MODE === 'repin' && (names.length === 0 || runtime.length)) {
+            console.error(`A dispatch without release-version publishes nothing, so it only moves devDependency preview pins to the ranges of dependency-ranges${runtime.length ? `, and a runtime pin needs a release: ${runtime.join(', ')}` : ''}`)
+            process.exit(1)
+          }
           if (names.length) {
             for (const name of names) {
               for (const field of previewFields(name)) pkg[field][name] = ranges[name]
@@ -439,7 +450,7 @@ jobs:
           NODE
 
       - name: Restore the pnpm store
-        if: steps.version.outputs.version != ''
+        if: steps.version.outputs.version != '' || steps.mode.outputs.mode == 'repin'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
@@ -447,13 +458,16 @@ jobs:
           cache-dependency-path: ${{ steps.lockfile.outputs.path }}
 
       - name: Install dependencies
-        if: steps.version.outputs.version != ''
+        if: steps.version.outputs.version != '' || steps.mode.outputs.mode == 'repin'
         working-directory: ${{ steps.workspace.outputs.install-directory }}
         env:
+          MODE: ${{ steps.mode.outputs.mode }}
           RANGES_APPLIED: ${{ steps.ranges.outputs.message != '' }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
-          if [ "$RANGES_APPLIED" = true ]; then
+          if [ "$MODE" = repin ]; then
+            pnpm install --lockfile-only
+          elif [ "$RANGES_APPLIED" = true ]; then
             pnpm install --no-frozen-lockfile
           else
             pnpm install --frozen-lockfile
@@ -464,7 +478,7 @@ jobs:
         run: pnpm add --global @antelopejs/core
 
       - name: Configure release identity
-        if: steps.mode.outputs.mode == 'stable'
+        if: steps.mode.outputs.mode != 'preview'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -504,6 +518,19 @@ jobs:
           if ! git -C "$worktree" push --quiet origin "HEAD:refs/heads/$BRANCH"; then
             echo "::warning::The stable ranges were not pushed to $BRANCH, so the Next sync of this release will conflict."
           fi
+
+      - name: Push the stable ranges
+        if: steps.mode.outputs.mode == 'repin'
+        env:
+          MESSAGE: ${{ steps.ranges.outputs.message }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git commit --quiet -m "$MESSAGE"
+          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          trap 'git config --local --unset-all http.https://github.com/.extraheader || true' EXIT
+          git push --quiet origin "HEAD:refs/heads/$GITHUB_REF_NAME"
 
       - name: Write release notes
         if: steps.mode.outputs.mode == 'stable'

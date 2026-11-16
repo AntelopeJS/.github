@@ -298,7 +298,8 @@ for (const { file, text } of workflows) {
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
-      assert.equal(mode("workflow_dispatch", "refs/heads/main").status, 1);
+      assert.equal(mode("workflow_dispatch", "refs/heads/main").outputs, "mode=repin\n");
+      assert.equal(mode("workflow_dispatch", "refs/heads/main", "", "").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
       assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
       assert.equal(mode("push", "refs/heads/main").status, 1);
@@ -1007,6 +1008,49 @@ for (const { file, text } of workflows) {
       assert.equal(`${merged.next}\n`, pinned("1.8.7", ">=0.5.0 <0.6.0"));
     });
 
+    test("a repin run commits the devDependency ranges to the default branch and to next, and refuses a runtime pin or no range", () => {
+      const preview = "0.4.3-next.117.g3645dff";
+      const manifest = (spec: string) => `${JSON.stringify({ name: "@antelopejs/m", version: "1.8.6", devDependencies: { "@antelopejs/interface-database": spec } }, null, 2)}\n`;
+      origins += 1;
+      const bare = join(root, `origin-${origins}.git`);
+      const seed = join(root, `seed-${origins}`);
+      git(root, "init", "--quiet", "--bare", "--initial-branch=main", bare);
+      git(root, "clone", "--quiet", bare, seed);
+      commitFiles(seed, "chore: pin the interface preview", { "package.json": manifest(preview), "pnpm-lock.yaml": lockfile(preview, preview) });
+      git(seed, "push", "--quiet", "origin", "main", "main:next");
+      const runner = join(root, `runner-${origins}`);
+      git(root, "clone", "--quiet", bare, runner);
+      const env = { ...hermeticGit, RUNNER_TEMP: join(root, `temp-${origins}`), GITHUB_TOKEN: "token" };
+      mkdirSync(env.RUNNER_TEMP);
+      assert.equal(runStep(text, "Configure release identity", runner, env).status, 0);
+      const ranges = runStep(text, "Apply dependency ranges", runner, { ...env, MODE: "repin", DEPENDENCY_RANGES: '{"@antelopejs/interface-database":">=0.5.0 <0.6.0"}' });
+      assert.equal(ranges.status, 0, ranges.stderr);
+      const message = ranges.outputs.replace(/^message=/, "").trim();
+      assert.equal(message, "fix(deps): depend on the stable @antelopejs/interface-database");
+      writeFileSync(join(runner, "pnpm-lock.yaml"), lockfile(">=0.5.0 <0.6.0", "0.5.0"));
+      assert.equal(runStep(text, "Stage stable dependencies", runner, { ...env, PACKAGE_DIRECTORY: ".", LOCKFILE: "pnpm-lock.yaml" }).status, 0);
+      const brought = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "next", MESSAGE: message });
+      assert.deepEqual([brought.status, brought.stdout], [0, ""], brought.stderr);
+      const pushed = runStep(text, "Push the stable ranges", runner, { ...env, MESSAGE: message, GITHUB_REF_NAME: "main" });
+      assert.equal(pushed.status, 0, pushed.stderr);
+      for (const branch of ["main", "next"]) {
+        assert.equal(git(bare, "log", "-1", "--format=%s", branch), message);
+        assert.equal(`${git(bare, "show", `${branch}:package.json`)}\n`, manifest(">=0.5.0 <0.6.0"));
+      }
+      assert.deepEqual(git(bare, "tag", "--list"), "");
+
+      const runtime = packageDirectory(`${file}-repin-runtime`, {
+        name: "@antelopejs/x",
+        dependencies: { "@antelopejs/core": "0.6.0-next.1.gabc1234" },
+        devDependencies: { "@antelopejs/db": "0.5.0-next.2.gabc1234" },
+      });
+      const refused = runStep(text, "Apply dependency ranges", runtime, { MODE: "repin", DEPENDENCY_RANGES: '{"@antelopejs/core":">=0.6.0 <0.7.0","@antelopejs/db":">=0.5.0 <0.6.0"}' });
+      assert.deepEqual([refused.status, refused.outputs], [1, ""]);
+      assert.match(refused.stderr, /a runtime pin needs a release: @antelopejs\/core$/m);
+      const empty = runStep(text, "Apply dependency ranges", runtime, { MODE: "repin", DEPENDENCY_RANGES: "{}" });
+      assert.deepEqual([empty.status, empty.outputs], [1, ""]);
+    });
+
     test("Bring the stable ranges to the integration branch leaves a next that changed the same lines, and a repository without next", () => {
       const bare = promotedOrigin();
       const seed = join(root, `seed-${origins}`);
@@ -1070,7 +1114,7 @@ for (const { file, text } of workflows) {
       assert.equal(cached.length, 1);
       assert.ok(cached[0] < install);
       assert.equal(condition(steps[cached[0]]), condition(steps[install]));
-      assert.equal(condition(steps[install]), "steps.version.outputs.version != ''");
+      assert.equal(condition(steps[install]), "steps.version.outputs.version != '' || steps.mode.outputs.mode == 'repin'");
     });
 
     test("a preview run cannot write to the repository", () => {
