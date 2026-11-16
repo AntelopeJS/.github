@@ -282,6 +282,90 @@ describe("plan", () => {
     assert.equal(output(), "Release plan from next, nothing to release\n\nUnchanged: @antelopejs/next-hotfixed, only ci commits since 1.0.1\n");
   });
 
+  test("--ref next lists only the commits main lacks, whether the Next sync merged main from before or after the promotion", () => {
+    const synced = (name: string, late: boolean) =>
+      repository(name, (path) => {
+        commit(path, "feat: first", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+        git(path, "tag", "v1.0.0");
+        git(path, "checkout", "--quiet", "-b", "next");
+        const task = commit(path, "feat: read with foo 2 (#2)", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^2.0.0" } }) });
+        git(path, "checkout", "--quiet", "main");
+        commit(path, "fix: close the feed (#5)", { "src/feed.ts": "export {};\n" });
+        const before = tip(path);
+        git(path, "merge", "--quiet", "--squash", "next");
+        const squash = commit(path, "feat: read with foo 2 (#3)", {});
+        commit(path, "chore(release): v1.1.0", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^2.0.0" } }) });
+        git(path, "tag", "v1.1.0");
+        const hotfix = commit(path, "fix(deps): move to foo 2.0.1 (#7)", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^2.0.1" } }) });
+        commit(path, "chore(release): v1.1.1", { "package.json": manifest(name, "1.1.1", { dependencies: { foo: "^2.0.1" } }) });
+        git(path, "tag", "v1.1.1");
+        git(path, "checkout", "--quiet", "next");
+        for (const ref of late ? [before] : ["v1.1.0", "main"]) git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", ref);
+        commit(path, "ci: cache the store (#6)", { "ci.txt": "x\n" });
+        git(path, "checkout", "--quiet", "main");
+        pulls[`AntelopeJS/${name}`] = [
+          { number: 7, mergeCommit: { oid: hotfix }, headRefOid: hotfix },
+          { number: 3, mergeCommit: { oid: squash }, headRefOid: task },
+        ];
+      });
+    for (const [name, late] of [["next-synced-after", false], ["next-synced-before", true]] as const) {
+      const path = synced(name, late);
+      git(path, "update-ref", "refs/remotes/origin/next", "next");
+      const { system, output } = fakeSystem();
+      assert.equal(main(["plan", "--ref", "next", path], system), 0);
+      assert.equal(output(), `Release plan from next, nothing to release\n\nUnchanged: @antelopejs/${name}, only ci commits since 1.1.1\n`, name);
+    }
+  });
+
+  test("a pull request merged into main with a merge commit releases at the level of the merge commit's title", () => {
+    const name = "main-merged";
+    const path = repository(name, (path) => {
+      commit(path, "feat: first", { "package.json": manifest(name, "1.0.0"), "a.txt": "a\n", "b.txt": "b\n" });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "topic");
+      const head = commit(path, "wip", { "a.txt": "a2\n" });
+      git(path, "checkout", "--quiet", "main");
+      commit(path, "ci: touch b", { "b.txt": "b2\n" });
+      git(path, "merge", "--quiet", "--no-ff", "-m", "fix: close the feed (#4)", "topic");
+      pulls[`AntelopeJS/${name}`] = [{ number: 4, mergeCommit: { oid: tip(path) }, headRefOid: head }];
+    });
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", path], system), 0);
+    assert.match(output(), /^1\. @antelopejs\/main-merged 1\.0\.0 -> 1\.0\.1 \(patch\) /m);
+  });
+
+  test("--ref next reads a dependency move main made before the promotion as main's when the Next sync merged it late", () => {
+    const name = "next-synced-move";
+    const path = repository(name, (path) => {
+      commit(path, "feat: first", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^1.0.0" } }) });
+      git(path, "tag", "v1.0.0");
+      git(path, "checkout", "--quiet", "-b", "next");
+      const task = commit(path, "feat: add the cursor (#2)", { "src/cursor.ts": "export {};\n" });
+      git(path, "checkout", "--quiet", "main");
+      const moved = commit(path, "fix(deps): move to foo 1.5 (#5)", { "package.json": manifest(name, "1.0.0", { dependencies: { foo: "^1.5.0" } }) });
+      git(path, "merge", "--quiet", "--squash", "next");
+      const squash = commit(path, "feat: add the cursor (#3)", {});
+      commit(path, "chore(release): v1.1.0", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^1.5.0" } }) });
+      git(path, "tag", "v1.1.0");
+      const hotfix = commit(path, "fix(deps): move to foo 1.6 (#7)", { "package.json": manifest(name, "1.1.0", { dependencies: { foo: "^1.6.0" } }) });
+      commit(path, "chore(release): v1.1.1", { "package.json": manifest(name, "1.1.1", { dependencies: { foo: "^1.6.0" } }) });
+      git(path, "tag", "v1.1.1");
+      git(path, "checkout", "--quiet", "next");
+      git(path, "merge", "--quiet", "--no-ff", "-m", "chore: merge main into next", moved);
+      commit(path, "ci: cache the store (#6)", { "ci.txt": "x\n" });
+      git(path, "checkout", "--quiet", "main");
+      pulls[`AntelopeJS/${name}`] = [
+        { number: 7, mergeCommit: { oid: hotfix }, headRefOid: hotfix },
+        { number: 5, mergeCommit: { oid: moved }, headRefOid: moved },
+        { number: 3, mergeCommit: { oid: squash }, headRefOid: task },
+      ];
+    });
+    git(path, "update-ref", "refs/remotes/origin/next", "next");
+    const { system, output } = fakeSystem();
+    assert.equal(main(["plan", "--ref", "next", path], system), 0);
+    assert.equal(output(), `Release plan from next, nothing to release\n\nUnchanged: @antelopejs/${name}, only ci commits since 1.1.1\n`);
+  });
+
   test("--ref next reads a dependency move the stable release shipped through a promotion as shipped", () => {
     const promoted = repository("next-moved", (path) => {
       commit(path, "feat: first", { "package.json": manifest("next-moved", "1.0.0", { dependencies: { foo: "^1.0.0" } }) });

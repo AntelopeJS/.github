@@ -288,20 +288,31 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const stableSiblings = Object.fromEntries(siblings.flatMap((inner) => (tag === null ? [] : packedVersion(system, repository, tag, inner))));
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
-  const shipped = (merged ?? [])
-    .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
-    .map((pull) => pull.head);
-  const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shipped.filter((sha) => isAncestor(system, repository, sha, revision));
-  const promoted = held.find((sha) => held.every((other) => isAncestor(system, repository, other, sha)));
-  const base = promoted !== undefined && (forkPoint === null || isAncestor(system, repository, forkPoint, promoted)) ? promoted : forkPoint;
-  const baseManifest = base === null ? stableManifest : readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`);
-  const log = parseCommits(exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]), from.slug);
+  const shippedPulls = (merged ?? []).filter(
+    (pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head),
+  );
+  const shipped = shippedPulls.map((pull) => pull.head);
+  const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shippedPulls.filter((pull) => isAncestor(system, repository, pull.head, revision));
+  const promoted = held.find((pull) => held.every((other) => isAncestor(system, repository, other.head, pull.head)));
+  const bases =
+    promoted === undefined
+      ? [forkPoint]
+      : forkPoint === null || isAncestor(system, repository, forkPoint, promoted.head)
+        ? [promoted.head]
+        : isAncestor(system, repository, promoted.mergeCommit, forkPoint)
+          ? [forkPoint]
+          : [forkPoint, promoted.head];
+  const baseManifests = bases.flatMap((base) => (base === null ? [] : (readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`) ?? [])));
+  const log = parseCommits(
+    exec(system, "git", ["-C", repository, "log", ...(revision === releases ? [] : ["--no-merges"]), logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
+    from.slug,
+  );
   const kept = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
   const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
   const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifest, stableSiblings, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifests, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

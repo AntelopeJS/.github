@@ -100,9 +100,10 @@ accidental major release, is never the stable tag. When every tag is above
 that version, the plan stops and names them. The plan does not read npm, so it
 cannot see a stable version that npm holds without a tag. Release commits do not
 count, and neither do the `fix(deps): depend on the stable` commits of a stable
-run. A directory inside the package that holds another listed package does
-not count either, so a root package beside `packages/*` gets only its own
-commits. Each numbered line of the plan names the repository and the commit it
+run. On a branch other than the default branch, a merge commit is a Next sync
+of the default branch and does not count either. A directory inside the
+package that holds another listed package does not count either, so a root
+package beside `packages/*` gets only its own commits. Each numbered line of the plan names the repository and the commit it
 read, such as `AntelopeJS/mongodb@3f9a2c1`.
 
 `next` reaches the default branch as one squash commit per promotion, so the
@@ -145,7 +146,10 @@ in dependency order.
   of the last promotion that tag released when that head contains the merge
   base, since the promotion squash-merged the branch as it was there.
   So a spec `next` still holds as that promotion carried it is no change,
-  even after a hotfix moved it again. It also gets a patch when a listed sibling's
+  even after a hotfix moved it again. When that head does not contain the
+  merge base, as after a Next sync that merged the default branch from before
+  the promotion, the branch forked at both, and a spec equal to either one is
+  no change. It also gets a patch when a listed sibling's
   release moves the range a `workspace:` spec packs to outside the range the
   package's own last stable release packed, read from the sibling's
   `package.json` at that tag, such as
