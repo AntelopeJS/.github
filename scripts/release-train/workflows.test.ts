@@ -996,6 +996,17 @@ for (const { file, text } of workflows) {
       assert.match(decide(frontend, dependency), /^version=0\.5\.1-next\./);
     });
 
+    test("only a job that installs restores and saves the pnpm cache", () => {
+      const steps = text.split("\n      - ").slice(1);
+      const condition = (step: string) => /^ {8}if: (.*)$/m.exec(step)?.[1];
+      const install = steps.findIndex((step) => step.startsWith("name: Install dependencies\n"));
+      const cached = steps.flatMap((step, index) => (/^ {10}cache: pnpm$/m.test(step) ? [index] : []));
+      assert.equal(cached.length, 1);
+      assert.ok(cached[0] < install);
+      assert.equal(condition(steps[cached[0]]), condition(steps[install]));
+      assert.equal(condition(steps[install]), "steps.version.outputs.version != ''");
+    });
+
     test("a preview run cannot write to the repository", () => {
       const permissions = text.slice(text.indexOf("    permissions:\n"), text.indexOf("    concurrency:\n"));
       assert.match(permissions, /^ {6}contents: read$/m);
