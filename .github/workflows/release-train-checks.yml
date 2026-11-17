@@ -5,6 +5,7 @@ on:
     paths:
       - scripts/**
       - .github/workflows/ci-node.yml
+      - .github/workflows/release-npm.yml
       - .github/workflows/release-npm-public.yml
       - .github/workflows/release-npm-private.yml
       - .github/workflows/release-train-checks.yml
@@ -14,6 +15,7 @@ on:
     paths:
       - scripts/**
       - .github/workflows/ci-node.yml
+      - .github/workflows/release-npm.yml
       - .github/workflows/release-npm-public.yml
       - .github/workflows/release-npm-private.yml
       - .github/workflows/release-train-checks.yml
@@ -60,4 +62,4 @@ jobs:
           curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" .github/workflows/release-npm-public.yml .github/workflows/release-npm-private.yml .github/workflows/release-train-checks.yml
+          "$RUNNER_TEMP/actionlint" .github/workflows/release-npm.yml .github/workflows/release-npm-public.yml .github/workflows/release-npm-private.yml .github/workflows/release-train-checks.yml
