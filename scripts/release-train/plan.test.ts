@@ -319,6 +319,38 @@ describe("computePlan", () => {
     assert.equal(kept.status, "excluded");
   });
 
+  test("refuses a runtime spec on a workspace sibling that is not workspace:, and names workspace:^", () => {
+    const inRepo = (name: string, stable: string, subjects: string[], fields: Partial<Manifest> = {}) => ({
+      ...source(name, stable, subjects, fields),
+      slug: "AntelopeJS/dms-media",
+      directory: `packages/${name}`,
+    });
+    const sibling = inRepo("interface-dms-media", "0.4.0", ["feat!: rename the folders"]);
+    const elsewhere = source("interface-database", "0.5.0", []);
+    const media = inRepo("dms-media", "0.9.0", ["fix: x"], {
+      dependencies: { "@antelopejs/interface-dms-media": ">=0.4.0 <0.5.0", "@antelopejs/interface-database": ">=0.5.0 <0.6.0" },
+      peerDependencies: { "@antelopejs/interface-dms-media": "0.4.1-next.2.gabc1234" },
+      devDependencies: { "@antelopejs/interface-dms-media": "^0.4.0" },
+    });
+    const { entries } = plan([media, sibling, elsewhere]);
+    assert.deepEqual(entry(entries, "dms-media"), {
+      status: "refused",
+      source: media,
+      reasons: [
+        "depends on @antelopejs/interface-dms-media@>=0.4.0 <0.5.0, a sibling of its workspace it must name as workspace:^",
+        "depends on @antelopejs/interface-dms-media@0.4.1-next.2.gabc1234, a sibling of its workspace it must name as workspace:^",
+      ],
+    });
+    assert.ok(
+      renderPlan(plan([media, sibling, elsewhere])).includes(
+        [
+          `2. @antelopejs/dms-media refused  AntelopeJS/dms-media:packages/dms-media@${at("dms-media")}`,
+          "     depends on @antelopejs/interface-dms-media@>=0.4.0 <0.5.0, a sibling of its workspace it must name as workspace:^",
+        ].join("\n"),
+      ),
+    );
+  });
+
   test("orders dependencies before their dependents whatever the input order", () => {
     const { entries } = plan([dmsDatabase, mongodb, interfaceDatabase]);
     assert.deepEqual(names(entries), ["interface-database", "mongodb", "dms-database"]);
