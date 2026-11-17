@@ -555,7 +555,7 @@ jobs:
           const git = (...args) => run('git', args)
           const holds = (...args) => {
             try {
-              git(...args)
+              execFileSync('git', args, { stdio: 'ignore' })
               return true
             } catch {
               return false
