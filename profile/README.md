@@ -1,9 +1,9 @@
-<a href="https://github.com/AntelopeJS/dms"><img data-illustration src="./media/hero.svg" width="100%" alt="PostgreSQL, MongoDB and RethinkDB databases connect into one back office, where pages for Dashboard, Customers, Orders, Products and Invoices appear. Caption: Your database. Your back office."></a>
+<a href="https://github.com/AntelopeJS/dms"><img data-illustration src="./media/hero.svg" width="100%" alt="PostgreSQL, MySQL or MariaDB, MongoDB and RethinkDB databases connect into one back office, where pages for Dashboard, Customers, Orders, Products and Invoices appear. Caption: Your database. Your back office."></a>
 
 <div align="center">
 
 **AntelopeJS DMS is the open-source back office for your product.**<br>
-Connect your PostgreSQL, MongoDB or RethinkDB database. Your coding agent builds the admin pages and a dashboard, as TypeScript in your repo.
+Connect your PostgreSQL, MySQL, MariaDB or MongoDB database. Your coding agent builds the admin pages and a dashboard, as TypeScript in your repo.
 
 <a href="https://github.com/AntelopeJS/dms"><img data-illustration alt="Star AntelopeJS DMS" src="https://img.shields.io/github/stars/AntelopeJS/dms?label=Star%20AntelopeJS%20DMS&style=for-the-badge&labelColor=000000&color=000000&logo=github"></a> <a href="https://discord.gg/g4pFt6eXqu"><img data-illustration alt="Discord" src="https://img.shields.io/badge/Discord-18181B?logo=discord&style=for-the-badge&color=000000"></a>
 
@@ -118,7 +118,7 @@ Dashboard core and modules.
 | Repository                                                                             | Use it to                                                                    |
 | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | [template-dms](https://github.com/AntelopeJS/template-dms)                             | Start your own project with the DMS, the Builder, and the AI assistant       |
-| [template-dms-connect-demo](https://github.com/AntelopeJS/template-dms-connect-demo)   | Try the Connect flow on a sample database: PostgreSQL, MongoDB, or RethinkDB |
+| [template-dms-connect-demo](https://github.com/AntelopeJS/template-dms-connect-demo)   | Try the Connect flow on a sample database: PostgreSQL, MySQL, MariaDB, MongoDB, or RethinkDB |
 | [template-dms-demo](https://github.com/AntelopeJS/template-dms-demo)                   | Run a complete DMS with seeded demo data                                     |
 | [template-dms-adonis](https://github.com/AntelopeJS/template-dms-adonis)               | Use DMS with an AdonisJS backend                                             |
 | [template-module-typescript](https://github.com/AntelopeJS/template-module-typescript) | Create an interface or implement one                                         |
