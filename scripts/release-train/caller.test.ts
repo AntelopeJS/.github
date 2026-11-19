@@ -78,11 +78,17 @@ describe("the frozen caller", () => {
       }
     });
 
-    test(`${file} forwards every input and secret it declares to release-npm.yml, and names its registry`, () => {
+    test(`${file} forwards every input but integration-branch and every secret it declares to release-npm.yml, and names its registry`, () => {
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
       assert.deepEqual(forwarded.get("registry"), [registry]);
-      for (const name of entries(entry, ["workflow_call", "inputs"]).keys()) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
+      const declaredInputs = entries(entry, ["workflow_call", "inputs"]);
+      assert.deepEqual(
+        [...declaredInputs.keys()].filter((name) => !forwarded.has(name)),
+        ["integration-branch"],
+      );
+      assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
+      for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
       const secrets = entries(entry, ["jobs", "release", "secrets"]);
       assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
@@ -135,7 +141,9 @@ describe("the frozen caller", () => {
         });
         return [result.status, readFileSync(output, "utf8"), result.stderr];
       };
-      assert.deepEqual(resolve("push", "refs/heads/next", {}), [0, "mode=preview\n", ""]);
+      const pushed = /^ {4}branches: \[(\w+)\]$/m.exec(caller)?.[1];
+      assert.equal(pushed, "main", "the frozen caller previews on a push to the default branch");
+      assert.deepEqual(resolve("push", `refs/heads/${pushed}`, {}), [0, "mode=preview\ntag=next\n", ""]);
       const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}" };
       assert.deepEqual(Object.keys(dispatched), declared);
       assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);

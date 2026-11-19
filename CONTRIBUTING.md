@@ -210,11 +210,12 @@ Use the shared Renovate preset in `renovate.json5`:
 
 ## Release channels
 
-Work moves from `next` to `main` to the npm `latest` dist-tag:
+Work reaches the npm `next` dist-tag when it merges into `main`, and the
+`latest` dist-tag when the release train releases it:
 
-| Branch | npm dist-tag | Versions | Published by |
+| Source | npm dist-tag | Versions | Published by |
 | ------ | ------------ | -------- | ------------ |
-| `next` | `next` | `0.4.3-next.161.g3f9a2c1` | every push that changes the package |
+| `main` | `next` | `0.4.3-next.161.g3f9a2c1` | every push that changes the package |
 | `main` | `latest` | `0.5.0` | the release train |
 
 Anything merged into `main` must be releasable as stable at any time.

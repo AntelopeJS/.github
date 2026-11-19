@@ -18,32 +18,32 @@ starts the run decides what it publishes. A caller only declares the triggers.
 
 | Event | Branch | Publishes |
 | ----- | ------ | --------- |
-| `push` | any branch but the default one, normally `next` | a preview under the npm dist-tag `next` |
+| `push` | the default branch | a preview under the npm dist-tag `next` |
 | `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest`, or nothing without `release-version` |
 
-Any other event or branch fails the run with the reason. Anyone allowed to run
+Any other event or branch fails the run with the reason, so a push to `next`
+publishes nothing. Anyone allowed to run
 the workflow can dispatch a stable release with any `release-version` above
 `latest` in the same major. The release train is the way to start one, not a
 guard against starting one by hand. A release runs no tests. The checks of the pull request that brought each commit are the gate.
 
 Both runs use the `npm-publish` environment of the repository. Its deployment
-branches must allow the preview branch, `next`, beside the default branch.
-Otherwise GitHub refuses the preview run before any step. Today the three
-pilot repositories, `interface-database`, `mongodb` and `dms-database`, allow
-only `main`.
+branches need only the default branch.
 
 ### Preview versions
 
-Every push to `next` publishes a preview of the package when its directory
-changed since the commit of the current `next` preview, read from npm as its
-`gitHead`. A change to the changelog, or to the `version` field of
+Every push to the default branch publishes a preview of the package when its
+directory changed since the commit of the current `next` preview, read from npm
+as its `gitHead`. A change to the changelog, or to the `version` field of
 `package.json`, does not count. The changelog is the `output` of
-`changelogen.config.json`, or `CHANGELOG.md`. So the merge of a release commit
-back into `next` publishes no preview. Neither does a change to
+`changelogen.config.json`, or `CHANGELOG.md`. So the release commit of a
+release that changed only the version and the changelog publishes no preview.
+Neither does a change to
 `pnpm-lock.yaml`, which no package ships, or a change inside a nested directory
-that holds its own `.release-it.json`, which is another released package. A release that wrote stable ranges pushes them to `next` itself, so
-that push publishes a preview with the stable ranges and the merge publishes
-none. A package that changed nothing it ships publishes nothing and says so in a
+that holds its own `.release-it.json`, which is another released package. A
+release that wrote stable ranges changes `dependencies` too, so its release
+commit publishes one preview that holds the stable ranges. A package that
+changed nothing it ships publishes nothing and says so in a
 notice. A push whose run GitHub dropped from the queue is still covered
 by the next run. The preview version is
 `<base>-next.<commit count>.g<short sha>`, such as `0.4.3-next.161.g3f9a2c1`.
@@ -62,8 +62,9 @@ npm view @antelopejs/interface-database dist-tags.next
 pnpm add @antelopejs/interface-database@0.4.3-next.161.g3f9a2c1 --save-exact
 ```
 
-Commit that pin on the dependent's `next` branch. The release train replaces it
-with a stable range when both packages are released.
+Merge that pin into the default branch of the dependent. The release train
+releases the dependency first, then rewrites the range of the pin when it
+releases the dependent.
 
 ### Release train
 
@@ -286,12 +287,7 @@ A stable run then does the following.
 5. When it wrote ranges, it updates the lockfile with
    `pnpm install --no-frozen-lockfile` and stages `package.json` and the
    lockfile, so the release commit holds them and npm records `release-commit`
-   as the `gitHead` of the version. It pushes the same change to the
-   `integration-branch`, `next` by default, as a
-   `fix(deps): depend on the stable <names>` commit, so the Next sync merge of
-   the release finds the same lines on both sides. When
-   that branch changed the same lines since the plan, it keeps them and the run
-   warns that the Next sync will conflict. Otherwise it installs with
+   as the `gitHead` of the version. Otherwise it installs with
    `pnpm install --frozen-lockfile`.
 6. It writes the release notes of the cycle in changelogen's format: the
    compare link, one line per task with one block per commit type and the
@@ -328,8 +324,8 @@ and refuses a branch that moved past it, like a stable run. It refuses a
 `peerDependencies` or `optionalDependencies`, which only a release may move.
 It writes the ranges into `package.json` as step 3 does, updates the lockfile
 with `pnpm install --lockfile-only`, pushes the same
-`fix(deps): depend on the stable <names>` commit to the `integration-branch`
-and to the default branch, and publishes nothing. The plan and the release
+`fix(deps): depend on the stable <names>` commit to the default branch, and
+publishes nothing. The plan and the release
 notes skip that commit, so it releases nothing by itself.
 
 ### Workflow inputs
@@ -347,7 +343,7 @@ the scope and `publishConfig` that the metadata check asks for, and whether
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
 | `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
-| `integration-branch` | `next` | Branch that receives the `fix(deps)` commit of a stable or repin run. A repository without it gets nothing. |
+| `integration-branch` | none | Unused. A caller that passes it keeps working. |
 
 The public workflow publishes to npmjs with public access and provenance and
 needs the `RELEASE_GITHUB_TOKEN` secret for a stable release. The private
@@ -370,12 +366,12 @@ different groups, so a queued preview never cancels a pending stable release.
 
 ### What a caller declares
 
-`antelopejs-sync` of `@antelopejs/tooling-configs` 0.8.0 writes this caller,
+`antelopejs-sync` of `@antelopejs/tooling-configs` 0.8.5 writes this caller,
 and the shared workflows at `@v2` work with it unchanged.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
-- **Triggers.** `push` to `next` (`develop` in `cloud`) for previews, and
+- **Triggers.** `push` to the default branch for previews, and
   `workflow_dispatch` for stable releases.
 - **Dispatch inputs.** `release-version`, `release-commit` and
   `dependency-ranges` (default `"{}"`), all optional strings that the release
@@ -387,14 +383,13 @@ and the shared workflows at `@v2` work with it unchanged.
   public. The release jobs ask only `contents: read`, because they write with
   `RELEASE_GITHUB_TOKEN`.
 - **Optional inputs.** Every other input of the shared workflows has a default
-  that fits this caller. A caller may set `install-core`. `integration-branch`
-  is `next` by default, and `cloud` sets it to `develop`.
+  that fits this caller. A caller may set `install-core`.
 - **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
   `NPM_ANTELOPE_TOKEN` for the private one, each passed by name.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name.
-- **Repository setting.** The `npm-publish` environment allows the preview
-  branch, `next`, besides the default branch.
+- **Repository setting.** The `npm-publish` environment allows the default
+  branch.
 
 ### Caller workflow
 
@@ -406,7 +401,7 @@ name: Release
 
 on:
   push:
-    branches: [next]
+    branches: [main]
   workflow_dispatch:
     inputs:
       release-version:

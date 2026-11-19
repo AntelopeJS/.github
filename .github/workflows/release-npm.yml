@@ -22,9 +22,6 @@ on:
       package-directory:
         required: true
         type: string
-      integration-branch:
-        required: true
-        type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
         required: false
@@ -46,8 +43,9 @@ jobs:
           RELEASE_COMMIT: ${{ inputs.release-commit }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "mode=preview" >> "$GITHUB_OUTPUT"
+            echo "tag=next" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             [ -z "$RELEASE_VERSION" ] || [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
               echo "A stable release needs release-version as M.m.p, got '$RELEASE_VERSION'." >&2
@@ -63,7 +61,7 @@ jobs:
               echo "mode=stable" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "A push to a branch other than $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
+            echo "A push to $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
           fi
 
@@ -87,7 +85,7 @@ jobs:
               exit 1
               ;;
           esac
-          if [ "$MODE" != preview ] && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
+          if { [ "$MODE" = stable ] || [ "$MODE" = repin ]; } && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
             echo "RELEASE_GITHUB_TOKEN is not configured." >&2
             exit 1
           fi
@@ -98,7 +96,7 @@ jobs:
           persist-credentials: false
 
       - name: Check the planned commit
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         env:
           RELEASE_COMMIT: ${{ inputs.release-commit }}
         run: |
@@ -386,7 +384,7 @@ jobs:
 
       - name: Apply dependency ranges
         id: ranges
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         working-directory: ${{ inputs.package-directory }}
         env:
           MODE: ${{ steps.mode.outputs.mode }}
@@ -507,7 +505,7 @@ jobs:
         run: pnpm add --global @antelopejs/core
 
       - name: Configure release identity
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -519,34 +517,6 @@ jobs:
           LOCKFILE: ${{ steps.lockfile.outputs.path }}
         run: |
           git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
-
-      - name: Bring the stable ranges to the integration branch
-        if: steps.ranges.outputs.message != ''
-        env:
-          BRANCH: ${{ inputs.integration-branch }}
-          MESSAGE: ${{ steps.ranges.outputs.message }}
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" > /dev/null; then
-            exit 0
-          fi
-          commit=$(git commit-tree "$(git write-tree)" -p HEAD -m "$MESSAGE")
-          worktree="$RUNNER_TEMP/integration-branch"
-          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
-          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
-          trap 'git config --local --unset-all http.https://github.com/.extraheader || true; git worktree remove --force "$worktree" 2> /dev/null || true' EXIT
-          git worktree add --quiet --detach "$worktree" "origin/$BRANCH"
-          if ! git -C "$worktree" cherry-pick "$commit" > /dev/null 2>&1; then
-            if [ -n "$(git -C "$worktree" diff --name-only --diff-filter=U)" ]; then
-              echo "::warning::$BRANCH changed the same dependency lines since the plan, so it keeps them and the Next sync of this release will conflict."
-            fi
-            git -C "$worktree" cherry-pick --abort
-            exit 0
-          fi
-          if ! git -C "$worktree" push --quiet origin "HEAD:refs/heads/$BRANCH"; then
-            echo "::warning::The stable ranges were not pushed to $BRANCH, so the Next sync of this release will conflict."
-          fi
 
       - name: Push the stable ranges
         if: steps.mode.outputs.mode == 'repin'
@@ -741,6 +711,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PINS: ${{ steps.version.outputs.pins }}
+          TAG: ${{ steps.mode.outputs.tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
@@ -755,7 +726,7 @@ jobs:
           }
           fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
           NODE
-          bash "$RUNNER_TEMP/publish.sh" next
+          bash "$RUNNER_TEMP/publish.sh" "$TAG"
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'

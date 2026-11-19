@@ -24,8 +24,7 @@ on:
         default: .
         type: string
       integration-branch:
-        description: Branch that receives the stable ranges a stable run writes, so that the Next sync merge does not conflict
-        default: next
+        description: Unused. Kept so that a caller that passes it keeps working
         type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
@@ -50,7 +49,6 @@ jobs:
       dependency-ranges: ${{ inputs.dependency-ranges }}
       install-core: ${{ inputs.install-core }}
       package-directory: ${{ inputs.package-directory }}
-      integration-branch: ${{ inputs.integration-branch }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
       NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
