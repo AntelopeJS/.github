@@ -84,8 +84,8 @@ It reads every repository whose default branch has a `merge_queue` rule. For eac
 one it reads the completed CI runs of the `schedule` event on the default
 branch from the window and the week before it. Then it reads the merge queue's
 CI runs (`merge_group`) of the same period. Each job that failed in the first
-attempt of a nightly of the window is a failure. The `checks` gate counts only
-when no other job failed. For each failure the report gives:
+attempt of a nightly of the window is a failure. The `checks` and `ubuntu` gates
+count only when no other job failed. For each failure the report gives:
 
 - the kind. A job that is `infra` either never got a runner (it lists no
   step), failed a runner setup step, or has an annotation that names billing, a

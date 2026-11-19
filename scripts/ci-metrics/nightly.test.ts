@@ -91,9 +91,11 @@ test("a job no runner took, a failed setup step and a network or billing annotat
   assert.equal(result.counts.infra, 3);
 });
 
-test("the checks gate counts only when no other job failed", () => {
-  const result = nightlyReport(dataset(repo([nightly(16, "a"), nightly(17, "b", [job("ci / checks", "failure")])])));
-  assert.deepEqual(result.failures.map((failure) => failure.job), ["ci / checks"]);
+test("the checks and ubuntu gates count only when no other job failed", () => {
+  const gates = nightlyReport(dataset(repo([nightly(16, "a"), nightly(17, "b", [job("ci / checks", "failure"), job("ubuntu", "failure")])])));
+  assert.deepEqual(gates.failures.map((failure) => failure.job), ["ci / checks", "ubuntu"]);
+  const behind = nightlyReport(dataset(repo([nightly(16, "a"), nightly(17, "b", [job("e2e (1)", "failure"), job("ubuntu", "failure")])])));
+  assert.deepEqual(behind.failures.map((failure) => failure.job), ["e2e (1)"]);
 });
 
 test("nightlies before the window are baselines only", () => {

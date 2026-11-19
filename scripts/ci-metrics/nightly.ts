@@ -103,10 +103,10 @@ export function failureKind(job: NightlyJob, annotations: readonly string[]): "i
   return annotations.some((annotation) => infraPattern.test(annotation)) ? "infra" : "test";
 }
 
-/** The jobs that failed in a nightly's first attempt, without the `checks` gate when another job failed. */
+/** The jobs that failed in a nightly's first attempt, without the `checks` and `ubuntu` gates when another job failed. */
 export function failedJobs(nightly: Nightly): NightlyJob[] {
   const first = (nightly.jobs ?? []).filter((job) => job.attempt === 1 && failed(job.conclusion));
-  const others = first.filter((job) => !/(^|\/ )checks$/.test(job.name));
+  const others = first.filter((job) => !/(^|\/ )(checks|ubuntu)$/.test(job.name));
   return others.length > 0 ? others : first;
 }
 
