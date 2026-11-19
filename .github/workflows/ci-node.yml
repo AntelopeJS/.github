@@ -308,23 +308,44 @@ jobs:
           "${command[@]}"
           echo "flaky=true" >> "$GITHUB_OUTPUT"
 
+      - name: Run extra commands
+        id: extra
+        if: steps.leg.outputs.work == 'true' && inputs.extra-commands != '' && (matrix.part == 'extra' || (!inputs.extra-commands-job && (matrix.part == 'all' || matrix.part == 'checks')))
+        env:
+          EXTRA_COMMANDS: ${{ inputs.extra-commands }}
+        run: |
+          if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
+            exec bash -euo pipefail -c "$EXTRA_COMMANDS"
+          fi
+          log="$RUNNER_TEMP/extra-attempt-1.log"
+          if bash -euo pipefail -c "$EXTRA_COMMANDS" 2>&1 | tee "$log"; then
+            exit 0
+          fi
+          echo "::warning::extra-commands failed in the merge queue. They run once more: a pass marks a flaky test, a second failure fails the job."
+          bash -euo pipefail -c "$EXTRA_COMMANDS"
+          echo "flaky=true" >> "$GITHUB_OUTPUT"
+
       - name: Annotate the flaky tests
-        if: ${{ !cancelled() && steps.tests.outputs.flaky == 'true' }}
+        if: ${{ !cancelled() && (steps.tests.outputs.flaky == 'true' || steps.extra.outputs.flaky == 'true') }}
         continue-on-error: true
         env:
           GH_REPO: ${{ github.repository }}
+          TESTS_FLAKY: ${{ steps.tests.outputs.flaky }}
+          EXTRA_FLAKY: ${{ steps.extra.outputs.flaky }}
         run: |
-          node --input-type=module - "$RUNNER_TEMP/test-attempt-1.log" <<'JS'
+          node --input-type=module - <<'JS'
           import { appendFileSync, readFileSync } from "node:fs";
-          import { isAbsolute, relative, sep } from "node:path";
+          import { isAbsolute, join, relative, sep } from "node:path";
           import { fileURLToPath } from "node:url";
 
-          const FALLBACK = "pnpm run test";
           const MAX_ANNOTATIONS = 10;
           const DURATION = / \([\d.]+m?s\)$/;
+          const MOCHA_TALLY = /^\s*(\d+) (passing|failing|pending)\b/;
 
-          const text = readFileSync(process.argv[2], "utf8").replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "");
-          const lines = text.split(/\r?\n/);
+          const SOURCES = [
+            { flaky: process.env.TESTS_FLAKY, log: "test-attempt-1.log", fallback: "pnpm run test" },
+            { flaky: process.env.EXTRA_FLAKY, log: "extra-attempt-1.log", fallback: "extra-commands" },
+          ];
 
           const locate = (raw) => {
             const path = raw.startsWith("file://") ? fileURLToPath(raw) : raw;
@@ -332,104 +353,107 @@ jobs:
           };
           const isTestFile = (path) => !path.includes("node_modules") && /(^|\/)(tests?|__tests__|specs?)\/|\.(test|spec)\.\w+$/.test(path);
 
-          const vitest = () =>
-            lines.flatMap((line) => {
-              const match = /^\s*FAIL\s+(?:\|[^|]*\|\s+)?(.+?)(?: > (.+?)| \[ .+ \])\s*$/.exec(line);
-              return match ? [{ where: match[1], name: match[2] }] : [];
-            });
+          const parse = (text, fallback) => {
+            const lines = text.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "").split(/\r?\n/);
 
-          const jest = () => {
-            const entries = [];
-            let file;
-            for (const line of lines) {
-              const verdict = /^\s*(FAIL|PASS)\s+(?:\S+\s+)?(\S+)(?:\s+\([\d.]+ m?s\))?\s*$/.exec(line);
-              if (verdict) file = verdict[1] === "FAIL" ? verdict[2] : undefined;
-              const bullet = /^ {2}● (\S.*?)\s*$/.exec(line);
-              if (!bullet || !file || bullet[1].startsWith("Console")) continue;
-              entries.push(bullet[1] === "Test suite failed to run" ? { where: file } : { where: file, name: bullet[1].split(" › ").join(" > ") });
-            }
-            return entries;
-          };
+            const vitest = () =>
+              lines.flatMap((line) => {
+                const match = /^\s*FAIL\s+(?:\|[^|]*\|\s+)?(.+?)(?: > (.+?)| \[ .+ \])\s*$/.exec(line);
+                return match ? [{ where: match[1], name: match[2] }] : [];
+              });
 
-          const MOCHA_TALLY = /^\s*(\d+) (passing|failing|pending)\b/;
-
-          const mochaFailure = (from, to) => {
-            const titles = [lines[from].replace(/^ {2}\d+\) /, "")];
-            for (let next = from + 1; next < to && lines[next].length - lines[next].trimStart().length === 5 + 2 * titles.length && lines[next].trim(); next += 1) titles.push(lines[next].trim());
-            const files = lines.slice(from, to).flatMap((line) => {
-              const location = /Timeout of \d+ms exceeded.*\(([^()]+)\)\s*$/.exec(line) ?? /^\s+at .*?\(?([^\s()]+):\d+:\d+\)?$/.exec(line);
-              return location ? [locate(location[1])] : [];
-            });
-            return { where: files.find(isTestFile) ?? FALLBACK, name: titles.join(" > ").replace(/:$/, "") };
-          };
-
-          const mocha = () =>
-            lines.flatMap((line, start) => {
-              const tally = MOCHA_TALLY.exec(line);
-              if (tally?.[2] !== "failing") return [];
-              const end = lines.findIndex((candidate, index) => index > start && MOCHA_TALLY.test(candidate));
-              const stop = end === -1 ? lines.length : end;
-              const heads = [];
-              for (let index = start + 1; index < stop && heads.length < Number(tally[1]); index += 1) {
-                if (lines[index].startsWith(`  ${heads.length + 1}) `)) heads.push(index);
+            const jest = () => {
+              const entries = [];
+              let file;
+              for (const line of lines) {
+                const verdict = /^\s*(FAIL|PASS)\s+(?:\S+\s+)?(\S+)(?:\s+\([\d.]+ m?s\))?\s*$/.exec(line);
+                if (verdict) file = verdict[1] === "FAIL" ? verdict[2] : undefined;
+                const bullet = /^ {2}● (\S.*?)\s*$/.exec(line);
+                if (!bullet || !file || bullet[1].startsWith("Console")) continue;
+                entries.push(bullet[1] === "Test suite failed to run" ? { where: file } : { where: file, name: bullet[1].split(" › ").join(" > ") });
               }
-              return heads.map((head, position) => mochaFailure(head, heads[position + 1] ?? stop));
-            });
+              return entries;
+            };
 
-          const nodeTest = () => {
-            const end = lines.findIndex((line) => /^ℹ tests \d+/.test(line));
-            const leaves = [];
-            const open = [];
-            for (const line of lines.slice(0, end === -1 ? undefined : end)) {
-              const mark = /^(\s*)([▶✔✖﹣]) (.+?)(?: # .*)?$/.exec(line);
-              if (!mark) continue;
-              const [, pad, symbol, title] = mark;
-              const name = title.replace(DURATION, "");
-              if (symbol === "▶") open.push({ depth: pad.length, name });
-              else if (open.at(-1)?.depth === pad.length && open.at(-1).name === name) open.pop();
-              else if (symbol === "✖") leaves.push({ name, title: [...open.map((suite) => suite.name), name].join(" > ") });
-            }
-            const entries = [];
-            const failing = lines.findIndex((line) => /^✖ failing tests:\s*$/.test(line));
-            for (let index = failing + 1; failing !== -1 && index < lines.length; index += 1) {
-              const location = /^test at (.+):\d+:\d+$/.exec(lines[index]);
-              const failed = location && /^✖ (.+)$/.exec(lines[index + 1] ?? "");
-              if (!failed) continue;
-              const where = locate(location[1]);
-              const name = failed[1].replace(DURATION, "");
-              const leaf = leaves.find((candidate) => candidate.name === name);
-              if (leaf) leaves.splice(leaves.indexOf(leaf), 1);
-              entries.push(locate(name) === where ? { where } : { where, name: leaf?.title ?? name });
-            }
-            return entries;
+            const mochaFailure = (from, to) => {
+              const titles = [lines[from].replace(/^ {2}\d+\) /, "")];
+              for (let next = from + 1; next < to && lines[next].length - lines[next].trimStart().length === 5 + 2 * titles.length && lines[next].trim(); next += 1) titles.push(lines[next].trim());
+              const files = lines.slice(from, to).flatMap((line) => {
+                const location = /Timeout of \d+ms exceeded.*\(([^()]+)\)\s*$/.exec(line) ?? /^\s+at .*?\(?([^\s()]+):\d+:\d+\)?$/.exec(line);
+                return location ? [locate(location[1])] : [];
+              });
+              return { where: files.find(isTestFile) ?? fallback, name: titles.join(" > ").replace(/:$/, "") };
+            };
+
+            const mocha = () =>
+              lines.flatMap((line, start) => {
+                const tally = MOCHA_TALLY.exec(line);
+                if (tally?.[2] !== "failing") return [];
+                const end = lines.findIndex((candidate, index) => index > start && MOCHA_TALLY.test(candidate));
+                const stop = end === -1 ? lines.length : end;
+                const heads = [];
+                for (let index = start + 1; index < stop && heads.length < Number(tally[1]); index += 1) {
+                  if (lines[index].startsWith(`  ${heads.length + 1}) `)) heads.push(index);
+                }
+                return heads.map((head, position) => mochaFailure(head, heads[position + 1] ?? stop));
+              });
+
+            const nodeTest = () => {
+              const end = lines.findIndex((line) => /^ℹ tests \d+/.test(line));
+              const leaves = [];
+              const open = [];
+              for (const line of lines.slice(0, end === -1 ? undefined : end)) {
+                const mark = /^(\s*)([▶✔✖﹣]) (.+?)(?: # .*)?$/.exec(line);
+                if (!mark) continue;
+                const [, pad, symbol, title] = mark;
+                const name = title.replace(DURATION, "");
+                if (symbol === "▶") open.push({ depth: pad.length, name });
+                else if (open.at(-1)?.depth === pad.length && open.at(-1).name === name) open.pop();
+                else if (symbol === "✖") leaves.push({ name, title: [...open.map((suite) => suite.name), name].join(" > ") });
+              }
+              const entries = [];
+              const failing = lines.findIndex((line) => /^✖ failing tests:\s*$/.test(line));
+              for (let index = failing + 1; failing !== -1 && index < lines.length; index += 1) {
+                const location = /^test at (.+):\d+:\d+$/.exec(lines[index]);
+                const failed = location && /^✖ (.+)$/.exec(lines[index + 1] ?? "");
+                if (!failed) continue;
+                const where = locate(location[1]);
+                const name = failed[1].replace(DURATION, "");
+                const leaf = leaves.find((candidate) => candidate.name === name);
+                if (leaf) leaves.splice(leaves.indexOf(leaf), 1);
+                entries.push(locate(name) === where ? { where } : { where, name: leaf?.title ?? name });
+              }
+              return entries;
+            };
+
+            return Object.values({ vitest, jest, mocha, nodeTest }).flatMap((parser) => parser());
           };
-
-          const parsers = { vitest, jest, mocha, nodeTest };
 
           const distinct = (entries) => [...new Map(entries.map((entry) => [JSON.stringify(entry), entry])).values()];
-          const parsed = () => {
+          const named = (entries, fallback) => (entries.length === 0 ? [{ where: fallback }] : entries);
+          const levels = [
+            named,
+            (entries, fallback) => named(entries, fallback).map(({ where }) => ({ where })),
+            (_entries, fallback) => [{ where: fallback }],
+          ];
+
+          const sources = SOURCES.filter(({ flaky }) => flaky === "true").map(({ log, fallback }) => {
+            const text = readFileSync(join(process.env.RUNNER_TEMP, log), "utf8");
             try {
-              return distinct(Object.values(parsers).flatMap((parse) => parse()));
+              return { fallback, entries: distinct(parse(text, fallback)) };
             } catch {
-              return [];
+              return { fallback, entries: [] };
             }
-          };
-          let entries = parsed();
-          if (entries.length === 0) entries = [{ where: FALLBACK }];
-          if (entries.length > MAX_ANNOTATIONS) entries = distinct(entries.map(({ where }) => ({ where })));
-          if (entries.length > MAX_ANNOTATIONS) entries = [{ where: FALLBACK }];
+          });
+          const annotations = levels
+            .map((level) => distinct(sources.flatMap(({ entries, fallback }) => level(entries, fallback))))
+            .find((candidate) => candidate.length <= MAX_ANNOTATIONS);
 
           const escape = (message) => message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
-          const messages = entries.map(({ where, name }) => `${process.env.GH_REPO}: ${name === undefined ? where : `${where} > ${name}`} passed only on its merge-queue retry.`);
+          const messages = annotations.map(({ where, name }) => `${process.env.GH_REPO}: ${name === undefined ? where : `${where} > ${name}`} passed only on its merge-queue retry.`);
           for (const message of messages) console.log(`::warning title=Flaky test::${escape(message)}`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, messages.map((message) => `- Flaky test: \`\` ${message} \`\`\n`).join(""));
           JS
-
-      - name: Run extra commands
-        if: steps.leg.outputs.work == 'true' && inputs.extra-commands != '' && (matrix.part == 'extra' || (!inputs.extra-commands-job && (matrix.part == 'all' || matrix.part == 'checks')))
-        env:
-          EXTRA_COMMANDS: ${{ inputs.extra-commands }}
-        run: bash -euo pipefail -c "$EXTRA_COMMANDS"
 
       - name: Stop services
         if: always() && steps.services.outcome == 'success'

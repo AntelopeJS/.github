@@ -1,0 +1,30 @@
+
+> @antelopejs/media@1.4.0 build /home/runner/work/example/example
+> tsc -p tsconfig.build.json
+
+
+> @antelopejs/media@1.4.0 test:integration /home/runner/work/example/example
+> mocha --config .mocharc.integration.cjs
+
+
+  media integration
+    uploads
+      ✔ stores an image (212ms)
+      1) generates the thumbnails
+    downloads
+      ✔ streams a stored file (87ms)
+
+
+  2 passing (2s)
+  1 failing
+
+  1) media integration
+       uploads
+         generates the thumbnails:
+     Error: Timeout of 2000ms exceeded. For async tests and hooks, ensure "done()" is called; if returning a Promise, ensure it resolves. (/home/runner/work/example/example/test/integration/media.test.ts)
+      at listOnTimeout (node:internal/timers:685:17)
+      at process.processTimers (node:internal/timers:618:7)
+
+
+
+ ELIFECYCLE  Test failed. See above for more details.
