@@ -760,7 +760,7 @@ describe("release-npm.yml", () => {
     });
   });
 
-  test("a preview pins each workspace sibling's preview from its commit or its unreleased next, and keeps the stable range of one released since", () => {
+  test("a preview pins the preview of a workspace sibling whose packed declarations changed since its latest release, from its commit or its unreleased next, and gives every other sibling its stable range", () => {
     const manifest = (name: string, version: string, dependencies: Record<string, string> = {}) => `${JSON.stringify({ name, version, dependencies })}\n`;
     const { directory, sha: first } = repository(`release-siblings`, {
       "package.json": JSON.stringify({ name: "workspace", private: true }),
@@ -779,8 +779,8 @@ describe("release-npm.yml", () => {
       }),
       "packages/x/.release-it.json": "{}\n",
     });
-    const previewed = commitFiles(directory, "fix: y and z", { "packages/interface-y/index.js": "y\n", "packages/interface-z/index.js": "z\n" });
-    const sha = commitFiles(directory, "feat: x", { "packages/interface-x/index.js": "x\n", "packages/x/index.js": "x\n" });
+    const previewed = commitFiles(directory, "fix: y and z", { "packages/interface-y/index.js": "y\n", "packages/interface-z/index.js": "z\n", "packages/interface-z/index.d.ts": "export declare const z: string;\n" });
+    const sha = commitFiles(directory, "feat: x", { "packages/interface-x/index.js": "x\n", "packages/interface-x/index.d.ts": "export declare const x: number;\n", "packages/x/index.js": "x\n" });
     const views = join(root, `release-npm-views.tsv`);
     writeFileSync(
       views,
@@ -820,16 +820,53 @@ describe("release-npm.yml", () => {
     assert.deepEqual([down.status, down.outputs], [1, ""]);
     const resolved = resolve();
     assert.equal(resolved.status, 0, resolved.stderr);
-    const pins = `{"@antelopejs/interface-x":"0.10.1-${suffix}","@antelopejs/interface-z":"0.2.1-next.2.g1111111"}`;
-    assert.equal(resolved.outputs, `pins=${pins}\nversion=0.12.2-${suffix}\n`);
+    const pins = {
+      "@antelopejs/interface-x": { preview: `0.10.1-${suffix}`, latest: "0.10.0", directory: "packages/interface-x" },
+      "@antelopejs/interface-z": { preview: "0.2.1-next.2.g1111111", latest: "0.2.0", directory: "packages/interface-z" },
+    };
+    assert.equal(resolved.outputs, `pins=${JSON.stringify(pins)}\nversion=0.12.2-${suffix}\n`);
     const installed = spawnSync("pnpm", ["install", "--offline", "--no-frozen-lockfile", "--silent"], { cwd: directory, encoding: "utf8" });
     assert.equal(installed.status, 0, installed.stderr);
-    const preview = publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PINS: pins });
+    const stable = join(root, "release-siblings-stable");
+    const tarballs = Object.entries({
+      "@antelopejs/interface-x@0.10.0": "export declare const x: string;\n",
+      "@antelopejs/interface-z@0.2.0": "export declare const z: string;\n",
+    }).map(([spec, declaration]) => {
+      const [name = "", version = ""] = spec.split(/(?!^)@/);
+      const source = join(stable, spec);
+      mkdirSync(source, { recursive: true });
+      writeFileSync(join(source, "package.json"), manifest(name, version));
+      writeFileSync(join(source, "index.d.ts"), declaration);
+      const pack = spawnSync(realNpm, ["pack", "--silent", "--pack-destination", stable], { cwd: source, encoding: "utf8" });
+      assert.equal(pack.status, 0, pack.stderr);
+      return [spec, join(stable, pack.stdout.trim())];
+    });
+    writeFileSync(join(stable, "tarballs.tsv"), tarballs.map((row) => row.join("\t")).join("\n") + "\n");
+    const packing = join(root, "release-siblings-npm", "bin");
+    mkdirSync(packing, { recursive: true });
+    symlinkSync(join(dirname(realNpm), "..", "node_modules"), join(packing, "..", "node_modules"));
+    writeFileSync(
+      join(packing, "npm"),
+      `#!/bin/sh\nif [ "$1" = pack ] && [ "$3" = --pack-destination ]; then tarball=$(awk -F '\\t' -v key="$2" '$1 == key { print $2 }' "${join(stable, "tarballs.tsv")}"); [ -n "$tarball" ] || { echo "npm error code E404" >&2; exit 1; }; cp "$tarball" "$4"; exit 0; fi\nexec '${join(recordingNpm, "npm")}' "$@"\n`,
+    );
+    chmodSync(join(packing, "npm"), 0o755);
+    const publish = (pinned: object) =>
+      publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PATH: `${packing}:${recordingNpm}:${process.env.PATH ?? ""}`, PINS: JSON.stringify(pinned) });
+    const preview = publish(pins);
     assert.equal(preview.status, 0, preview.stderr);
     assert.deepEqual(preview.publication?.manifest, {
       name: "@antelopejs/x",
       version: `0.12.2-${suffix}`,
-      dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0", "@antelopejs/interface-z": "0.2.1-next.2.g1111111" },
+      dependencies: { "@antelopejs/interface-x": `0.10.1-${suffix}`, "@antelopejs/interface-y": "^0.4.0", "@antelopejs/interface-z": "^0.2.0" },
+      gitHead: sha,
+    });
+    git(directory, "checkout", "--", "packages/x/package.json");
+    const unreleased = publish({ "@antelopejs/interface-z": { ...pins["@antelopejs/interface-z"], latest: "" } });
+    assert.equal(unreleased.status, 0, unreleased.stderr);
+    assert.deepEqual(unreleased.publication?.manifest, {
+      name: "@antelopejs/x",
+      version: `0.12.2-${suffix}`,
+      dependencies: { "@antelopejs/interface-x": "^0.10.0", "@antelopejs/interface-y": "^0.4.0", "@antelopejs/interface-z": "0.2.1-next.2.g1111111" },
       gitHead: sha,
     });
   });

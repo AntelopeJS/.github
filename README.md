@@ -62,6 +62,21 @@ publishes nothing.
 A preview moves only the `next` dist-tag. `latest` stays on the last stable
 release. The run writes no commit, no tag, no changelog and no GitHub release.
 
+A preview resolves each `workspace:` spec in `dependencies`,
+`peerDependencies` and `optionalDependencies` whose sibling holds its own
+`.release-it.json`. A sibling with an unreleased preview, the one this commit
+publishes or a `next` newer than its `latest`, is pinned to that exact preview
+only when its public API changed since its `latest` release. The run packs the
+sibling with `pnpm pack`, fetches its `latest` tarball from npm and compares
+the `.d.ts`, `.d.mts` and `.d.cts` files of both by path and content. When
+they match, the preview gets `^<latest>` instead, so a module that already
+depends on a stable range of the sibling installs one copy of it. A sibling
+never released is always pinned. The trade-off: a runtime-only change of a
+sibling, such as a bug fix behind unchanged types, reaches the previews of its
+dependents only once the sibling is released. A sibling that ships no
+declaration files always counts as unchanged. A stable release keeps its
+ranges as before.
+
 A dependent pins the exact preview it needs:
 
 ```sh

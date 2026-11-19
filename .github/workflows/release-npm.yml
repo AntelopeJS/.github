@@ -362,15 +362,15 @@ jobs:
             pins='{}'
             while IFS=$'\t' read -r sibling directory; do
               pin=$(cd "$(git rev-parse --show-toplevel)/$directory" && preview_of)
+              latest=$(latest_of "$sibling")
               if [ -z "$pin" ]; then
                 current=$(npm view "$sibling@next" version 2>/dev/null || true)
-                latest=$(latest_of "$sibling")
                 if [ -n "$current" ] && { [ -z "$latest" ] || node -e 'const [a, b] = process.argv.slice(1).map((v) => v.split("-")[0].split(".").map(Number)); process.exit((a[0] - b[0] || a[1] - b[1] || a[2] - b[2]) > 0 ? 0 : 1)' "$current" "$latest"; }; then
                   pin=$current
                 fi
               fi
               if [ -n "$pin" ]; then
-                pins=$(jq -c --arg name "$sibling" --arg pin "$pin" '. + {($name): $pin}' <<< "$pins")
+                pins=$(jq -c --arg name "$sibling" --arg pin "$pin" --arg latest "$latest" --arg directory "$directory" '. + {($name): {preview: $pin, latest: $latest, directory: $directory}}' <<< "$pins")
               fi
             done < "$RUNNER_TEMP/siblings.tsv"
             if [ "$pins" != '{}' ]; then
@@ -739,12 +739,39 @@ jobs:
         run: |
           set -euo pipefail
           node <<'NODE'
+          const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
+          const path = require('node:path')
+          const { isDeepStrictEqual } = require('node:util')
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
           const pins = JSON.parse(process.env.PINS || '{}')
+          const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+          const packed = (command, args, cwd) => {
+            const destination = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'sibling-'))
+            execFileSync(command, [...args, '--pack-destination', destination], { cwd, stdio: ['ignore', 'ignore', 'inherit'] })
+            const tarball = fs.readdirSync(destination).find((file) => file.endsWith('.tgz'))
+            execFileSync('tar', ['-xzf', tarball, '-C', destination], { cwd: destination })
+            return destination
+          }
+          const declarations = (directory) =>
+            new Map(
+              fs.readdirSync(directory, { recursive: true })
+                .filter((file) => /\.d\.[cm]?ts$/.test(file) && fs.statSync(path.join(directory, file)).isFile())
+                .sort()
+                .map((file) => [file, fs.readFileSync(path.join(directory, file), 'utf8')]),
+            )
+          const specs = new Map()
+          const specOf = (name) => {
+            if (!specs.has(name)) {
+              const { preview, latest, directory } = pins[name]
+              const unchanged = latest !== '' && isDeepStrictEqual(declarations(packed('pnpm', ['pack'], path.join(top, directory))), declarations(packed('npm', ['pack', `${name}@${latest}`], '.')))
+              specs.set(name, unchanged ? `^${latest}` : preview)
+            }
+            return specs.get(name)
+          }
           for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
             for (const [name, spec] of Object.entries(pkg[field] ?? {})) {
-              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = pins[name]
+              if (spec.startsWith('workspace:') && Object.hasOwn(pins, name)) pkg[field][name] = specOf(name)
             }
           }
           fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
