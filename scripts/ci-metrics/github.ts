@@ -85,7 +85,16 @@ function token(): string {
 
 const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-function client(): (path: string) => Promise<Response> {
+/** How long a rate-limited response asks to wait, or `null` when it is not rate-limited. */
+function rateLimitWait(response: Response): number | null {
+  if (response.status !== 403 && response.status !== 429) return null;
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter !== null) return Math.max(0, Number(retryAfter) * 1000);
+  if (response.headers.get("x-ratelimit-remaining") !== "0") return null;
+  return Math.max(1000, Number(response.headers.get("x-ratelimit-reset")) * 1000 - Date.now() + 1000);
+}
+
+function client(fetcher: typeof fetch): (path: string) => Promise<Response> {
   const headers = {
     authorization: `Bearer ${token()}`,
     accept: "application/vnd.github+json",
@@ -94,11 +103,17 @@ function client(): (path: string) => Promise<Response> {
   };
   return async function request(path: string): Promise<Response> {
     for (let attempt = 0; ; attempt++) {
-      const response = await fetch(`${api}${path}`, { headers });
-      const limited = (response.status === 403 || response.status === 429) && response.headers.get("x-ratelimit-remaining") === "0";
-      if (limited) {
-        const reset = Number(response.headers.get("x-ratelimit-reset")) * 1000;
-        await wait(Math.max(1000, reset - Date.now() + 1000));
+      let response: Response;
+      try {
+        response = await fetcher(`${api}${path}`, { headers });
+      } catch (error) {
+        if (attempt >= 3) throw error;
+        await wait(2000 * (attempt + 1));
+        continue;
+      }
+      const limited = rateLimitWait(response);
+      if (limited !== null) {
+        await wait(limited);
         continue;
       }
       if (response.status >= 500 && attempt < 3) {
@@ -130,8 +145,8 @@ async function pool<T, R>(items: readonly T[], size: number, work: (item: T) => 
  * Every workflow run of the organization's unarchived repositories started in the window, with the jobs of
  * a sample of each workflow's completed runs and the tier of each sampled CI run.
  */
-export async function collect(options: CollectOptions): Promise<Dataset> {
-  const request = client();
+export async function collect(options: CollectOptions, fetcher: typeof fetch = fetch): Promise<Dataset> {
+  const request = client(fetcher);
   const json = async (path: string): Promise<unknown> => {
     const response = await request(path);
     return response.ok ? response.json() : null;
@@ -144,7 +159,7 @@ export async function collect(options: CollectOptions): Promise<Dataset> {
     for (const repo of listed) if (isRecord(repo) && repo.archived !== true && typeof repo.name === "string") repos.push(repo.name);
   }
 
-  const to = options.to.getTime();
+  const to = Math.floor(options.to.getTime() / 1000) * 1000;
   const from = to - options.days * 86_400_000;
   const listRuns = async (repo: string, start: number, end: number): Promise<Run[]> => {
     const range = `${new Date(start).toISOString()}..${new Date(end - 1000).toISOString()}`;
@@ -191,5 +206,5 @@ export async function collect(options: CollectOptions): Promise<Dataset> {
     if (response.ok) run.tier = parseTier(await response.text());
   });
 
-  return { to: options.to.toISOString(), days: options.days, runs };
+  return { to: new Date(to).toISOString(), days: options.days, runs };
 }

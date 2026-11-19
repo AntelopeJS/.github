@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseJobs, parseRun, tierJobId } from "./github.ts";
+import { collect, parseJobs, parseRun, tierJobId } from "./github.ts";
 import {
   estimateMinutes,
   formatTable,
   jobMinutes,
+  parseDataset,
   parseTier,
   pickSample,
   quantile,
   queueSeconds,
+  ranChecks,
   report,
   wallMinutes,
   type Job,
   type Run,
+  type SampledRun,
   type Tier,
 } from "./metrics.ts";
 
@@ -175,4 +178,66 @@ test("the API parsers keep runs and jobs and find the Tier job that ran", () => 
   assert.equal(parseJobs(page).length, 2);
   assert.equal(tierJobId(page), 2);
   assert.equal(tierJobId({ jobs: [{ id: 3, name: "ci / Tiers", conclusion: "success" }] }), undefined);
+});
+
+test("a run with no logged tier skipped its checks when its lint job or every Node.js job skipped", () => {
+  const checked = (jobs: Job[], tier?: Tier): boolean => ranChecks({ ...run(), jobs, ...(tier === undefined ? {} : { tier }) });
+  const tierJob = job("ci / Tier", 0, 1);
+  assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3, "skipped")]), false);
+  assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3), job("ci / Node 24", 3, 5, "skipped")]), false);
+  assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3), job("ci / Node 24", 3, 5)]), true);
+  assert.equal(checked([job("test", 0, 3)]), true);
+  assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3)], "draft"), false);
+  assert.equal(ranChecks({ ...run({ conclusion: "cancelled" }), jobs: [], tier: "full" } satisfies SampledRun), false);
+});
+
+test("a saved dataset loads back, and anything else is refused", () => {
+  const dataset = { to: at(0), days: 14, runs: [run({ jobs: [job("lint", 0, 1)], tier: "fast" }), run()] };
+  assert.deepEqual(parseDataset(JSON.parse(JSON.stringify(dataset))), dataset);
+  assert.equal(parseDataset({ window: {}, repos: [] }), null);
+  assert.equal(parseDataset({ to: at(0), days: 14, runs: [{ id: 1 }] }), null);
+});
+
+test("the collector pages, splits a listing over 1,000 runs, waits out a secondary limit and reads the tier", async () => {
+  process.env.GH_TOKEN = "test-token";
+  const to = new Date(Date.UTC(2026, 10, 15, 0, 0, 0, 500));
+  const created = (index: number): string => new Date(Date.UTC(2026, 10, 14) + index * 30_000).toISOString();
+  const all = Array.from({ length: 1500 }, (_, index) => ({
+    id: index + 1, name: "ci", path: ".github/workflows/ci.yml", event: "pull_request", status: "completed",
+    conclusion: "success", run_started_at: created(index), created_at: created(index), updated_at: created(index + 4),
+  }));
+  const seen: string[] = [];
+  let limited = false;
+  const fetcher = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(String(input));
+    seen.push(url.pathname + url.search);
+    const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200 });
+    if (url.pathname === "/orgs/AntelopeJS/repos") {
+      return json(url.searchParams.get("page") === "1" ? [{ name: "dms" }, { name: "old", archived: true }] : []);
+    }
+    if (url.pathname === "/repos/AntelopeJS/dms/actions/runs") {
+      if (!limited) {
+        limited = true;
+        return new Response("secondary rate limit", { status: 403, headers: { "retry-after": "0", "x-ratelimit-remaining": "4000" } });
+      }
+      const [start, end] = (url.searchParams.get("created") ?? "").split("..").map(Date.parse);
+      const inRange = all.filter((raw) => Date.parse(raw.created_at) >= start && Date.parse(raw.created_at) <= end);
+      const page = Number(url.searchParams.get("page"));
+      return json({ total_count: inRange.length, workflow_runs: inRange.length > 1000 ? inRange.slice(0, 100) : inRange.slice((page - 1) * 100, page * 100) });
+    }
+    if (/\/runs\/\d+\/jobs$/.test(url.pathname)) {
+      return json({ jobs: [{ id: 9, name: "ci / Tier", conclusion: "success", created_at: at(0), started_at: at(0), completed_at: at(1) }] });
+    }
+    if (url.pathname === "/repos/AntelopeJS/dms/actions/jobs/9/logs") return new Response("2026-11-19T01:50:02.0670192Z   TIER: full\n");
+    return new Response("not found", { status: 404 });
+  };
+  const dataset = await collect({ org: "AntelopeJS", days: 1, to, ciSample: 3, otherSample: 1, concurrency: 2 }, fetcher);
+
+  assert.equal(dataset.to, "2026-11-15T00:00:00.000Z");
+  assert.equal(new Set(dataset.runs.map((listed) => listed.id)).size, 1500);
+  assert.equal(dataset.runs.length, 1500);
+  assert.ok(seen.every((path) => !path.includes("/old/")), "archived repositories are not read");
+  const sampled = dataset.runs.filter((listed) => listed.jobs !== undefined);
+  assert.equal(sampled.length, 3);
+  assert.ok(sampled.every((listed) => listed.tier === "full"));
 });

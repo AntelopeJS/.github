@@ -9,13 +9,18 @@ Node.js 24 and no dependency. It prints nothing else unless it fails.
 - CI runs (workflows named `ci` or `CI`), per repository and organization-wide,
   with the share of completed runs that were cancelled or failed.
 - The median and 90th percentile wall-clock per event (`pull_request`,
-  `merge_group`, `push`, `schedule`) and per tier.
+  `merge_group`, `push`, `schedule`) and per tier. Per event and for the focus
+  repository's pull requests, it is given over every completed run and over the
+  runs that succeeded or failed, since the merge queue changes the cancel rate.
 - Job-minutes per week, organization-wide, per workflow and per repository.
 - For the focus repository (`dms` by default): its share of the job-minutes, the
   wall-clock of its pull request runs, the wall-clock and job-minutes of its
   `full`, `fast` and `queue` runs, and the duration of each `builder:<n>` shard.
 - Small modules, meaning repositories whose median CI run takes under 5
-  job-minutes: the wall-clock of their runs that went on to their checks.
+  job-minutes: the wall-clock of their runs that went on to their checks. A run
+  went on to them when it was not cancelled and its tier is not `none` or
+  `draft`. When no log names its tier, its jobs decide: its lint job, or every
+  Node.js job, skipped.
 - Queue time, the seconds each job waited for a runner.
 
 ## Method
@@ -41,11 +46,19 @@ Run it live over the window to compare, with a token that reads the
 organization's Actions (`GH_TOKEN`, `GITHUB_TOKEN`, or the `gh` login):
 
 ```sh
-node scripts/ci-metrics/main.ts --days 14 --save ci-dataset.json --json ci-report.json
+node scripts/ci-metrics/main.ts --days 14 --save ci-dataset.json --json ci-report.json \
+  --repos dms,dms-saas,dms-assistant,dms-database,antelopejs,tooling-configs,interface-core,mongodb,api,dms-frontend,redis,auth-jwt,interface-auth
 ```
 
-A 14-day window reads a few thousand API calls and takes about ten minutes. It
-waits out the rate limit when it reaches it. `--to 2026-12-03` ends the window
+The baseline's CI figures cover these 13 repositories with 40 sampled CI runs
+each, so `--repos` and the default `--sample 40` keep the CI lines comparable.
+Without `--repos` they cover every repository. Job-minutes per week are always
+organization-wide, as in the baseline.
+
+A 14-day window takes a few thousand API calls. A 1-day window took under a
+minute; the 14-day time is not measured yet. The script waits out the primary
+and the secondary rate limits, and retries a server or network error three
+times. `--to 2026-12-03` ends the window
 at a fixed date, so a later rerun covers the same runs. `--load ci-dataset.json`
 reports again from a saved dataset without the API.
 

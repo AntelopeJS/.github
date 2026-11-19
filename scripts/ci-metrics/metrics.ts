@@ -88,6 +88,8 @@ export interface Report {
     cancelledShare: number | null;
     failedShare: number | null;
     wallMinutesByEvent: Record<string, Stat>;
+    /** Wall-clock per event over the runs that succeeded or failed, which a change in the cancel rate leaves alone. */
+    finishedWallMinutesByEvent: Record<string, Stat>;
     byTier: Partial<Record<Tier, TierStat>>;
     queueSeconds: Stat & { overMinuteShare: number | null };
   };
@@ -103,6 +105,7 @@ export interface Report {
     repo: string;
     shareOfOrgJobMinutes: number | null;
     pullRequestWallMinutes: Stat;
+    finishedPullRequestWallMinutes: Stat;
     full: TierStat;
     fast: TierStat;
     queue: TierStat;
@@ -168,7 +171,7 @@ export function queueSeconds(job: Job): number | null {
   return (time(job.startedAt) - time(job.createdAt)) / 1000;
 }
 
-export const isTier = (value: string): value is Tier => (tiers as readonly string[]).includes(value);
+export const isTier = (value: string): value is Tier => tiers.some((tier) => tier === value);
 
 /**
  * The tier a job log names: the `TIER` input of the step that picks the jobs from the tier, or the
@@ -223,8 +226,10 @@ function conclusions(runs: readonly Run[]): Pick<RepoReport, "runs" | "completed
   };
 }
 
-function wallByEvent(runs: readonly Run[]): Record<string, Stat> {
-  const completed = runs.filter((run) => run.status === "completed");
+const finished = (run: Run): boolean => run.conclusion === "success" || run.conclusion === "failure";
+
+function wallByEvent(runs: readonly Run[], keep: (run: Run) => boolean = (run) => run.status === "completed"): Record<string, Stat> {
+  const completed = runs.filter(keep);
   return Object.fromEntries(
     watchedEvents.map((event) => [event, stat(completed.filter((run) => run.event === event).map(wallMinutes))]),
   );
@@ -286,8 +291,19 @@ function shardMinutes(runs: readonly SampledRun[]): Record<string, Stat> {
   );
 }
 
-/** Whether a run went on to its checks: it was not cancelled, and its tier is not `none` or `draft`. */
-const ranChecks = (run: Run): boolean => run.conclusion !== "cancelled" && run.tier !== "none" && run.tier !== "draft";
+/**
+ * Whether a run went on to its checks: it was not cancelled, and its tier is not `none` or `draft`. A run of the
+ * shared workflow whose tier no log names skipped them when its lint job, or every Node.js job, skipped.
+ */
+export function ranChecks(run: SampledRun): boolean {
+  if (run.conclusion === "cancelled") return false;
+  if (run.tier !== undefined && run.tier !== "unknown") return run.tier !== "none" && run.tier !== "draft";
+  if (!run.jobs.some(isTierJob)) return true;
+  const ran = (jobs: Job[]): boolean => jobs.some((job) => job.conclusion !== "skipped");
+  const lint = run.jobs.filter((job) => job.name.endsWith("Lint and typecheck"));
+  const node = run.jobs.filter((job) => job.name.includes("/ Node ") || job.name.startsWith("Node "));
+  return ran(lint) && (node.length === 0 || ran(node));
+}
 
 /** The report of a pair of datasets. */
 export function report(inputs: Inputs, options: ReportOptions = defaultReportOptions): Report {
@@ -334,6 +350,7 @@ export function report(inputs: Inputs, options: ReportOptions = defaultReportOpt
       repos: repos.length,
       ...conclusions(ciRuns),
       wallMinutesByEvent: wallByEvent(ciRuns),
+      finishedWallMinutesByEvent: wallByEvent(ciRuns, finished),
       byTier: byTier(ciSampled),
       queueSeconds: { ...stat(queue), overMinuteShare: share(queue.filter((seconds) => seconds > 60).length, queue.length) },
     },
@@ -358,6 +375,9 @@ export function report(inputs: Inputs, options: ReportOptions = defaultReportOpt
       pullRequestWallMinutes: stat(
         focusRuns.filter((run) => run.status === "completed" && run.event === "pull_request").map(wallMinutes),
       ),
+      finishedPullRequestWallMinutes: stat(
+        focusRuns.filter((run) => finished(run) && run.event === "pull_request").map(wallMinutes),
+      ),
       full: ofTier("full"),
       fast: ofTier("fast"),
       queue: ofTier("queue"),
@@ -381,12 +401,13 @@ export function formatTable(result: Report): string {
   const lines = [
     `CI runs ${window.ci.from.slice(0, 10)}..${window.ci.to.slice(0, 10)} (${window.ci.days} d): ${ci.runs} in ${ci.repos} repos, cancelled ${percent(ci.cancelledShare)}, failed ${percent(ci.failedShare)}`,
     `Wall-clock min by event: ${Object.entries(ci.wallMinutesByEvent).map(([event, value]) => `${event} ${brief(value)}`).join(" | ")}`,
+    `  success or failure only: ${Object.entries(ci.finishedWallMinutesByEvent).map(([event, value]) => `${event} ${brief(value)}`).join(" | ")}`,
     `By tier (sampled), wall min; job-min: ${Object.entries(ci.byTier).map(([tier, value]) => `${tier} ${brief(value.wallMinutes)}; ${brief(value.jobMinutes)}`).join(" | ")}`,
     `Queue s: ${brief(ci.queueSeconds)}, over 60 s ${percent(ci.queueSeconds.overMinuteShare)}`,
     `Org job-min/week (${window.org.days} d window): ${org.jobMinutesPerWeek}, ci ${org.ciJobMinutesPerWeek}, ${org.completedRuns} completed runs, ${org.unsampledRuns} unsampled`,
     `  top workflows: ${org.byWorkflow.slice(0, 5).map((row) => `${row.workflow} ${row.jobMinutesPerWeek}`).join(", ")}`,
     `  top repos: ${org.byRepo.slice(0, 5).map((row) => `${row.repo} ${row.jobMinutesPerWeek} (${percent(row.share)})`).join(", ")}`,
-    `${focus.repo}: ${percent(focus.shareOfOrgJobMinutes)} of org job-min; PR wall min ${brief(focus.pullRequestWallMinutes)}`,
+    `${focus.repo}: ${percent(focus.shareOfOrgJobMinutes)} of org job-min; PR wall min ${brief(focus.pullRequestWallMinutes)}, success or failure only ${brief(focus.finishedPullRequestWallMinutes)}`,
     ...(["full", "fast", "queue"] as const).map((tier) => `  ${tier}: wall min ${brief(focus[tier].wallMinutes)}; job-min ${brief(focus[tier].jobMinutes)}`),
     ...Object.entries(focus.shardMinutes).map(([name, value]) => `  ${name}: min ${brief(value)}`),
     `Small modules (${smallModules.repos.length} repos): wall s ${brief(smallModules.wallSeconds, 0)}`,
@@ -397,4 +418,36 @@ export function formatTable(result: Report): string {
     ),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const textOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+
+function savedJob(raw: unknown): Job | null {
+  if (!isRecord(raw) || typeof raw.name !== "string") return null;
+  const { conclusion, createdAt, startedAt, completedAt } = raw;
+  if (!textOrNull(conclusion) || !textOrNull(createdAt) || !textOrNull(startedAt) || !textOrNull(completedAt)) return null;
+  return { name: raw.name, conclusion, createdAt, startedAt, completedAt };
+}
+
+function savedRun(raw: unknown): Run | null {
+  if (!isRecord(raw) || typeof raw.id !== "number" || !textOrNull(raw.conclusion)) return null;
+  const { repo, workflow, path, event, status, startedAt, updatedAt } = raw;
+  if ([repo, workflow, path, event, status, startedAt, updatedAt].some((field) => typeof field !== "string")) return null;
+  const run: Run = {
+    repo: String(repo), id: raw.id, workflow: String(workflow), path: String(path), event: String(event),
+    status: String(status), conclusion: raw.conclusion, startedAt: String(startedAt), updatedAt: String(updatedAt),
+  };
+  if (Array.isArray(raw.jobs)) run.jobs = raw.jobs.flatMap((job: unknown) => savedJob(job) ?? []);
+  if (typeof raw.tier === "string" && isTier(raw.tier)) run.tier = raw.tier;
+  return run;
+}
+
+/** A dataset that `--save` wrote, or `null` when the value is not one. */
+export function parseDataset(raw: unknown): Dataset | null {
+  if (!isRecord(raw) || typeof raw.to !== "string" || typeof raw.days !== "number" || !Array.isArray(raw.runs)) return null;
+  const runs = raw.runs.map(savedRun);
+  if (runs.some((run) => run === null)) return null;
+  return { to: raw.to, days: raw.days, runs: runs.flatMap((run) => run ?? []) };
 }
