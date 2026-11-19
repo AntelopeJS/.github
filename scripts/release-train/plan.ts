@@ -36,7 +36,7 @@ export type Manifest = { name: string; version: string } & Partial<
   Record<DependencyField, Record<string, string>>
 >;
 
-/** What the IO layer reads from one checkout at one ref. */
+/** What the IO layer reads from one checkout at its default branch, which holds every stable tag. */
 export interface PackageSource {
   slug: string;
   directory: string;
@@ -48,18 +48,9 @@ export interface PackageSource {
   stable: string | null;
   /** The manifest at the stable tag, which npm published, or null when there is no stable tag or the tag has no `package.json` in the directory. */
   stableManifest: Manifest | null;
-  /**
-   * The manifests at the points where the branch read forked from the stable tag. The first is the merge base of the tag and
-   * the branch, which is the tag itself when the branch holds it. When the branch does not hold the tag, the head of the last
-   * promotion that tag released replaces a merge base it contains, since a promotion squash-merges the branch as it was there.
-   * When that head does not contain the merge base, as after a Next sync that merged the default branch from before the
-   * promotion, both are fork points. A promotion carries a dependency spec of the branch only when the branch changed it
-   * since every fork point. Empty when none has a manifest.
-   */
-  baseManifests: Manifest[];
   /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
   stableSiblings: Record<string, string>;
-  /** The commits on the branch since the stable tag. Off the default branch, a merge commit is a Next sync of the default branch and does not count. */
+  /** The commits on the default branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
   notes: Commit[];
@@ -333,14 +324,13 @@ export function highestLevel(commits: readonly Commit[]): Level | null {
 }
 
 function dependencyChanges(source: PackageSource, ranges: Record<string, string>): string[] {
-  const { stableManifest: stable, baseManifests } = source;
+  const { stableManifest: stable } = source;
   if (stable === null) return [];
-  const bases = baseManifests.length === 0 ? [stable] : baseManifests;
   return runtimeFields.flatMap((field) => {
     const before = stable[field] ?? {};
     const after = source.manifest[field] ?? {};
     return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-      .filter((name) => !(Object.hasOwn(ranges, name) && isPreviewSpec(after[name] ?? "")) && before[name] !== after[name] && bases.every((base) => base[field]?.[name] !== after[name]))
+      .filter((name) => !(Object.hasOwn(ranges, name) && isPreviewSpec(after[name] ?? "")) && before[name] !== after[name])
       .map((name) => {
         const [from, to] = [before[name], after[name]];
         if (from === undefined) return `adds ${field} ${name}@${to}`;
@@ -484,12 +474,9 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     const name = source.manifest.name;
     const held = (context.awaited.get(name) ?? []).filter(({ sha }) => context.contains(name, sha, "head"));
     reasons.push(...new Set(held.map(({ dependent, spec }) => `${dependent} pins the preview ${spec}`)));
-    const replaced = ({ field, name: pinned, spec }: Dependency): boolean =>
-      source.baseManifests.some((base) => base[field]?.[pinned] === spec) && source.stableManifest?.[field]?.[pinned] === ranges[pinned];
-    const stale = pins.filter((pin) => !replaced(pin));
-    if (stale.some(({ field }) => field !== "devDependencies")) reasons.push("replaces preview pins");
+    if (pins.some(({ field }) => field !== "devDependencies")) reasons.push("replaces preview pins");
     if (reasons.length === 0) {
-      return stale.length === 0 ? { status: "unchanged", source, reason: quietReason(source) } : { status: "repin", source, ranges };
+      return pins.length === 0 ? { status: "unchanged", source, reason: quietReason(source) } : { status: "repin", source, ranges };
     }
     level = "patch";
   }

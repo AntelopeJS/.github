@@ -302,13 +302,6 @@ describe("go", () => {
     assert.ok(output().endsWith("Published: @antelopejs/moves-a 0.11.0, @antelopejs/moves-b 0.12.2.\n"), output());
   });
 
-  test("refuses --ref and dispatches nothing", () => {
-    const { system, calls, errors } = fakeSystem();
-    assert.equal(main(["go", "--ref", "next", mongodb], system), 1);
-    assert.equal(errors(), "go always releases the default branch, so it takes no --ref.\n");
-    assert.deepEqual(calls, []);
-  });
-
   test("a re-plan that fails still says what was published and what was not", () => {
     const workspace = repository("go-replan", (path) => {
       commit(path, "feat: first", {

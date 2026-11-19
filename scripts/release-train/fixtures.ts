@@ -53,13 +53,12 @@ export const interfaceDatabase = repository("interface-database", (path) => {
   git(path, "tag", "v0.4.2");
   commits.cursor = commit(path, "feat(query)!: drop the legacy cursor", { "src/index.ts": "export {};\n" });
   commit(path, "ci: cache the store", { "ci.txt": "x\n" });
-  git(path, "branch", "next");
 });
 export const mongodb = repository("mongodb", (path) => {
   commit(path, "feat: first", { "package.json": manifest("mongodb", "1.8.5") });
   commit(path, "chore(release): v1.8.6", { "package.json": manifest("mongodb", "1.8.6") });
   git(path, "tag", "v1.8.6");
-  git(path, "checkout", "--quiet", "-b", "next");
+  git(path, "checkout", "--quiet", "-b", "feed");
   commits.feed = commit(path, "fix(database): close the change feed", { "src/feed.ts": "export {};\n" });
   commits.later = commit(path, "fix(database): retry the change feed", { "src/retry.ts": "export {};\n" });
   git(path, "checkout", "--quiet", "main");
@@ -190,8 +189,8 @@ export function dispatches(calls: string[][]): string[][] {
     .map((args) => [args[4] ?? "", ...args.filter((_, index) => args[index - 1] === "-f")]);
 }
 
-export function tip(repository: string, branch = "main"): string {
-  return git(repository, "rev-parse", branch);
+export function tip(repository: string): string {
+  return git(repository, "rev-parse", "main");
 }
 
 export function short(sha: string): string {

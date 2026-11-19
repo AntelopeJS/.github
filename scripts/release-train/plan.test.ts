@@ -38,7 +38,6 @@ function source(
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
-    baseManifests: stable === null ? [] : [{ name: `@antelopejs/${name}`, version: stable, ...stableFields }],
     stableSiblings: {},
     commits,
     notes: commits,
@@ -593,12 +592,12 @@ describe("computePlan", () => {
     assert.equal(entry(entries, "c").status, "release");
   });
 
-  test("the level reads the cycle's commits as well as the branch's, so a promotion titled too low still releases a minor", () => {
+  test("the level reads the cycle's commits as well as the branch's, so a squash commit titled too low still releases a minor", () => {
     const promoted = {
-      ...source("promoted", "0.3.1", ["fix: promote next (#16)"]),
+      ...source("promoted", "0.3.1", ["fix: tidy the api (#16)"]),
       notes: [commit("feat(api)!: rename read to fetch (#15)"), commit("chore: tidy (#14)")],
     };
-    const quiet = { ...source("quiet", "0.2.0", ["fix: promote next (#3)"]), notes: [commit("chore: tidy (#2)")] };
+    const quiet = { ...source("quiet", "0.2.0", ["fix: tidy the scripts (#3)"]), notes: [commit("chore: tidy (#2)")] };
     const result = plan([promoted, quiet]);
     assert.deepEqual(
       result.entries.map((candidate) => (candidate.status === "release" ? [candidate.to, candidate.level] : candidate.status)),
@@ -675,7 +674,7 @@ describe("computePlan", () => {
   });
 
   test("the reason of an unchanged package reads the cycle's notes, and names no version without a stable release", () => {
-    const promoted = { ...source("promoted", "0.3.1", ["chore: promote next (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
+    const promoted = { ...source("promoted", "0.3.1", ["chore: tidy the build (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
     const fresh = source("fresh", null, ["build: scaffold", "docs: describe"]);
     assert.deepEqual(
       plan([promoted, fresh]).entries.map((found) => found.status === "unchanged" && found.reason),

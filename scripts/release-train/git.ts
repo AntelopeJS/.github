@@ -12,10 +12,9 @@ export type Target =
 export interface Checkout {
   repository: string;
   slug: string;
-  local: boolean;
 }
 
-/** The branch the train reads and the git ref that names its head in the checkout. */
+/** The default branch the train reads and the git ref that names its head in the checkout. */
 export interface Revision {
   branch: string;
   name: string;
@@ -36,8 +35,6 @@ export interface Place {
   /** The directories of the other listed packages of the same checkout. */
   siblings: readonly string[];
   merged: readonly MergedPull[] | null;
-  /** The ref of the default branch. Its tags are the stable releases of any branch the train reads. */
-  releases: string;
 }
 
 const remotePattern = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/;
@@ -49,7 +46,7 @@ export function openCheckout(target: Target, system: System): Checkout {
     const url = exec(system, "git", ["-C", target.path, "remote", "get-url", "origin"]).trim();
     const slug = remotePattern.exec(url)?.[1];
     if (slug === undefined) throw new Error(`The origin of ${target.path} is not a GitHub repository: ${url}`);
-    return { repository: target.path, slug, local: true };
+    return { repository: target.path, slug };
   }
   const repository = join(system.cacheDirectory, ...target.slug.split("/"));
   if (existsSync(join(repository, ".git"))) {
@@ -60,28 +57,21 @@ export function openCheckout(target: Target, system: System): Checkout {
     const url = `https://github.com/${target.slug}.git`;
     exec(system, "git", ["clone", "--quiet", "--filter=blob:none", url, repository]);
   }
-  return { repository, slug: target.slug, local: false };
+  return { repository, slug: target.slug };
 }
 
 function hasRef(system: System, repository: string, ref: string): boolean {
   return system.run("git", ["-C", repository, "rev-parse", "--verify", "--quiet", ref]).status === 0;
 }
 
-/** The revision to read: the default branch when ref is null, else the branch ref. */
-export function resolveRevision(system: System, { repository, local }: Checkout, ref: string | null): Revision {
-  if (ref === null) {
-    const result = system.run("git", ["-C", repository, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-    const branch = result.stdout.trim().replace(/^origin\//, "");
-    if (result.status !== 0 || branch === "") {
-      throw new Error(`${repository} has no origin/HEAD. Run git remote set-head origin --auto there.`);
-    }
-    return { branch, name: `refs/remotes/origin/${branch}` };
+/** The default branch of a checkout, which origin/HEAD names. */
+export function resolveRevision(system: System, { repository }: Checkout): Revision {
+  const result = system.run("git", ["-C", repository, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  const branch = result.stdout.trim().replace(/^origin\//, "");
+  if (result.status !== 0 || branch === "") {
+    throw new Error(`${repository} has no origin/HEAD. Run git remote set-head origin --auto there.`);
   }
-  if (hasRef(system, repository, `refs/remotes/origin/${ref}`)) {
-    return { branch: ref, name: `refs/remotes/origin/${ref}` };
-  }
-  if (local && hasRef(system, repository, `refs/heads/${ref}`)) return { branch: ref, name: `refs/heads/${ref}` };
-  throw new Error(`${repository} has no branch ${ref}.`);
+  return { branch, name: `refs/remotes/origin/${branch}` };
 }
 
 function parseManifest(text: string, where: string): Manifest {
@@ -198,7 +188,7 @@ function cycleNotes(
   merged: readonly MergedPull[],
   shipped: readonly string[],
   cancelled: ReadonlySet<string>,
-): { notes: Commit[]; explained: Map<string, Commit[]>; promotions: Set<string> } {
+): { notes: Commit[]; explained: Map<string, Commit[]> } {
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
@@ -239,8 +229,7 @@ function cycleNotes(
           .flatMap((sha) => reverted.get(sha) ?? []),
       ]),
   );
-  const promotions = new Set(current.filter((pull) => pull.branch === "next").map((pull) => pull.mergeCommit));
-  return { notes, explained, promotions };
+  return { notes, explained };
 }
 
 function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
@@ -249,72 +238,52 @@ function titleExplained(squash: Commit, reverted: readonly Commit[]): boolean {
 }
 
 /**
- * Reads one package at a revision: its manifest, its last stable tag, the commits since that tag and the
+ * Reads one package at the default branch: its manifest, its last stable tag, the commits since that tag and the
  * commits of the tasks the pull requests merged since that tag carried. Both leave out the `nested`
  * directories, which hold other listed packages, and each commit that reverts another of the range, with the one it
  * reverts and the tasks of their pull requests. The squash commit of a pull request whose own tasks hold a reverted
- * commit that asks for at least the level of its title, such as a promotion titled from every commit of a cycle, counts
- * through its remaining tasks, not its title. The squash commit of a promotion, a pull request from next whose head the
- * checkout holds, counts through its tasks alone, whatever its title. With no merged pull request known, the notes are the commits.
+ * commit that asks for at least the level of its title, such as a squash titled from every commit of its branch, counts
+ * through its remaining tasks, not its title. With no merged pull request known, the notes are the commits.
  */
 export function readSource(system: System, from: Checkout, { branch, name: revision }: Revision, place: Place): PackageSource {
-  const { directory, nested, siblings, merged, releases } = place;
+  const { directory, nested, siblings, merged } = place;
   const { repository } = from;
   const where = `${from.slug}:${posix.join(directory, "package.json")}`;
   const manifestText = exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]);
   const manifest = parseManifest(manifestText, where);
   const tagName = readTagName(system, repository, revision, directory);
   const pattern = tagPattern(tagName);
-  const ceiling = (readManifest(system, repository, releases, directory, `${where} on the default branch`) ?? manifest).version;
   let stable: { version: string; tag: string } | null = null;
   const higher: string[] = [];
-  const tags = new Set([revision, releases].flatMap((ref) => exec(system, "git", ["-C", repository, "tag", "--merged", ref]).split("\n")));
-  for (const tag of tags) {
+  for (const tag of exec(system, "git", ["-C", repository, "tag", "--merged", revision]).split("\n")) {
     const version = pattern.exec(tag.trim())?.[1];
     if (version === undefined) continue;
-    if (compareCore(version, ceiling) > 0) higher.push(tag.trim());
+    if (compareCore(version, manifest.version) > 0) higher.push(tag.trim());
     else if (stable === null || compareCore(version, stable.version) > 0) stable = { version, tag: tag.trim() };
   }
   if (stable === null && higher.length > 0) {
     throw new Error(
-      `${manifest.name} has no release tag at or below ${ceiling}, the version of its package.json on the default branch, only the higher tags ${higher.sort().join(", ")}. Tag the release that version names, then plan again.`,
+      `${manifest.name} has no release tag at or below ${manifest.version}, the version of its package.json on the default branch, only the higher tags ${higher.sort().join(", ")}. Tag the release that version names, then plan again.`,
     );
   }
   const tag = stable === null ? null : `refs/tags/${stable.tag}`;
   const stableManifest = tag === null ? null : readManifest(system, repository, tag, directory, `${where} at ${stable?.tag}`);
-  const forked = tag === null ? null : system.run("git", ["-C", repository, "merge-base", tag, revision]);
-  if (forked !== null && forked.status !== 0 && forked.status !== 1) {
-    throw new Error(`git -C ${repository} merge-base ${tag} ${revision} failed\n${forked.stderr.trim()}`);
-  }
-  const forkPoint = forked?.status === 0 ? forked.stdout.trim() : null;
   const stableSiblings = Object.fromEntries(siblings.flatMap((inner) => (tag === null ? [] : packedVersion(system, repository, tag, inner))));
   const head = exec(system, "git", ["-C", repository, "rev-parse", "--verify", `${revision}^{commit}`]).trim();
   const paths = [directory, ...nested.map((inner) => `:(exclude)${inner}`)];
-  const shippedPulls = (merged ?? []).filter(
-    (pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head),
-  );
-  const shipped = shippedPulls.map((pull) => pull.head);
-  const held = tag === null || isAncestor(system, repository, tag, revision) ? [] : shippedPulls.filter((pull) => isAncestor(system, repository, pull.head, revision));
-  const promoted = held.find((pull) => held.every((other) => isAncestor(system, repository, other.head, pull.head)));
-  const bases =
-    promoted === undefined
-      ? [forkPoint]
-      : forkPoint === null || isAncestor(system, repository, forkPoint, promoted.head)
-        ? [promoted.head]
-        : isAncestor(system, repository, promoted.mergeCommit, forkPoint)
-          ? [forkPoint]
-          : [forkPoint, promoted.head];
-  const baseManifests = bases.flatMap((base) => (base === null ? [] : (readManifest(system, repository, base, directory, `${where} at ${base.slice(0, 7)}`) ?? [])));
+  const shipped = (merged ?? [])
+    .filter((pull) => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag) && hasCommit(system, repository, pull.head))
+    .map((pull) => pull.head);
   const log = parseCommits(
-    exec(system, "git", ["-C", repository, "log", ...(revision === releases ? [] : ["--no-merges"]), logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
+    exec(system, "git", ["-C", repository, "log", logFormat, revision, "--not", ...(tag === null ? [] : [tag]), ...shipped, "--", ...paths]),
     from.slug,
   );
   const kept = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
   const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
-  const commits = cycle === null ? kept : kept.filter((commit) => !cycle.promotions.has(commit.sha) && !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
+  const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, baseManifests, stableSiblings, commits, notes };
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, stableSiblings, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */

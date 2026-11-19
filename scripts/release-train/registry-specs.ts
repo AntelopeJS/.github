@@ -17,7 +17,7 @@ export const nonRegistrySpecs: readonly string[] = [
   "file:../interface-database",
   "link:../interface-database",
   "workspace:*",
-  "github:AntelopeJS/interface-database#next",
+  "github:AntelopeJS/interface-database#main",
   "git+https://github.com/AntelopeJS/interface-database.git",
   "https://github.com/AntelopeJS/interface-database/releases/download/v0.5.0/x.tgz",
   "AntelopeJS/interface-database",

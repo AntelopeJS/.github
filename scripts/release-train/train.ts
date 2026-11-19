@@ -9,14 +9,13 @@ import type { System } from "./system.ts";
 
 interface Command {
   action: "plan" | "go";
-  ref: string | null;
   exclude: string[];
   targets: Target[];
 }
 
 const usage = [
   "Usage:",
-  "  node scripts/release-train/train.ts plan [--ref <branch>] [--exclude <name>]... <package>...",
+  "  node scripts/release-train/train.ts plan [--exclude <name>]... <package>...",
   "  node scripts/release-train/train.ts go [--exclude <name>]... <package>...",
   "A package is owner/repo or a path to a git checkout, optionally followed by :directory.",
 ].join("\n");
@@ -52,13 +51,12 @@ function parseCommand(argv: readonly string[]): Command {
     allowPositionals: true,
     strict: true,
   });
-  if (action === "go" && values.ref !== undefined) {
-    throw new Error("go always releases the default branch, so it takes no --ref.");
+  if (values.ref !== undefined) {
+    throw new Error(`The release train reads only the default branch, so ${action} takes no --ref.`);
   }
   if (positionals.length === 0) throw new Error(usage);
   return {
     action,
-    ref: values.ref ?? null,
     exclude: values.exclude ?? [],
     targets: positionals.map(parseTarget),
   };
@@ -74,7 +72,7 @@ function isInside(outer: string, inner: string): boolean {
 
 function buildPlan(command: Command, system: System): Plan {
   const sources: PackageSource[] = [];
-  const places = new Map<string, { from: Checkout; revision: Revision; releases: Revision; source: PackageSource }>();
+  const places = new Map<string, { from: Checkout; revision: Revision; source: PackageSource }>();
   const checkouts = new Map<string, Checkout>();
   const checkoutOf = (target: Target): Checkout => {
     const from = checkouts.get(location(target)) ?? openCheckout(target, system);
@@ -83,42 +81,40 @@ function buildPlan(command: Command, system: System): Plan {
   };
   const targets = command.targets.flatMap((target) => {
     const from = checkoutOf(target);
-    const packages = workspacePackages(system, from, resolveRevision(system, from, command.ref), target.directory);
+    const packages = workspacePackages(system, from, resolveRevision(system, from), target.directory);
     return packages === null ? [target] : packages.map((directory) => ({ ...target, directory }));
   });
   const pulls = mergedPulls(system);
   for (const target of targets) {
     const from = checkoutOf(target);
-    const revision = resolveRevision(system, from, command.ref);
+    const revision = resolveRevision(system, from);
     const nested = targets
       .filter((other) => location(other) === location(target) && isInside(target.directory, other.directory))
       .map((other) => other.directory);
     const siblings = targets
       .filter((other) => location(other) === location(target) && other.directory !== target.directory)
       .map((other) => other.directory);
-    const releases = resolveRevision(system, from, null);
-    const defaultBranch = releases.branch;
-    const merged = pulls(from.slug, defaultBranch);
+    const merged = pulls(from.slug, revision.branch);
     if (merged === null) {
-      throw new Error(`gh pr list --repo ${from.slug} --base ${defaultBranch} failed, so the plan cannot read the commits of the cycle.`);
+      throw new Error(`gh pr list --repo ${from.slug} --base ${revision.branch} failed, so the plan cannot read the commits of the cycle.`);
     }
-    const source = readSource(system, from, revision, { directory: target.directory, nested, siblings, merged, releases: releases.name });
+    const source = readSource(system, from, revision, { directory: target.directory, nested, siblings, merged });
     sources.push(source);
-    places.set(source.manifest.name, { from, revision, releases, source });
+    places.set(source.manifest.name, { from, revision, source });
   }
   const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicate !== undefined) throw new Error(`${duplicate} is listed twice.`);
   const unknown = command.exclude.find((name) => !names.includes(name));
   if (unknown !== undefined) throw new Error(`--exclude ${unknown} names no listed package.`);
-  const ref = command.ref ?? [...new Set(sources.map((source) => source.branch))].join(", ");
+  const ref = [...new Set(sources.map((source) => source.branch))].join(", ");
   const search = commitSearch(system, pulls);
   const contains = (name: string, sha: string, holder: Holder): boolean => {
     const place = places.get(name);
     if (place === undefined) return false;
     if (holder === "head") return search(place.from, place.revision, sha);
     const { stable, tagName } = place.source;
-    return stable !== null && search(place.from, { ...place.releases, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
+    return stable !== null && search(place.from, { ...place.revision, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
   };
   return computePlan(sources, { ref, exclude: command.exclude, contains });
 }
