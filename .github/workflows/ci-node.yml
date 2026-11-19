@@ -342,7 +342,7 @@ jobs:
             const entries = [];
             let file;
             for (const line of lines) {
-              const verdict = /^\s*(FAIL|PASS)\s+(?:\S+\s+)?(\S+)\s*$/.exec(line);
+              const verdict = /^\s*(FAIL|PASS)\s+(?:\S+\s+)?(\S+)(?:\s+\([\d.]+ m?s\))?\s*$/.exec(line);
               if (verdict) file = verdict[1] === "FAIL" ? verdict[2] : undefined;
               const bullet = /^\s*● (.+?)\s*$/.exec(line);
               if (!bullet || !file || bullet[1].startsWith("Console")) continue;

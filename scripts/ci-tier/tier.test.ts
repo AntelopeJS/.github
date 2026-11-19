@@ -536,6 +536,11 @@ describe("the flaky test annotations", () => {
     expectAnnotations(log, ["pnpm run test > math > adds"]);
   });
 
+  test("jest: a test file slower than its slow threshold keeps its name", () => {
+    const log = ["FAIL test/slow.test.js (6.12 s)", "  ● slow › waits", "", "    expect(received).toBe(expected)", ""].join("\n");
+    expectAnnotations(log, ["test/slow.test.js > slow > waits"]);
+  });
+
   test("an unparseable log gives one annotation naming the command", () => {
     expectAnnotations("something went wrong\nbut no runner says what\n", ["pnpm run test"]);
   });
