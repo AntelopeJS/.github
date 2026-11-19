@@ -476,16 +476,23 @@ describe("computePlan", () => {
     });
   });
 
-  test("refuses a pin whose stable is older than the preview, that is not exact or that names no commit", () => {
+  test("refuses a pin whose base is above its dependency's stable or planned release, that is not exact or whose last part names no commit", () => {
     const pinned = source("dms", "0.20.2", ["fix: x"], {
-      dependencies: { "@antelopejs/x": "0.3.0-next.1.gabc1234", "@antelopejs/z": "0.2.9-beta.1" },
+      dependencies: {
+        "@antelopejs/x": "0.3.0-next.1.gabc1234",
+        "@antelopejs/z": "0.2.9-beta.1",
+        "@antelopejs/w": "0.3.0-next.4.gabc1234",
+        "@antelopejs/v": "0.2.10-next.g3f9a2c1.4",
+      },
       optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
     });
-    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", [])];
+    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", []), source("w", "0.2.9", ["fix: w"]), source("v", "0.2.9", ["fix: v"])];
     const refused = entry(plan([pinned, ...listed]).entries, "dms");
     assert.deepEqual(refused.status === "refused" && refused.reasons, [
       "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
       "depends on preview @antelopejs/z@0.2.9-beta.1, which names no commit",
+      "depends on preview @antelopejs/w@0.3.0-next.4.gabc1234, whose stable 0.2.10 is older than 0.3.0",
+      "depends on preview @antelopejs/v@0.2.10-next.g3f9a2c1.4, which names no commit",
       "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
     ]);
   });

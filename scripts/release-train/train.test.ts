@@ -15,6 +15,42 @@ describe("plan", () => {
     assert.deepEqual(dispatches(calls), []);
   });
 
+  test("plans each main since its last stable tag, the dependency first, and moves a pin of a preview built on the dependency's main to its stable range", () => {
+    const ids = { preview: "", count: "" };
+    const dependency = repository("trunk-interface", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("trunk-interface", "0.4.1") });
+      commit(path, "fix(query): trim the rows", { "src/rows.ts": "export {};\n" });
+      commit(path, "chore(release): v0.4.2", { "package.json": manifest("trunk-interface", "0.4.2") });
+      git(path, "tag", "v0.4.2");
+      ids.preview = commit(path, "fix(query): close the cursor (#21)", { "src/cursor.ts": "export {};\n" });
+      ids.count = git(path, "rev-list", "--count", ids.preview);
+      commit(path, "ci: cache the store (#22)", { "ci.txt": "x\n" });
+    });
+    const pin = `0.4.3-next.${ids.count}.g${short(ids.preview)}`;
+    const dependent = repository("trunk-dependent", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("trunk-dependent", "1.2.0", { dependencies: { "@antelopejs/trunk-interface": ">=0.4.2 <0.5.0" } }) });
+      git(path, "tag", "v1.2.0");
+      commit(path, "fix(api): read with the cursor (#8)", {
+        "package.json": manifest("trunk-dependent", "1.2.0", { dependencies: { "@antelopejs/trunk-interface": pin } }),
+      });
+    });
+    const { system, output, errors } = fakeSystem();
+    assert.equal(main(["plan", dependent, dependency], system), 0, errors());
+    assert.equal(
+      output(),
+      [
+        "Release plan from main, 2 packages: 2 to release",
+        "",
+        `1. @antelopejs/trunk-interface 0.4.2 -> 0.4.3 (patch)  AntelopeJS/trunk-interface@${short(tip(dependency))}`,
+        "     fix(query): close the cursor (#21)",
+        `2. @antelopejs/trunk-dependent 1.2.0 -> 1.2.1 (patch)  AntelopeJS/trunk-dependent@${short(tip(dependent))}`,
+        "     fix(api): read with the cursor (#8)",
+        `     @antelopejs/trunk-interface ${pin} -> >=0.4.3 <0.5.0`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("a tooling-only cycle plans a patch only when it changes a runtime dependency of the published package.json", () => {
     const tooling = (name: string, dependencies: Record<string, string>) =>
       repository(name, (path) => {
