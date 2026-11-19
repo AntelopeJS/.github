@@ -5,12 +5,14 @@ on:
     paths:
       - scripts/ci-metrics/**
       - .github/workflows/ci-metrics-checks.yml
+      - .github/workflows/ci-metrics-nightly.yml
   push:
     branches:
       - main
     paths:
       - scripts/ci-metrics/**
       - .github/workflows/ci-metrics-checks.yml
+      - .github/workflows/ci-metrics-nightly.yml
 
 permissions:
   contents: read
@@ -50,4 +52,4 @@ jobs:
           curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" .github/workflows/ci-metrics-checks.yml
+          "$RUNNER_TEMP/actionlint" .github/workflows/ci-metrics-checks.yml .github/workflows/ci-metrics-nightly.yml

@@ -822,6 +822,17 @@ exits or prints an error line of `ajs` (one that starts with `✖ `, or
 watcher's `Underlying HTTP server died`, before the ready
 line or in the 10 seconds after it, and when 25 minutes pass without it.
 
+## Nightly failures the merge queue missed
+
+`ci-metrics-nightly.yml` runs every day at 07:41 UTC, after the nightlies, in
+this repository, on demand by `workflow_dispatch`, and on a pull request that
+changes it or its script. It runs
+[`scripts/ci-metrics/nightly-main.ts`](scripts/ci-metrics/README.md#nightly-failures-the-merge-queue-missed)
+over the last 30 days, writes its Markdown report to the job summary, and
+uploads it with the JSON report and dataset as the `nightly-report` artifact.
+It reads the organization with the run's `GITHUB_TOKEN`, so it sees the public
+repositories only.
+
 ## Stale issues
 
 The reusable `stale.yml` workflow takes no inputs. Call it once a day with job

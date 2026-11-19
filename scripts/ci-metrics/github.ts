@@ -94,7 +94,11 @@ function rateLimitWait(response: Response): number | null {
   return Math.max(1000, Number(response.headers.get("x-ratelimit-reset")) * 1000 - Date.now() + 1000);
 }
 
-function client(fetcher: typeof fetch): (path: string) => Promise<Response> {
+/**
+ * A GET of the REST API that waits out the primary and secondary rate limits, retries a server or network error
+ * three times, and returns a 404 or 410 response instead of throwing.
+ */
+export function client(fetcher: typeof fetch): (path: string) => Promise<Response> {
   const headers = {
     authorization: `Bearer ${token()}`,
     accept: "application/vnd.github+json",
@@ -128,7 +132,8 @@ function client(fetcher: typeof fetch): (path: string) => Promise<Response> {
   };
 }
 
-async function pool<T, R>(items: readonly T[], size: number, work: (item: T) => Promise<R>): Promise<R[]> {
+/** `work` over `items`, `size` at a time, results in the order of `items`. */
+export async function pool<T, R>(items: readonly T[], size: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -139,6 +144,23 @@ async function pool<T, R>(items: readonly T[], size: number, work: (item: T) => 
   };
   await Promise.all(Array.from({ length: Math.min(size, items.length) }, worker));
   return results;
+}
+
+/** The organization's unarchived repositories, with their default branch. */
+export async function listRepos(
+  json: (path: string) => Promise<unknown>,
+  org: string,
+): Promise<{ name: string; defaultBranch: string }[]> {
+  const repos: { name: string; defaultBranch: string }[] = [];
+  for (let page = 1; ; page++) {
+    const listed = await json(`/orgs/${org}/repos?type=all&per_page=100&page=${page}`);
+    if (!Array.isArray(listed) || listed.length === 0) return repos;
+    for (const repo of listed) {
+      if (isRecord(repo) && repo.archived !== true && typeof repo.name === "string") {
+        repos.push({ name: repo.name, defaultBranch: text(repo.default_branch) ?? "main" });
+      }
+    }
+  }
 }
 
 /**
@@ -152,12 +174,7 @@ export async function collect(options: CollectOptions, fetcher: typeof fetch = f
     return response.ok ? response.json() : null;
   };
 
-  const repos: string[] = [];
-  for (let page = 1; ; page++) {
-    const listed = await json(`/orgs/${options.org}/repos?type=all&per_page=100&page=${page}`);
-    if (!Array.isArray(listed) || listed.length === 0) break;
-    for (const repo of listed) if (isRecord(repo) && repo.archived !== true && typeof repo.name === "string") repos.push(repo.name);
-  }
+  const repos = (await listRepos(json, options.org)).map((repo) => repo.name);
 
   const to = Math.floor(options.to.getTime() / 1000) * 1000;
   const from = to - options.days * 86_400_000;
