@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 
 const repoFile = (path: string): string => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 const action = repoFile(".github/actions/ci-tier/action.yml").split("\n");
-const ciNode = repoFile(".github/workflows/ci-node.yml").split("\n");
 const root = mkdtempSync(join(tmpdir(), "ci-tier-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -31,29 +30,57 @@ function field(lines: string[], key: string): string | undefined {
   return line?.trim().slice(key.length + 2);
 }
 
-function expression(value: string | undefined): string {
-  const match = /^\$\{\{ ([\w.-]+) \}\}$/.exec(value ?? "");
-  assert.ok(match, `not a plain expression: ${value}`);
-  return match[1];
+function ownLines(lines: string[]): string[] {
+  const own = Math.min(...lines.filter((line) => line.trim() !== "").map(indent));
+  return lines.filter((line) => line.trim() !== "" && indent(line) === own);
 }
 
-function expressions(lines: string[]): Record<string, string> {
-  const own = Math.min(...lines.filter((line) => line.trim() !== "").map(indent));
-  return Object.fromEntries(
-    lines
-      .filter((line) => indent(line) === own)
-      .map((line) => {
-        const [key, ...value] = line.trim().split(": ");
-        return [key, expression(value.join(": "))];
-      }),
+const keys = (lines: string[]): string[] => ownLines(lines).map((line) => line.trim().split(":")[0]);
+
+const mapping = (lines: string[]): Record<string, string> =>
+  Object.fromEntries(
+    ownLines(lines).map((line) => {
+      const [key, ...value] = line.trim().split(": ");
+      return [key, value.join(": ")];
+    }),
   );
+
+type Value = string | boolean | Context | Context[] | undefined;
+interface Context {
+  [key: string]: Value;
 }
+
+function lookup(path: string, context: Context): Value {
+  let value: Value = context;
+  for (const key of path.split(".")) value = typeof value === "object" && !Array.isArray(value) ? value[key] : undefined;
+  return value;
+}
+
+function evaluate(expression: string, context: Context): string {
+  const contains = /^contains\(([\w.-]+)\.\*\.([\w-]+), '([^']*)'\)$/.exec(expression);
+  if (contains) {
+    const [, path, key, wanted] = contains;
+    const items = lookup(path, context);
+    return String(Array.isArray(items) && items.some((item) => item[key] === wanted));
+  }
+  assert.match(expression, /^[\w.-]+$/, `not an expression this test evaluates: ${expression}`);
+  const value = lookup(expression, context);
+  assert.notEqual(typeof value, "object", `${expression} is not a value`);
+  return value === undefined ? "" : String(value);
+}
+
+const interpolate = (value: string, context: Context): string =>
+  value.replace(/^"(.*)"$/, "$1").replace(/\$\{\{ (.+?) \}\}/g, (_, expression: string) => evaluate(expression, context));
+
+const interpolateAll = (values: Record<string, string>, context: Context): Record<string, string> =>
+  Object.fromEntries(Object.entries(values).map(([key, value]) => [key, interpolate(value, context)]));
 
 interface Step {
   id: string;
   uses?: string;
   shell?: string;
   env: Record<string, string>;
+  with: Record<string, string>;
   run: string;
 }
 
@@ -63,67 +90,60 @@ function step(lines: string[], name: string): Step {
   const body = [lines[start].replace("- name:", "  name:"), ...block(lines, start)];
   const id = field(body, "id");
   assert.ok(id, `step ${name} has no id`);
+  const section = (key: string): Record<string, string> => (body.some((line) => line.trim() === `${key}:`) ? mapping(keyed(body, key)) : {});
   const runLine = body.findIndex((line) => line.trim() === "run: |");
   const script = runLine === -1 ? [] : block(body, runLine);
   const run = script.map((line) => line.slice(indent(script[0]))).join("\n");
-  const env = body.some((line) => line.trim() === "env:") ? expressions(keyed(body, "env")) : {};
-  return { id, uses: field(body, "uses"), shell: field(body, "shell"), env, run };
+  return { id, uses: field(body, "uses"), shell: field(body, "shell"), env: section("env"), with: section("with"), run };
 }
 
-type Context = { [key: string]: string | boolean | Context | undefined };
-
-function resolve(path: string, context: Context): string {
-  let value: Context[string] = context;
-  for (const key of path.split(".")) value = typeof value === "object" ? value[key] : undefined;
-  assert.notEqual(typeof value, "object", `${path} is not a value`);
-  return value === undefined ? "" : String(value);
-}
-
-const evaluate = (mapping: Record<string, string>, context: Context): Record<string, string> =>
-  Object.fromEntries(Object.entries(mapping).map(([key, path]) => [key, resolve(path, context)]));
-
-let runs = 0;
-function runStep({ run }: Step, cwd: string, env: Record<string, string>): Context {
-  runs += 1;
-  const file = join(root, `step-${runs}.sh`);
-  const output = join(root, `output-${runs}`);
-  writeFileSync(file, run);
-  writeFileSync(output, "");
-  const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
-    cwd,
-    encoding: "utf8",
-    env: { PATH: process.env.PATH, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: join(root, "summary"), ...env },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return Object.fromEntries(
-    readFileSync(output, "utf8")
+const keyValues = (path: string): Record<string, string> =>
+  Object.fromEntries(
+    readFileSync(path, "utf8")
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
   );
+
+interface Run {
+  status: number | null;
+  stderr: string;
+  outputs: Record<string, string>;
+  env: Record<string, string>;
 }
 
-const tierStep = "Pick the tier from the event, the target branch and the draft flag";
-const tierJob = block(ciNode, ciNode.indexOf("  tier:"));
+let runs = 0;
+function runStep({ run }: Step, cwd: string, env: Record<string, string>): Run {
+  runs += 1;
+  const file = join(root, `step-${runs}.sh`);
+  const files = { GITHUB_OUTPUT: `${file}.output`, GITHUB_ENV: `${file}.env`, GITHUB_STEP_SUMMARY: `${file}.summary` };
+  writeFileSync(file, run);
+  for (const path of Object.values(files)) writeFileSync(path, "");
+  const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
+    cwd,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, GIT_CEILING_DIRECTORIES: root, ...files, ...env },
+  });
+  return { status: result.status, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV) };
+}
 
-function tierJobOutputs(github: Context, inputs: Context, cwd: string): Record<string, string> {
+function succeeded(run: Run): Run {
+  assert.equal(run.status, 0, run.stderr);
+  return run;
+}
+
+const tierStep = "Pick the tier and the diff base from the event, the label and the changed files";
+
+function actionOutputs(github: Context, inputs: Context, cwd: string): Record<string, string> {
   assert.equal(field(keyed(action, "runs"), "using"), "composite");
-  const pickTier = step(action, tierStep);
-  assert.equal(pickTier.shell, "bash");
-  const actionOutputs = runStep(pickTier, cwd, evaluate(pickTier.env, { github }));
-  const tierValue = expression(field(keyed(keyed(action, "outputs"), "tier"), "value"));
-  const tier = resolve(tierValue, { steps: { [pickTier.id]: { outputs: actionOutputs } } });
-
-  const pick = step(tierJob, tierStep);
-  assert.equal(pick.uses, "AntelopeJS/.github/.github/actions/ci-tier@v2");
-  const steps: Context = { [pick.id]: { outputs: { tier } } };
-  const jobsStep = "Pick the jobs and runners from the tier";
-  const jobs = step(tierJob, jobsStep);
-  assert.equal(jobs.shell ?? "bash", "bash");
-  const position = (name: string): number => tierJob.findIndex((line) => line.trim() === `- name: ${name}`);
-  assert.ok(position(tierStep) < position(jobsStep), "the tier is picked before the jobs read it");
-  steps[jobs.id] = { outputs: runStep(jobs, cwd, evaluate(jobs.env, { github, inputs, steps })) };
-  return evaluate(expressions(keyed(tierJob, "outputs")), { steps });
+  const pick = step(action, tierStep);
+  assert.equal(pick.shell, "bash");
+  const declaredInputs = keyed(action, "inputs");
+  const defaults = Object.fromEntries(keys(declaredInputs).map((name) => [name, interpolate(field(keyed(declaredInputs, name), "default") ?? "", {})]));
+  const { outputs } = succeeded(runStep(pick, cwd, interpolateAll(pick.env, { github, inputs: { ...defaults, ...inputs } })));
+  const declaredOutputs = keyed(action, "outputs");
+  const steps = { [pick.id]: { outputs } };
+  return Object.fromEntries(keys(declaredOutputs).map((name) => [name, interpolate(field(keyed(declaredOutputs, name), "value") ?? "", { steps })]));
 }
 
 function git(cwd: string, ...args: string[]): string {
@@ -132,71 +152,113 @@ function git(cwd: string, ...args: string[]): string {
   return result.stdout.trim();
 }
 
-function checkout(name: string, changed: string): { cwd: string; base: string } {
+function write(cwd: string, files: string[], content: string): void {
+  for (const file of files) {
+    mkdirSync(dirname(join(cwd, file)), { recursive: true });
+    writeFileSync(join(cwd, file), content);
+  }
+}
+
+interface Checkout {
+  cwd: string;
+  base: string;
+}
+
+function checkout(name: string, changed: string[]): Checkout {
   const cwd = join(root, name);
-  mkdirSync(join(cwd, "docs"), { recursive: true });
-  mkdirSync(join(cwd, "src"), { recursive: true });
+  mkdirSync(cwd, { recursive: true });
   git(cwd, "init", "--quiet");
-  writeFileSync(join(cwd, "README.md"), "readme\n");
-  writeFileSync(join(cwd, "docs/guide.md"), "guide\n");
-  writeFileSync(join(cwd, "src/index.ts"), "export {};\n");
-  git(cwd, "add", ".");
+  write(cwd, ["README.md", "package.json", "docs/guide.md", "src/index.ts"], "base\n");
+  git(cwd, "add", "--all");
   git(cwd, "commit", "--quiet", "-m", "base");
   const base = git(cwd, "rev-parse", "HEAD");
-  writeFileSync(join(cwd, changed), "changed\n");
-  git(cwd, "commit", "--quiet", "-am", "change");
+  write(cwd, changed, "changed\n");
+  git(cwd, "add", "--all");
+  git(cwd, "commit", "--quiet", "-m", "change");
   return { cwd, base };
 }
 
-const code = checkout("code", "src/index.ts");
-const docs = checkout("docs", "docs/guide.md");
+function shallowCheckout(name: string, changed: string[]): Checkout {
+  const upstream = checkout(`${name}-upstream`, changed);
+  const origin = join(root, `${name}-origin.git`);
+  git(root, "clone", "--quiet", "--bare", upstream.cwd, origin);
+  const cwd = join(root, name);
+  git(root, "clone", "--quiet", "--depth=1", `file://${origin}`, cwd);
+  assert.notEqual(spawnSync("git", ["cat-file", "-e", `${upstream.base}^{commit}`], { cwd }).status, 0, "the shallow clone lacks the base");
+  return { cwd, base: upstream.base };
+}
 
 const repository = "AntelopeJS/example";
-const event = (name: string, ref: string): Context => ({
+const event = (name: string, ref: string, payload: Context = {}): Context => ({
   event_name: name,
   ref_name: ref,
   repository,
-  event: { repository: { default_branch: "main" } },
+  token: "token",
+  event: { repository: { default_branch: "main" }, ...payload },
 });
-const pullRequest = (base: string, head: string, { draft = false, headRepository = repository } = {}): Context => ({
-  ...event("pull_request", "1/merge"),
-  base_ref: base,
-  head_ref: head,
-  event: { repository: { default_branch: "main" }, pull_request: { draft, head: { repo: { full_name: headRepository } } } },
-});
-
-interface ContractEvent {
-  name: string;
-  github: Context;
-  checkout?: typeof code;
-  windowsPullRequests?: boolean;
-  expected: { tier: string; lint: string; checks: string; tests: string; os: string; fast?: true };
+interface PullRequestOptions {
+  draft?: boolean;
+  labels?: string[];
 }
 
-const linux = '["ubuntu-latest"]';
-const both = '["ubuntu-latest","windows-latest"]';
+const pullRequest =
+  (target: string, head: string, { draft = false, labels = [] }: PullRequestOptions = {}) =>
+  (base: string): Context => ({
+    ...event("pull_request", "1/merge", { pull_request: { draft, base: { sha: base }, labels: labels.map((name) => ({ name })) } }),
+    base_ref: target,
+    head_ref: head,
+  });
+const mergeGroup = (base: string): Context => event("merge_group", "gh-readonly-queue/main/pr-1-abc", { merge_group: { base_sha: base, base_ref: "refs/heads/main" } });
+const other = (name: string, ref: string) => (): Context => event(name, ref);
 
-const contract: ContractEvent[] = [
-  { name: "draft PR into next", github: pullRequest("next", "feat/x", { draft: true }), expected: { tier: "draft", lint: "true", checks: "false", tests: "false", os: linux } },
-  { name: "ready PR into next", github: pullRequest("next", "feat/x"), expected: { tier: "fast", lint: "true", checks: "true", tests: "true", os: linux, fast: true } },
-  { name: "ready PR into next, docs only", github: pullRequest("next", "docs/x"), checkout: docs, expected: { tier: "fast", lint: "true", checks: "true", tests: "false", os: linux, fast: true } },
-  { name: "ready PR into next, windows-pull-requests", github: pullRequest("next", "feat/x"), windowsPullRequests: true, expected: { tier: "fast", lint: "true", checks: "true", tests: "true", os: both, fast: true } },
-  { name: "PR into main from a person's branch", github: pullRequest("main", "feat/x"), expected: { tier: "full", lint: "true", checks: "true", tests: "true", os: linux } },
-  { name: "PR next to main", github: pullRequest("main", "next"), expected: { tier: "none", lint: "false", checks: "false", tests: "false", os: linux } },
-  { name: "PR develop to main (cloud)", github: pullRequest("main", "develop"), expected: { tier: "none", lint: "false", checks: "false", tests: "false", os: linux } },
-  { name: "PR from a fork's next to main", github: pullRequest("main", "next", { headRepository: "someone/example" }), expected: { tier: "full", lint: "true", checks: "true", tests: "true", os: linux } },
-  { name: "push to next", github: event("push", "next"), expected: { tier: "full", lint: "true", checks: "true", tests: "true", os: linux } },
-  { name: "push to main", github: event("push", "main"), expected: { tier: "none", lint: "false", checks: "false", tests: "false", os: linux } },
-  { name: "schedule", github: event("schedule", "main"), expected: { tier: "nightly", lint: "true", checks: "true", tests: "true", os: both } },
-  { name: "workflow_dispatch", github: event("workflow_dispatch", "next"), expected: { tier: "full", lint: "true", checks: "true", tests: "true", os: linux } },
-  { name: "push to next, windows-pull-requests", github: event("push", "next"), windowsPullRequests: true, expected: { tier: "full", lint: "true", checks: "true", tests: "true", os: linux } },
+const BASE = "<the checkout's base commit>";
+
+interface ContractRow {
+  name: string;
+  github: (base: string) => Context;
+  changed?: string[];
+  inputs?: Context;
+  expected: { tier: string; base: string };
+}
+
+const contract: ContractRow[] = [
+  { name: "draft PR", github: pullRequest("main", "feat/x", { draft: true }), expected: { tier: "fast", base: BASE } },
+  { name: "ready PR", github: pullRequest("main", "feat/x"), expected: { tier: "fast", base: BASE } },
+  { name: "PR changing the root package.json", github: pullRequest("main", "feat/x"), changed: ["package.json"], expected: { tier: "full", base: BASE } },
+  { name: "PR changing a nested pnpm-lock.yaml", github: pullRequest("main", "feat/x"), changed: ["frontend/pnpm-lock.yaml"], expected: { tier: "full", base: BASE } },
+  { name: "PR changing a workflow", github: pullRequest("main", "feat/x"), changed: [".github/workflows/ci.yml"], expected: { tier: "full", base: BASE } },
+  { name: "PR changing the root README.md only", github: pullRequest("main", "docs/x"), changed: ["README.md"], expected: { tier: "fast", base: BASE } },
+  { name: "PR labeled ci:full", github: pullRequest("main", "feat/x", { labels: ["bug", "ci:full"] }), expected: { tier: "full", base: BASE } },
+  { name: "PR with selection full", github: pullRequest("main", "feat/x"), inputs: { selection: "full" }, expected: { tier: "full", base: BASE } },
+  { name: "PR from next into main", github: pullRequest("main", "next"), expected: { tier: "fast", base: BASE } },
+  { name: "merge_group", github: mergeGroup, expected: { tier: "queue", base: BASE } },
+  { name: "push to main", github: other("push", "main"), expected: { tier: "none", base: "" } },
+  { name: "push to next", github: other("push", "next"), expected: { tier: "full", base: "" } },
+  { name: "schedule", github: other("schedule", "main"), expected: { tier: "nightly", base: "" } },
+  { name: "workflow_dispatch", github: other("workflow_dispatch", "main"), expected: { tier: "full", base: "" } },
 ];
 
-for (const contractEvent of contract) {
-  test(`${contractEvent.name} runs the ${contractEvent.expected.tier} tier`, () => {
-    const { cwd, base } = contractEvent.checkout ?? code;
-    const inputs = { windows: true, "windows-pull-requests": contractEvent.windowsPullRequests ?? false };
-    const { fast, ...expected } = contractEvent.expected;
-    assert.deepEqual(tierJobOutputs(contractEvent.github, inputs, cwd), { ...expected, "test-base": fast ? base : "" });
+const withBase = (expected: ContractRow["expected"], base: string): ContractRow["expected"] => ({
+  ...expected,
+  base: expected.base === BASE ? base : expected.base,
+});
+
+contract.forEach((row, index) => {
+  test(`${row.name} picks the ${row.expected.tier} tier`, () => {
+    const { cwd, base } = checkout(`contract-${index}`, row.changed ?? ["src/index.ts"]);
+    assert.deepEqual(actionOutputs(row.github(base), row.inputs ?? {}, cwd), withBase(row.expected, base));
   });
-}
+});
+
+test("a PR whose base is missing from the shallow clone fetches it from origin", () => {
+  const { cwd, base } = shallowCheckout("shallow", ["src/index.ts"]);
+  assert.deepEqual(actionOutputs(pullRequest("main", "feat/x")(base), {}, cwd), { tier: "fast", base });
+  assert.equal(git(cwd, "cat-file", "-t", base), "commit");
+});
+
+test("a PR without a checkout picks the fast tier, so a job that calls the action before any checkout keeps working", () => {
+  const empty = join(root, "no-checkout");
+  mkdirSync(empty);
+  const base = "0123456789abcdef0123456789abcdef01234567";
+  assert.deepEqual(actionOutputs(pullRequest("main", "feat/x")(base), {}, empty), { tier: "fast", base });
+});
