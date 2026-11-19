@@ -314,12 +314,12 @@ jobs:
         env:
           EXTRA_COMMANDS: ${{ inputs.extra-commands }}
         run: |
+          if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
+            exec bash -euo pipefail -c "$EXTRA_COMMANDS"
+          fi
           log="$RUNNER_TEMP/extra-attempt-1.log"
           if bash -euo pipefail -c "$EXTRA_COMMANDS" 2>&1 | tee "$log"; then
             exit 0
-          fi
-          if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
-            exit 1
           fi
           echo "::warning::extra-commands failed in the merge queue. They run once more: a pass marks a flaky test, a second failure fails the job."
           bash -euo pipefail -c "$EXTRA_COMMANDS"

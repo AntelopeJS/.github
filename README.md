@@ -549,8 +549,8 @@ In the `queue` tier only, which is the `merge_group` event, a failed
 `pnpm run test` runs once more, and so do failed `extra-commands`. When the
 retry fails, the job fails. When it passes, the job passes and the
 `Annotate the flaky tests` step reads the log of the failed attempt of each
-command that passed on its retry. It writes one warning annotation per flaky test, titled
-exactly `Flaky test`, with the message
+command that passed on its retry. It writes one warning annotation per flaky
+test, titled exactly `Flaky test`, with the message
 `<owner>/<repo>: <test> passed only on its merge-queue retry.`, where `<test>`
 is `<file> > <test title>`, the titles of nested suites joined by ` > `, or only
 `<file>` when the whole file failed to run. `<file>` is the path as the test
@@ -638,7 +638,7 @@ It accepts these optional inputs:
 | `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. The job that runs the tests uses the cache; a `Node <version>` job that runs only the checks does not. With `extra-commands-job`, the extra-commands job also uses it, under its own key. On Windows, the job restores the cache a second time. Tar creates a Windows symlink as a file link when its target is not extracted yet, so the second pass, with every target present, recreates pnpm's links as directory links. |
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
-| `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. In the `queue` tier, a failure runs them once more, so they must be safe to run twice. |
+| `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. In the `queue` tier, a failure runs them once more in the same job, after the first attempt, so they must be safe to run twice: a second `git fetch --unshallow` fails, and a server the first attempt started keeps its port. |
 | `renovate-sync` | `false` | Accepted and ignored. Every caller passes `false` and runs the [Renovate sync](#renovate-sync) from its own job. |
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |

@@ -79,6 +79,7 @@ const interpolateAll = (values: Record<string, string>, context: Context): Recor
 
 interface Step {
   id?: string;
+  if?: string;
   uses?: string;
   shell?: string;
   env: Record<string, string>;
@@ -94,7 +95,7 @@ function step(lines: string[], name: string): Step {
   const runLine = body.findIndex((line) => line.trim() === "run: |");
   const script = runLine === -1 ? [] : block(body, runLine);
   const run = script.map((line) => line.slice(indent(script[0]))).join("\n");
-  return { id: field(body, "id"), uses: field(body, "uses"), shell: field(body, "shell"), env: section("env"), with: section("with"), run };
+  return { id: field(body, "id"), if: field(body, "if"), uses: field(body, "uses"), shell: field(body, "shell"), env: section("env"), with: section("with"), run };
 }
 
 function stepId({ id }: Step): string {
@@ -413,9 +414,9 @@ describe("the extra commands step", () => {
     });
   }
 
-  test("the log of the first attempt is the one the annotations read", () => {
+  test("the log of the first attempt, with its standard error, is the one the annotations read", () => {
     const dir = mkdtempSync(join(root, "extra-"));
-    const env = interpolateAll(runExtra.env, { inputs: { "extra-commands": "pnpm run integration" } });
+    const env = interpolateAll(runExtra.env, { inputs: { "extra-commands": "pnpm run integration >&2" } });
     succeeded(runStep(runExtra, dir, { ...env, ...fakeEnv(dir, { ANTELOPEJS_CI_TIER: "queue", FAKE_CODES: "1 0" }) }));
     const log = readFileSync(join(dir, "extra-attempt-1.log"), "utf8");
     assert.match(log, /FAIL src\/flaky\.test\.ts attempt 1/);
@@ -535,10 +536,31 @@ describe("the flaky test annotations", () => {
     extra?: string;
   }
 
+  const flakySteps = (logs: Logs): Context => {
+    const flaky = (log: string | undefined): Context => ({ outputs: log === undefined ? {} : { flaky: "true" } });
+    return { [stepId(step(nodeJob, "Run tests"))]: flaky(logs.tests), [stepId(step(nodeJob, "Run extra commands"))]: flaky(logs.extra) };
+  };
+
+  function annotates(steps: Context): boolean {
+    const condition = /^\$\{\{ !cancelled\(\) && \((.+)\) \}\}$/.exec(annotate.if ?? "");
+    assert.ok(condition, `not a condition this test evaluates: ${annotate.if}`);
+    return condition[1].split(" || ").some((operand) => {
+      const flaky = /^([\w.-]+) == 'true'$/.exec(operand);
+      assert.ok(flaky, `not an operand this test evaluates: ${operand}`);
+      return evaluate(flaky[1], { steps }) === "true";
+    });
+  }
+
+  test("the annotate step runs when either retry passed, and not when neither step flaked", () => {
+    assert.equal(annotates(flakySteps({ tests: "" })), true);
+    assert.equal(annotates(flakySteps({ extra: "" })), true);
+    assert.equal(annotates(flakySteps({})), false);
+  });
+
   function annotateLogs({ tests, extra }: Logs): Annotated {
     const dir = realpathSync(mkdtempSync(join(root, "flaky-")));
-    const flaky = (log: string | undefined): Context => ({ outputs: log === undefined ? {} : { flaky: "true" } });
-    const steps: Context = { tests: flaky(tests), extra: flaky(extra) };
+    const steps = flakySteps({ tests, extra });
+    assert.ok(annotates(steps), "the annotate step runs when a retry passed");
     for (const [file, log] of Object.entries({ "test-attempt-1.log": tests, "extra-attempt-1.log": extra })) {
       if (log !== undefined) writeFileSync(join(dir, file), log.replaceAll("/home/runner/work/example/example", dir));
     }
