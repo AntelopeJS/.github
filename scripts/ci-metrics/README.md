@@ -111,14 +111,16 @@ These give one verdict per failure:
 | `pending` | a `test` failure that nothing repeated yet, before the next nightly |
 | `infra` | an `infra` failure |
 
-A job that keeps failing since the same baseline counts once, with the verdict
-of its first failure, which its next nightly settles. The counts are per
+A job that keeps failing the same way, `infra` or `test`, since the same baseline
+counts once, with the verdict of its first failure, which its next nightly settles. The counts are per
 repository and organization-wide over the window. The daily run recomputes
 them from the API, so the 30-day total needs no saved state. The report also
 details the failures of each repository's latest nightly when it failed.
 
-A run reads about three calls per repository, plus a few per failed nightly,
-through the same client as `main.ts`.
+A run reads about four calls per repository, plus a few per failed nightly,
+through the same client as `main.ts`. It fails when it finds no repository with
+a merge queue, and when a repository lists more merge queue runs than the 1,000
+the API returns.
 
 ## Checks
 

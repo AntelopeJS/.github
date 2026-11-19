@@ -91,6 +91,15 @@ test("a job no runner took, a failed setup step and a network or billing annotat
   assert.equal(result.counts.infra, 3);
 });
 
+test("a test failure after an infra failure on the same baseline counts on its own", () => {
+  const result = nightlyReport(dataset(repo(
+    [nightly(16, "a"), nightly(17, "b", [job("ci / Test 24", "failure", { started: false, failedStep: null })]), nightly(18, "c", failing()), nightly(19, "c", failing())],
+    { queue: { b: "success", c: "success" }, commits: { [rangeKey("a", "c")]: ["b", "c"] } },
+  )));
+  assert.equal(result.counts.infra, 1);
+  assert.equal(result.counts.missed, 1);
+});
+
 test("the checks and ubuntu gates count only when no other job failed", () => {
   const gates = nightlyReport(dataset(repo([nightly(16, "a"), nightly(17, "b", [job("ci / checks", "failure"), job("ubuntu", "failure")])])));
   assert.deepEqual(gates.failures.map((failure) => failure.job), ["ci / checks", "ubuntu"]);

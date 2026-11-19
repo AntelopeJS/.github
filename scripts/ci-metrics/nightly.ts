@@ -162,11 +162,11 @@ const queueResult = (conclusion: "success" | "failure" | undefined): QueueResult
 
 const zero = (): Counts => ({ missed: 0, unqueued: 0, "no-new-commit": 0, "no-baseline": 0, flake: 0, pending: 0, infra: 0 });
 
-/** The first failure of each streak: a job that keeps failing since the same baseline is one failure. */
+/** The first failure of each streak: a job that keeps failing the same way since the same baseline is one failure. */
 export function streaks(failures: readonly Failure[]): Failure[] {
   const seen = new Set<string>();
   return failures.filter((failure) => {
-    const key = `${failure.repo}\n${failure.job}\n${failure.baseline?.id ?? "none"}`;
+    const key = `${failure.repo}\n${failure.job}\n${failure.kind}\n${failure.baseline?.id ?? "none"}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

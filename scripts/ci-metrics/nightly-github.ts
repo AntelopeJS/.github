@@ -13,6 +13,7 @@ export interface NightlyOptions {
 const dayMs = 86_400_000;
 const baselineDays = 7;
 const perRepo = 2;
+const maxListed = 1000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -80,14 +81,20 @@ export async function collectNightlies(options: NightlyOptions, fetcher: typeof 
     const nightlies: Nightly[] = listed.flatMap((raw) => {
       const run = parseRun(raw, { repo: name });
       if (run === null || !isCi(run) || !isRecord(raw) || typeof raw.head_sha !== "string") return [];
-      return [{ id: run.id, sha: raw.head_sha, startedAt: run.startedAt, conclusion: run.conclusion, url: typeof raw.html_url === "string" ? raw.html_url : "" }];
+      const startedAt = typeof raw.created_at === "string" ? raw.created_at : run.startedAt;
+      return [{ id: run.id, sha: raw.head_sha, startedAt, conclusion: run.conclusion, url: typeof raw.html_url === "string" ? raw.html_url : "" }];
     }).sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
     await pool(nightlies.filter((nightly) => nightly.conclusion !== "success"), perRepo, async (nightly) => {
       nightly.jobs = (await pages(`${base}/actions/runs/${nightly.id}/jobs?filter=all`, jobsOf)).flatMap((raw) => parseNightlyJob(raw) ?? []);
     });
 
     const queue: RepoNightlies["queue"] = {};
-    for (const raw of await pages(`${base}/actions/runs?event=merge_group&status=completed&created=${created}`, runsOf)) {
+    const queueRuns = `${base}/actions/runs?event=merge_group&status=completed&created=${created}`;
+    const first = await json(`${queueRuns}&per_page=1`);
+    if (isRecord(first) && typeof first.total_count === "number" && first.total_count > maxListed) {
+      throw new Error(`${name} lists ${first.total_count} merge queue runs, over the ${maxListed} the API returns: shorten --days`);
+    }
+    for (const raw of await pages(queueRuns, runsOf)) {
       const run = parseRun(raw, { repo: name });
       if (run === null || !isCi(run) || !isRecord(raw) || typeof raw.head_sha !== "string") continue;
       if (queue[raw.head_sha] !== "success") queue[raw.head_sha] = run.conclusion === "success" ? "success" : "failure";

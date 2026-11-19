@@ -42,6 +42,7 @@ async function dataset(): Promise<NightlyDataset> {
   const to = values.to === undefined ? new Date() : new Date(values.to);
   if (Number.isNaN(to.getTime())) fail(`--to takes an ISO date, not ${values.to}\n${usage}`);
   const collected = await collectNightlies({ org: values.org, days, to, concurrency: 8 });
+  if (collected.repos.length === 0) fail(`no repository of ${values.org} has a merge queue that this token can read\n`);
   if (values.save !== undefined) writeFileSync(values.save, `${JSON.stringify(collected)}\n`);
   return collected;
 }
