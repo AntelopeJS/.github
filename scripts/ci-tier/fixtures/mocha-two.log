@@ -1,0 +1,61 @@
+
+
+  first
+    1) flakes
+
+
+  0 passing (2ms)
+  1 failing
+
+  1) first
+       flakes:
+
+      AssertionError [ERR_ASSERTION]: 1 == 2
+      + expected - actual
+
+      -1
+      +2
+      
+      at Context.<anonymous> (file:///home/runner/work/example/example/m1/a.test.js:3:55)
+      at process.processImmediate (node:internal/timers:574:21)
+
+
+
+
+
+  [32m✔[39m root level ok
+  1) root level bad
+  second
+    [32m✔[39m fine
+    2) bad
+    [32m✔[39m also fine
+
+
+  3 passing (3ms)
+  2 failing
+
+  1) root level bad:
+
+      AssertionError [ERR_ASSERTION]: 1 == 2
+      + expected - actual
+
+      -1
+      +2
+      
+      at Context.<anonymous> (file:///home/runner/work/example/example/m2/b.test.js:4:37)
+      at process.processImmediate (node:internal/timers:574:21)
+
+  2) second
+       bad:
+
+      AssertionError [ERR_ASSERTION]: 1 == 2
+      + expected - actual
+
+      -1
+      +2
+      
+      at Context.<anonymous> (file:///home/runner/work/example/example/m2/b.test.js:5:75)
+      at process.processImmediate (node:internal/timers:574:21)
+
+
+

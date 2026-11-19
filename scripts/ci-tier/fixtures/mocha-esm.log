@@ -1,0 +1,32 @@
+
+> test
+> mocha test
+
+
+
+  math
+    add
+      1) adds 1 and 2
+
+
+  0 passing (2ms)
+  1 failing
+
+  1) math
+       add
+         adds 1 and 2:
+
+      AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+3 !== 4
+
+      + expected - actual
+
+      -3
+      +4
+      
+      at Context.<anonymous> (file:///home/runner/work/example/example/test/math.test.mjs:4:39)
+      at process.processImmediate (node:internal/timers:574:21)
+
+
+

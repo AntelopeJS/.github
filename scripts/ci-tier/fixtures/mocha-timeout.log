@@ -1,0 +1,35 @@
+
+
+  slow suite
+    1) times out
+    2) multi-line message
+    ends with colon:
+      3) inner
+
+
+  0 passing (53ms)
+  3 failing
+
+  1) slow suite
+       times out:
+     Error: Timeout of 50ms exceeded. For async tests and hooks, ensure "done()" is called; if returning a Promise, ensure it resolves. (/home/runner/work/example/example/test/timeout.test.js)
+      at listOnTimeout (node:internal/timers:685:17)
+      at process.processTimers (node:internal/timers:618:7)
+
+  2) slow suite
+       multi-line message:
+     Error: expected values:
+1) foo
+2) bar
+      at Context.<anonymous> (file:///home/runner/work/example/example/test/timeout.test.js:4:42)
+      at process.processImmediate (node:internal/timers:574:21)
+
+  3) slow suite
+       ends with colon:
+         inner:
+     Error: x
+      at Context.<anonymous> (file:///home/runner/work/example/example/test/timeout.test.js:5:66)
+      at process.processImmediate (node:internal/timers:574:21)
+
+
+

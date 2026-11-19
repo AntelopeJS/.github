@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -367,30 +367,6 @@ writeFileSync(
   ].join("\n"),
   { mode: 0o755 },
 );
-writeFileSync(
-  join(bin, "curl"),
-  [
-    "#!/usr/bin/env bash",
-    'method="" url=""',
-    'while [ "$#" -gt 0 ]; do',
-    '  case "$1" in',
-    '    -X) method="$2"; shift 2 ;;',
-    "    -H | --data) shift 2 ;;",
-    "    -*) shift ;;",
-    '    *) url="$1"; shift ;;',
-    "  esac",
-    "done",
-    'request="$FAKE_REQUESTS/$(ls "$FAKE_REQUESTS" | wc -l)"',
-    'echo "$method $url" > "$request.target"',
-    'cat > "$request.json"',
-    'case "$url" in',
-    '  */query) echo "$FAKE_QUERY" ;;',
-    "  *) echo '{}' ;;",
-    "esac",
-  ].join("\n"),
-  { mode: 0o755 },
-);
-
 const fakeEnv = (dir: string, extra: Record<string, string>): Record<string, string> => ({
   PATH: `${bin}:${process.env.PATH}`,
   RUNNER_TEMP: dir,
@@ -513,65 +489,100 @@ describe("the affected tests", () => {
   });
 });
 
-describe("the flaky test filing", () => {
-  const file = step(nodeJob, "File the flaky test in the Inbox");
+describe("the flaky test annotations", () => {
+  const annotate = step(nodeJob, "Annotate the flaky tests");
   const github = event("merge_group", "gh-readonly-queue/main/pr-1-abc");
+  const fixture = (name: string): string => readFileSync(new URL(`./fixtures/${name}.log`, import.meta.url), "utf8");
 
-  function fileFlaky(token: string, query: string): { run: Run; requests: { target: string; body: Context }[] } {
-    const dir = mkdtempSync(join(root, "flaky-"));
-    const requests = join(dir, "requests");
-    mkdirSync(requests);
-    writeFileSync(join(dir, "test-attempt-1.log"), `${"x".repeat(3000)}\n\u001b[31mFAIL src/flaky.test.ts\u001b[0m\n`);
-    const env = interpolateAll(file.env, { github, secrets: { NOTION_TOKEN: token } });
-    const run = runStep(file, dir, { ...env, ...fakeEnv(dir, { FAKE_REQUESTS: requests, FAKE_QUERY: query }) });
-    const sent = readdirSync(requests)
-      .filter((name) => name.endsWith(".target"))
-      .sort()
-      .map((name) => ({ target: readFileSync(join(requests, name), "utf8").trim(), body: JSON.parse(readFileSync(join(requests, name.replace(".target", ".json")), "utf8")) }));
-    return { run, requests: sent };
+  interface Annotated {
+    run: Run;
+    warnings: string[];
+    summary: string[];
   }
 
-  const runUrl = "https://github.com/AntelopeJS/example/actions/runs/42";
+  function annotateLog(log: string): Annotated {
+    const dir = realpathSync(mkdtempSync(join(root, "flaky-")));
+    writeFileSync(join(dir, "test-attempt-1.log"), log.replaceAll("/home/runner/work/example/example", dir));
+    const run = succeeded(runStep(annotate, dir, { ...interpolateAll(annotate.env, { github }), ...fakeEnv(dir, {}) }));
+    return { run, warnings: run.stdout.split("\n").filter((line) => line !== ""), summary: run.summary.split("\n").filter((line) => line !== "") };
+  }
 
-  test("without NOTION_TOKEN, warns and files nothing", () => {
-    const { run, requests } = fileFlaky("", "{}");
-    succeeded(run);
-    assert.match(run.stdout, /::warning::.*NOTION_TOKEN/);
-    assert.deepEqual(requests, []);
+  const warning = (message: string): string => `::warning title=Flaky test::AntelopeJS/example: ${message} passed only on its merge-queue retry.`;
+  const summaryLine = (message: string): string => `- Flaky test: \`\` AntelopeJS/example: ${message} passed only on its merge-queue retry. \`\``;
+
+  function expectAnnotations(log: string, messages: string[]): void {
+    const { warnings, summary } = annotateLog(log);
+    assert.deepEqual(warnings, messages.map(warning));
+    assert.deepEqual(summary, messages.map(summaryLine));
+  }
+
+  const math = "test/math.test.js";
+  const runners = [
+    { name: "vitest", fixture: "vitest", messages: ["test/broken.test.js", `${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`] },
+    { name: "vitest with colors", fixture: "vitest-color", messages: ["test/broken.test.js", `${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`] },
+    { name: "jest", fixture: "jest", messages: [`${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`, "test/broken.test.js"] },
+    { name: "mocha", fixture: "mocha", messages: [`${math} > math > top level fails`, `${math} > math > add > adds 1 and 2`] },
+    { name: "mocha with ES modules", fixture: "mocha-esm", messages: ["test/math.test.mjs > math > add > adds 1 and 2"] },
+    { name: "mocha with a timeout, a multi-line message and a suite title ending in a colon", fixture: "mocha-timeout", messages: ["test/timeout.test.js > slow suite > times out", "test/timeout.test.js > slow suite > multi-line message", "test/timeout.test.js > slow suite > ends with colon: > inner"] },
+    { name: "two mocha runs in one log", fixture: "mocha-two", messages: ["m1/a.test.js > first > flakes", "m2/b.test.js > root level bad", "m2/b.test.js > second > bad"] },
+    { name: "node:test", fixture: "node-test", messages: ["test/broken.test.js", `${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`] },
+  ];
+  for (const { name, fixture: file, messages } of runners) {
+    test(`${name}: one annotation and one summary line per failed test of the first attempt`, () => {
+      expectAnnotations(fixture(file), messages);
+    });
+  }
+
+  test("a failure whose test file is not found is named after the command", () => {
+    const log = ["  1 failing", "", "  1) math", "       adds:", "", "      Error: boom", "      at Context.<anonymous> (src/helper.js:1:1)", ""].join("\n");
+    expectAnnotations(log, ["pnpm run test > math > adds"]);
   });
 
-  test("creates an Inbox task with the end of the failed attempt's log", () => {
-    const { run, requests } = fileFlaky("secret", '{"results": []}');
-    succeeded(run);
-    assert.deepEqual(
-      requests.map(({ target }) => target),
-      ["POST https://api.notion.com/v1/data_sources/2f2d36f1-99db-4ff3-b040-f66d7480ac9a/query", "POST https://api.notion.com/v1/pages"],
-    );
-    assert.deepEqual(lookup("filter.and", requests[0].body), [
-      { property: "Key", rich_text: { equals: "flaky-test:example" } },
-      { property: "Status", status: { does_not_equal: "Done" } },
-      { property: "Status", status: { does_not_equal: "Dropped" } },
-    ]);
-    const page = requests[1].body;
-    assert.deepEqual(lookup("properties.Key", page), { rich_text: [{ text: { content: "flaky-test:example" } }] });
-    assert.deepEqual(lookup("properties.Status", page), { status: { name: "Inbox" } });
-    assert.deepEqual(lookup("properties.Repos", page), { multi_select: [{ name: "example" }] });
-    const children = lookup("children", page);
-    assert.ok(Array.isArray(children));
-    assert.ok(JSON.stringify(children).includes(runUrl), "the task links the run");
-    const richText = lookup("code.rich_text", children.find((child) => child.code !== undefined) ?? {});
-    assert.ok(Array.isArray(richText), "the task holds a code block");
-    const log = lookup("text.content", richText[0]);
-    assert.ok(typeof log === "string");
-    assert.ok(log.endsWith("FAIL src/flaky.test.ts"), log.slice(-80));
-    assert.ok(log.length <= 1500 && !log.includes("\u001b"), "the log is a short tail without color codes");
+  test("jest: a test file slower than its slow threshold keeps its name", () => {
+    const log = ["FAIL test/slow.test.js (6.12 s)", "  ● slow › waits", "", "    expect(received).toBe(expected)", ""].join("\n");
+    expectAnnotations(log, ["test/slow.test.js > slow > waits"]);
   });
 
-  test("appends to the open task of the repository instead of filing another", () => {
-    const { run, requests } = fileFlaky("secret", '{"results": [{"id": "page-1"}]}');
-    succeeded(run);
-    assert.equal(requests.length, 2);
-    assert.equal(requests[1].target, "PATCH https://api.notion.com/v1/blocks/page-1/children");
-    assert.match(JSON.stringify(requests[1].body), new RegExp(`Seen again.*${runUrl.replaceAll(".", "\\.")}`));
+  test("jest: only the failure bullets of a FAIL block name tests", () => {
+    const log = ["FAIL test/a.test.js", "  ● list › fails", "", "    Error: list:", "      ● item one", "", "  ●  Cannot log after tests are done. Did you forget to wait for something async in your test?", ""].join("\n");
+    expectAnnotations(log, ["test/a.test.js > list > fails"]);
+  });
+
+  test("a parser that throws falls back to one annotation naming the command", () => {
+    const log = ["  1 failing", "", "  1) math", "       adds:", "     Error: boom", "      at Context.<anonymous> (file:///home/runner/work/x/x/test/a%2Fb.test.js:5:20)", ""].join("\n");
+    expectAnnotations(log, ["pnpm run test"]);
+  });
+
+  test("an unparseable log gives one annotation naming the command", () => {
+    expectAnnotations("something went wrong\nbut no runner says what\n", ["pnpm run test"]);
+  });
+
+  const vitestLog = (failures: { file: string; name: string }[]): string => failures.map(({ file, name }) => ` FAIL  ${file} > ${name}\n`).join("");
+
+  test("more than ten failed tests collapse to one annotation per test file", () => {
+    const failures = Array.from({ length: 12 }, (_, index) => ({ file: `test/file-${index % 3}.test.js`, name: `case ${index}` }));
+    expectAnnotations(vitestLog(failures), ["test/file-0.test.js", "test/file-1.test.js", "test/file-2.test.js"]);
+  });
+
+  test("more than ten failed test files collapse to one annotation naming the command", () => {
+    const failures = Array.from({ length: 11 }, (_, index) => ({ file: `test/file-${index}.test.js`, name: "case" }));
+    expectAnnotations(vitestLog(failures), ["pnpm run test"]);
+  });
+
+  test("ten failed tests keep their names", () => {
+    const failures = Array.from({ length: 10 }, (_, index) => ({ file: "test/many.test.js", name: `case ${index}` }));
+    expectAnnotations(vitestLog(failures), failures.map(({ name }) => `test/many.test.js > ${name}`));
+  });
+
+  test("the message of an annotation escapes percent signs, and the summary keeps them", () => {
+    const { warnings, summary } = annotateLog(" FAIL  test/escape.test.js > 100% sure, %0A stays text\n");
+    assert.deepEqual(warnings, ["::warning title=Flaky test::AntelopeJS/example: test/escape.test.js > 100%25 sure, %250A stays text passed only on its merge-queue retry."]);
+    assert.deepEqual(summary, [summaryLine("test/escape.test.js > 100% sure, %0A stays text")]);
+  });
+
+  test("the workflow files nothing in Notion and still declares the deprecated secret", () => {
+    assert.ok(!ciNode.join("\n").includes("api.notion.com"));
+    const secret = keyed(keyed(keyed(ciNode, "on"), "workflow_call"), "secrets");
+    assert.equal(field(keyed(secret, "NOTION_TOKEN"), "required"), "false");
   });
 });

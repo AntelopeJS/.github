@@ -1,0 +1,74 @@
+
+> test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.1.1 [39m[90m/home/runner/work/example/example[39m
+
+ [31m❯[39m test/broken.test.js [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m test/math.test.js [2m([22m[2m3 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 7[2mms[22m[39m
+   [31m❯[39m math [2m(3)[22m
+     [31m❯[39m add [2m(2)[22m
+[31m       [31m×[31m adds 1 and 2[39m[32m 5[2mms[22m[39m
+[31m     [31m×[31m top level fails[39m[32m 0[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m test/broken.test.js[2m [ test/broken.test.js ][22m
+[31m[1mError[22m: Cannot find module './missing.js' imported from /home/runner/work/example/example/test/broken.test.js[39m
+[36m [2m❯[22m test/broken.test.js:[2m2:1[22m[39m
+    [90m  1|[39m [35mimport[39m { it } [35mfrom[39m [32m"vitest"[39m[33m;[39m
+    [90m  2|[39m [35mimport[39m [32m"./missing.js"[39m[33m;[39m
+    [90m   |[39m [31m^[39m
+    [90m  3|[39m [34mit[39m([32m"never"[39m[33m,[39m () [33m=>[39m {})[33m;[39m
+    [90m  4|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m test/math.test.js[2m > [22mmath[2m > [22madd[2m > [22madds 1 and 2
+[31m[1mAssertionError[22m: expected 3 to be 4 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 4[39m
+[31m+ 3[39m
+
+[36m [2m❯[22m test/math.test.js:[2m4:46[22m[39m
+    [90m  2|[39m [34mdescribe[39m([32m"math"[39m[33m,[39m () [33m=>[39m {
+    [90m  3|[39m   [34mdescribe[39m([32m"add"[39m[33m,[39m () [33m=>[39m {
+    [90m  4|[39m     [34mit[39m([32m"adds 1 and 2"[39m[33m,[39m () [33m=>[39m { [34mexpect[39m([34m1[39m [33m+[39m [34m2[39m)[33m.[39m[34mtoBe[39m([34m4[39m)[33m;[39m })[33m;[39m
+    [90m   |[39m                                              [31m^[39m
+    [90m  5|[39m     [34mit[39m([32m"works"[39m[33m,[39m () [33m=>[39m { [34mexpect[39m([34m1[39m)[33m.[39m[34mtoBe[39m([34m1[39m)[33m;[39m })[33m;[39m
+    [90m  6|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/math.test.js[2m > [22mmath[2m > [22mtop level fails
+[31m[1mAssertionError[22m: expected 1 to be 2 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 2[39m
+[31m+ 1[39m
+
+[36m [2m❯[22m test/math.test.js:[2m7:43[22m[39m
+    [90m  5|[39m     [34mit[39m([32m"works"[39m[33m,[39m () [33m=>[39m { [34mexpect[39m([34m1[39m)[33m.[39m[34mtoBe[39m([34m1[39m)[33m;[39m })[33m;[39m
+    [90m  6|[39m   })[33m;[39m
+    [90m  7|[39m   [34mit[39m([32m"top level fails"[39m[33m,[39m () [33m=>[39m { [34mexpect[39m([34m1[39m)[33m.[39m[34mtoBe[39m([34m2[39m)[33m;[39m })[33m;[39m
+    [90m   |[39m                                           [31m^[39m
+    [90m  8|[39m })[33m;[39m
+    [90m  9|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m2 failed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m1 passed[39m[22m[90m (3)[39m
+[2m   Start at [22m 21:38:30
+[2m   Duration [22m 106ms[2m (import 31%, tests 29%, worker 24%, transform 16%, environment 1%)[22m
+
