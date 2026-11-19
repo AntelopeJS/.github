@@ -5,7 +5,9 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scripts/next-branch-setup.sh [--apply] [--branch <name>] <owner>/<repo>
 
-Gives a repository its rolling integration branch (default: next):
+Trunk repositories merge every pull request into the default branch through
+GitHub's merge queue and need none of this. Run it only for a repository that
+still keeps a rolling integration branch (default: develop, as in cloud):
   - creates the branch from the default branch when it does not exist,
   - allows auto-merge in the repository,
   - creates or updates two repository rulesets on the branch:
@@ -26,7 +28,7 @@ fail() {
 }
 
 apply=false
-branch=next
+branch=develop
 repo=""
 while [ $# -gt 0 ]; do
   case "$1" in
