@@ -231,46 +231,35 @@ Repositories call the shared workflows at the `v2` tag, which moves to each
 merge on `main` that changes them. `v1` stays frozen for the repositories that
 have not synced yet, and is deleted once the rollout is done.
 
-### Working on `next`
+### Working on `main`
 
-1. If the repository has no `next`, set it up with
-   `scripts/next-branch-setup.sh` of this repository.
-2. Open the pull request against `next`.
-3. After the merge, the push publishes a preview of each package it changed.
-4. A repository that needs the change pins the exact preview on its own `next`
-   branch, as described in [preview versions](README.md#preview-versions).
+1. Open the pull request against `main`. To try it from another repository
+   before it merges, add the `preview` label, as described in
+   [pull request previews](README.md#pull-request-previews).
+2. After the merge, the push publishes a preview of each package it changed.
+3. A repository that needs the change pins the exact preview on its own `main`,
+   as described in [preview versions](README.md#preview-versions).
 
-A preview writes nothing to git, so `next` keeps the version of the last stable
+A preview writes nothing to git, so `main` keeps the version of the last stable
 release in its `package.json`. Cross-repository work never waits for a stable
 release or a tarball.
 
-### Promoting `next` to stable
+### Releasing
 
-1. A pull request from `next` to `main` brings the work to `main` once a
-   maintainer approves it. Merge it with **Squash and merge**. Each stable
-   release that writes stable ranges pushes them to `next` too. The Next sync
-   workflow then merges `main` back into `next`, so `next` holds the release
-   commits and the changelogs, and the stable ranges merge without a conflict.
-   That merge publishes no preview of a package whose release changed only its
-   version and its changelog.
-2. Run the [release train](README.md#release-train) with `plan`. Leave out with
-   `--exclude` any package that should not ship now. Its commits stay on `main`
-   and the next plan includes them.
-3. Run `go` once a maintainer approves the plan. Each stable run releases the
+1. Run the [release train](README.md#release-train) with `plan`. It reads
+   `main` since the last stable tag. Leave out with `--exclude` any package
+   that should not ship now. Its commits stay on `main` and the next plan
+   includes them.
+2. Run `go` once a maintainer approves the plan. It releases each dependency
+   before the packages that pin its preview. Each stable run releases the
    commit the plan read, replaces the preview pins with stable ranges and
    refuses to publish a version whose `dependencies`, `peerDependencies` or
    `optionalDependencies` still hold a preview.
 
-`next` stays: the `next history` ruleset forbids deleting it and
-force-pushing to it.
-
-The squash commit is the only commit of the cycle on `main`. The release train
-reads each task's commit from the head of the promotion pull request instead,
-so the changelog lists every task. Title the pull request with the highest
-change type of the cycle, `feat!:` when it holds a breaking change, then
-`feat:`, then `fix:`. The release level reads the tasks' commits alone, so the
-title neither raises nor lowers it. A breaking change gives a minor release,
-never a major one.
+Title each pull request with its highest change type, `feat!:` when it holds a
+breaking change, then `feat:`, then `fix:`. The release train reads each task's
+commit from the head of its pull request, so the changelog lists every task. A
+breaking change gives a minor release, never a major one.
 
 ### Stable fixes during a cycle
 

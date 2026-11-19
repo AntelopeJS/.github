@@ -24,8 +24,9 @@ starts the run decides what it publishes. A caller only declares the triggers.
 | `pull_request` | a pull request with the `preview` label | a pull request preview: a [pkg.pr.new](https://pkg.pr.new) package for a public package, the dist-tag `pr-<number>` on `https://npm.antelopejs.cloud/` for a private one |
 | `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest`, or nothing without `release-version` |
 
-Any other event or branch fails the run with the reason, so a push to `next`
-publishes nothing. Anyone allowed to run
+A push to another branch, `next` included, skips the job, so a caller that
+still triggers on `next` stays green and publishes nothing. Any other event
+fails the run with the reason. Anyone allowed to run
 the workflow can dispatch a stable release with any `release-version` above
 `latest` in the same major. The release train is the way to start one, not a
 guard against starting one by hand. A release runs no tests. The checks of the pull request that brought each commit are the gate.
@@ -80,10 +81,12 @@ Adding another label to a labeled pull request does not run it. It builds the
 head commit of the pull request, not the merge commit, and records that commit
 as the `gitHead`.
 
-The version is `<base>-pr.<number>.<commit count>.g<short sha>`, such as
-`0.4.3-pr.12.161.g3f9a2c1`. The base is the one of a `next` preview. Unlike a
-`next` preview, it publishes whether or not the package changed. A rerun of the
-same commit finds the version already on npm and publishes nothing.
+The version is `0.0.0-pr.<number>.<commit count>.g<short sha>`, such as
+`0.0.0-pr.12.161.g3f9a2c1`. It sorts below every release and every `next`
+preview, so no range and no update tool picks it in their place. Unlike a
+`next` preview, it publishes whether or not the package changed. A rerun of a
+private preview finds the version already on the registry and publishes
+nothing. A rerun of a public one publishes it to pkg.pr.new again.
 
 A public package publishes through [pkg.pr.new](https://pkg.pr.new), which
 comments the install commands on the pull request and updates that comment on
@@ -208,7 +211,10 @@ dependency order.
   part of a preview version, `g<short sha>`, names its commit. A dependency the
   plan releases must contain that commit at the head of its default branch. A
   dependency the plan leaves unchanged must contain it at its last stable tag,
-  so a hotfix release that lacks the commit refuses the pin. A ref contains
+  so a hotfix release that lacks the commit refuses the pin. That tag settles
+  it even when the preview's base is above it. That is the case of the preview
+  a release commit publishes. A pin of `1.2.5-next.40.g<sha>` moves to
+  `>=1.2.4 <1.3.0` when the tag of 1.2.4 holds the commit. A ref contains
   the commit when the commit is an ancestor of it. A squash merge keeps the
   commits of a pull request only in its head, so the train also looks in the
   merged pull requests. It reads the last 100 pull requests merged into the
@@ -239,8 +245,8 @@ dependency order.
 - A package is refused when a preview pin in `dependencies`,
   `peerDependencies` or `optionalDependencies` cannot move. That happens when
   the dependency is not listed, is left out, is refused itself, has no stable
-  release, has a stable release older than the preview's base, or does not
-  hold the pinned commit. It also happens when the pin is not an exact version
+  release, is released by the plan at a version older than the preview's base,
+  or does not hold the pinned commit. It also happens when the pin is not an exact version
   or names no commit. A refusal reaches every package that pins a preview of
   the refused one in those fields.
 - A `devDependencies` preview never blocks a release. It moves like any other
