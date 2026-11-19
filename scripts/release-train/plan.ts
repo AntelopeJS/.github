@@ -421,13 +421,13 @@ function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome
   const target = planned.status === "release" ? planned.to : dependency.stable;
   if (target === null) return { reason: "which has no stable release" };
   const base = `${version.major}.${version.minor}.${version.patch}`;
-  if (compareCore(target, base) < 0) return { reason: `whose stable ${target} is older than ${base}` };
-  if (planned.status === "release" && !context.contains(name, sha, "head")) {
-    return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
+  const older = compareCore(target, base) < 0;
+  if (planned.status !== "release") {
+    if (context.contains(name, sha, "stable")) return { range: stableRange(target) };
+    return { reason: older ? `whose stable ${target} is older than ${base}` : `whose stable ${target} does not contain commit ${sha}` };
   }
-  if (planned.status !== "release" && !context.contains(name, sha, "stable")) {
-    return { reason: `whose stable ${target} does not contain commit ${sha}` };
-  }
+  if (older) return { reason: `whose stable ${target} is older than ${base}` };
+  if (!context.contains(name, sha, "head")) return { reason: `whose ${dependency.branch} does not contain commit ${sha}` };
   return { range: stableRange(target) };
 }
 

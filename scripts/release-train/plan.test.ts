@@ -487,7 +487,7 @@ describe("computePlan", () => {
       optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
     });
     const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", []), source("w", "0.2.9", ["fix: w"]), source("v", "0.2.9", ["fix: v"])];
-    const refused = entry(plan([pinned, ...listed]).entries, "dms");
+    const refused = entry(plan([pinned, ...listed], [], (name) => name !== "@antelopejs/x").entries, "dms");
     assert.deepEqual(refused.status === "refused" && refused.reasons, [
       "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
       "depends on preview @antelopejs/z@0.2.9-beta.1, which names no commit",
@@ -495,6 +495,16 @@ describe("computePlan", () => {
       "depends on preview @antelopejs/v@0.2.10-next.g3f9a2c1.4, which names no commit",
       "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
     ]);
+  });
+
+  test("moves a pin of the preview cut from a release commit to that stable release, whose tag holds the commit", () => {
+    const dependent = source("e", "0.1.0", ["fix: e"], { dependencies: { "@antelopejs/p": "1.2.5-next.40.g20d3668" } });
+    const released = source("p", "1.2.4", []);
+    const holds = (holder: string) => (name: string, sha: string, where?: string) => name === "@antelopejs/p" && sha === "20d3668" && where === holder;
+    const moved = entry(plan([dependent, released], [], holds("stable")).entries, "e");
+    assert.equal(moved.status === "release" && moved.ranges["@antelopejs/p"], ">=1.2.4 <1.3.0");
+    const refused = entry(plan([dependent, released], [], holds("head")).entries, "e");
+    assert.deepEqual(refused.status === "refused" && refused.reasons, ["depends on preview @antelopejs/p@1.2.5-next.40.g20d3668, whose stable 1.2.4 is older than 1.2.5"]);
   });
 
   test("moves a pin only to a stable release whose branch contains the preview's commit", () => {
