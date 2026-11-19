@@ -1,0 +1,49 @@
+
+> test
+> mocha test
+
+
+
+  math
+    1) top level fails
+    add
+      2) adds 1 and 2
+      [32m✔[39m works
+
+
+  1 passing (3ms)
+  2 failing
+
+  1) math
+       top level fails:
+
+      AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+1 !== 2
+
+      + expected - actual
+
+      -1
+      +2
+      
+      at Context.<anonymous> (test/math.test.js:7:40)
+      at process.processImmediate (node:internal/timers:574:21)
+
+  2) math
+       add
+         adds 1 and 2:
+
+      AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+3 !== 4
+
+      + expected - actual
+
+      -3
+      +4
+      
+      at Context.<anonymous> (test/math.test.js:4:39)
+      at process.processImmediate (node:internal/timers:574:21)
+
+
+

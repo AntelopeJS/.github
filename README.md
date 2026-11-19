@@ -545,12 +545,23 @@ with the first `node-versions` entry or `.nvmrc`; the other jobs add
 only, on the skills the change touches since the diff base, or since `HEAD^1`
 without one.
 
-In the `queue` tier only, a failed `pnpm run test` runs once more. When the
-retry fails, the job fails. When it passes, the job passes with a warning and
-its summary names a flaky test. With the `NOTION_TOKEN` secret, the job then
-files a task in the Inbox of the Tasks database, keyed `flaky-test:<repo>`,
-with the end of the failed attempt's log, or adds a line to the open task of the
-repository. Without the secret, a warning says no task was filed. A pull request
+In the `queue` tier only, which is the `merge_group` event, a failed
+`pnpm run test` runs once more. When the retry fails, the job fails. When it
+passes, the job passes and the `Annotate the flaky tests` step reads the log of
+the failed attempt. It writes one warning annotation per flaky test, titled
+exactly `Flaky test`, with the message
+`<owner>/<repo>: <test> passed only on its merge-queue retry.`, where `<test>`
+is `<file> > <test title>`, the titles of nested suites joined by ` > `, or only
+`<file>` when the whole file failed to run. It reads the output of vitest, jest,
+mocha (the spec reporter) and `node --test` (the spec reporter of Node.js 24).
+When it finds no test file, `<file>` is `pnpm run test`, and when it parses
+nothing, there is one annotation naming `pnpm run test`. GitHub keeps at most 10
+warning annotations per step, so above 10 tests the step writes one annotation
+per test file, and above 10 files a single one naming `pnpm run test`. The
+message escapes `%`, carriage returns and line feeds as workflow commands
+require. The step also adds one line to the job summary per annotation,
+`Flaky test: <message>`. Nothing is filed anywhere else: a scan of the check run
+annotations of the repository is the machine-readable signal. A pull request
 never retries a failed test.
 
 In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
@@ -630,9 +641,10 @@ It accepts these optional inputs:
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 
-It accepts one optional secret, `NOTION_TOKEN`: a Notion integration token
-allowed to read, insert and update content in the Tasks database, which files
-the flaky test task. A caller that passes no secret keeps working.
+It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
+ignored. The workflow no longer writes to Notion. The secret stays declared
+because callers still pass it and a reusable workflow rejects a secret it does
+not declare.
 
 The `checks` job stays the single required result. It checks that the pull
 request title uses Conventional Commits. It fails when the `node` job did not
