@@ -37,7 +37,7 @@ on:
 
 jobs:
   release:
-    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview'))
+    if: (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch) && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview')))
     runs-on: ubuntu-latest
     environment: ${{ github.event_name != 'pull_request' && 'npm-publish' || '' }}
     concurrency:
@@ -285,21 +285,11 @@ jobs:
               return 1
             fi
           }
-          base_of() {
-            local latest major minor patch
-            latest=$(latest_of "$1")
-            if [ -n "$latest" ]; then
-              IFS=. read -r major minor patch <<< "$latest"
-              echo "$major.$minor.$((patch + 1))"
-            else
-              node -p "require('./package.json').version.split('-')[0]"
-            fi
-          }
           held() {
             [ -n "$(npm view "$1@$2" version 2>/dev/null || true)" ]
           }
           preview_of() {
-            local name previous base
+            local name previous latest major minor patch base
             name=$(node -p "require('./package.json').name")
             previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
             if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
@@ -320,13 +310,18 @@ jobs:
             then
               return 0
             fi
-            base=$(base_of "$name")
+            latest=$(latest_of "$name")
+            if [ -n "$latest" ]; then
+              IFS=. read -r major minor patch <<< "$latest"
+              base="$major.$minor.$((patch + 1))"
+            else
+              base=$(node -p "require('./package.json').version.split('-')[0]")
+            fi
             echo "$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
           }
           name=$(node -p "require('./package.json').name")
           if [ "$MODE" = pull-request ]; then
-            base=$(base_of "$name")
-            version="$base-pr.$PULL_REQUEST.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            version="0.0.0-pr.$PULL_REQUEST.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
             if held "$name" "$version"; then
               echo "::notice::$name@$version is already published."
               exit 0

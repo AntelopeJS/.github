@@ -908,11 +908,11 @@ describe("release-npm.yml", () => {
         ...env,
       });
     const suffix = `pr.12.3.g${head.slice(0, 7)}`;
-    assert.equal(version({ FAKE_LATEST: "0.4.2" }).outputs, `version=0.4.3-${suffix}\n`);
-    assert.equal(version({}).outputs, `version=0.4.2-${suffix}\n`);
-    assert.equal(version({ FAKE_LATEST: "0.4.2", FAKE_NEXT_HEAD: head }).outputs, `version=0.4.3-${suffix}\n`);
-    const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.4.3-${suffix}` });
-    assert.deepEqual([published.status, published.outputs, published.stdout], [0, "", `::notice::@antelopejs/x@0.4.3-${suffix} is already published.\n`]);
+    assert.equal(version({ FAKE_LATEST: "0.4.2" }).outputs, `version=0.0.0-${suffix}\n`);
+    assert.equal(version({}).outputs, `version=0.0.0-${suffix}\n`);
+    assert.equal(version({ FAKE_LATEST: "0.4.2", FAKE_NEXT_HEAD: head }).outputs, `version=0.0.0-${suffix}\n`);
+    const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.0.0-${suffix}` });
+    assert.deepEqual([published.status, published.outputs, published.stdout], [0, "", `::notice::@antelopejs/x@0.0.0-${suffix} is already published.\n`]);
   });
 
   test("a private pull request preview publishes the pull request version under pr-<number>, recording the head commit as gitHead", () => {
@@ -927,7 +927,7 @@ describe("release-npm.yml", () => {
       FAKE_PUBLISHED: "",
       ...hermeticGit,
     });
-    const version = `0.4.3-pr.12.1.g${sha.slice(0, 7)}`;
+    const version = `0.0.0-pr.12.1.g${sha.slice(0, 7)}`;
     assert.equal(resolved.outputs, `version=${version}\n`);
     const preview = publishPreview(text, directory, version, { TAG: "pr-12", PINS: "" });
     assert.equal(preview.status, 0, preview.stderr);
@@ -954,7 +954,7 @@ describe("release-npm.yml", () => {
     const manifest = { name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/interface-x": "workspace:^", "@antelopejs/b": "catalog:" } };
     const directory = packageDirectory(`release-pkg-pr-new`, manifest);
     const log = join(root, "pkg-pr-new-publish.log");
-    const version = "0.4.3-pr.12.3.gabc1234";
+    const version = "0.0.0-pr.12.3.gabc1234";
     const published = runStep(text, "Publish to pkg.pr.new", directory, { VERSION: version, PKG_PR_NEW_LOG: log });
     assert.equal(published.status, 0, published.stderr);
     const [cwd = "", ...rest] = readFileSync(log, "utf8").split("\n");
@@ -1233,11 +1233,12 @@ describe("release-npm.yml", () => {
     for (const mode of ["preview", "pull-request", "stable"]) assert.equal(runs("Push the stable ranges", mode), false, mode);
   });
 
-  test("the job runs a pull request only when it carries the preview label, and a labeled event only for that label", () => {
+  test("the job runs a push only of the default branch, and a pull request only when it carries the preview label, a labeled event only for that label", () => {
     const job = /^ {4}if: (.*)$/m.exec(text)?.[1] ?? "";
-    const gate = (event: string, action: string, labels: string[], label = "") =>
-      evaluate(job, { github: { event_name: event, event: { action, label: { name: label }, pull_request: { labels } } } });
+    const gate = (event: string, action: string, labels: string[], label = "", branch = "main") =>
+      evaluate(job, { github: { event_name: event, ref_name: branch, event: { action, label: { name: label }, pull_request: { labels }, repository: { default_branch: "main" } } } });
     assert.equal(gate("push", "", []), true);
+    assert.equal(gate("push", "", [], "", "next"), false);
     assert.equal(gate("workflow_dispatch", "", []), true);
     assert.equal(gate("pull_request", "opened", []), false);
     assert.equal(gate("pull_request", "opened", ["ci:full"]), false);
@@ -1267,6 +1268,13 @@ describe("release-npm.yml", () => {
     assert.notEqual(group("push"), group("workflow_dispatch"));
     const cancel = attribute(6, "cancel-in-progress");
     assert.deepEqual([evaluate(cancel, scope("pull_request", 12)), evaluate(cancel, scope("push")), evaluate(cancel, scope("workflow_dispatch"))], [true, false, false]);
+  });
+
+  test("a pull request run builds the head commit of the pull request, and any other run the commit of its event", () => {
+    const ref = /^ {10}ref: (.*)$/m.exec(text)?.[1] ?? "";
+    const head = "a".repeat(40);
+    assert.equal(evaluate(ref, { github: { event: { pull_request: { head: { sha: head } } } } }), head);
+    assert.equal(evaluate(ref, { github: { event: { pull_request: { head: {} } } } }), "");
   });
 
   test("only a job that installs restores and saves the pnpm cache", () => {
