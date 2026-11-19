@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -116,6 +116,7 @@ interface Run {
   stderr: string;
   outputs: Record<string, string>;
   env: Record<string, string>;
+  summary: string;
 }
 
 let runs = 0;
@@ -130,7 +131,7 @@ function runStep({ run }: Step, cwd: string, env: Record<string, string>): Run {
     encoding: "utf8",
     env: { PATH: process.env.PATH, GIT_CEILING_DIRECTORIES: root, ...files, ...env },
   });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV) };
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV), summary: readFileSync(files.GITHUB_STEP_SUMMARY, "utf8") };
 }
 
 function succeeded(run: Run): Run {
@@ -187,11 +188,11 @@ interface Checkout {
   base: string;
 }
 
-function checkout(name: string, changed: string[]): Checkout {
+function repo(name: string, files: Record<string, string>, changed: string[]): Checkout {
   const cwd = join(root, name);
   mkdirSync(cwd, { recursive: true });
   git(cwd, "init", "--quiet", "--initial-branch=main");
-  write(cwd, ["README.md", "package.json", "docs/guide.md", "src/index.ts"], "base\n");
+  for (const [file, content] of Object.entries(files)) write(cwd, [file], content);
   git(cwd, "add", "--all");
   git(cwd, "commit", "--quiet", "-m", "base");
   const base = git(cwd, "rev-parse", "HEAD");
@@ -200,6 +201,10 @@ function checkout(name: string, changed: string[]): Checkout {
   git(cwd, "commit", "--quiet", "-m", "change");
   return { cwd, base };
 }
+
+const plainFiles = Object.fromEntries(["README.md", "package.json", "docs/guide.md", "src/index.ts"].map((file) => [file, "base\n"]));
+
+const checkout = (name: string, changed: string[]): Checkout => repo(name, plainFiles, changed);
 
 function shallowCheckout(name: string, changed: string[]): Checkout {
   const upstream = checkout(`${name}-upstream`, changed);
@@ -410,6 +415,102 @@ describe("the test step", () => {
       assert.equal(run.outputs.flaky, flaky);
     });
   }
+});
+
+describe("the affected tests", () => {
+  const runTests = step(nodeJob, "Run tests");
+  const runners = join(root, "runners");
+  mkdirSync(runners);
+  for (const name of ["vitest", "jest", "mocha"]) {
+    writeFileSync(join(runners, name), ["#!/usr/bin/env bash", `echo "${name} $*" >> "$TEST_LOG"`].join("\n"), { mode: 0o755 });
+  }
+
+  const manifest = (name: string, fields: Record<string, unknown> = {}): string => JSON.stringify({ name, version: "1.0.0", private: true, ...fields });
+  const logging = (name: string): { scripts: { test: string } } => ({ scripts: { test: `echo ${name} >> "$TEST_LOG"` } });
+  const workspaceFiles = {
+    "package.json": manifest("root", logging("root")),
+    "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+    "packages/a/package.json": manifest("a", logging("a")),
+    "packages/a/src/index.js": "base\n",
+    "packages/b/package.json": manifest("b", { ...logging("b"), dependencies: { a: "workspace:*" } }),
+    "packages/c/package.json": manifest("c", logging("c")),
+    "packages/d/package.json": manifest("d"),
+    "scripts/x.mjs": "base\n",
+  };
+  const workspace = (name: string, changed: string[]): Checkout => repo(name, workspaceFiles, changed);
+  const single = (name: string, script: string): Checkout => repo(name, { "package.json": manifest(name, { scripts: { test: script } }), "src/index.ts": "base\n" }, ["src/index.ts"]);
+
+  interface Outcome {
+    run: Run;
+    calls: string[];
+    base: string;
+  }
+
+  function runPullRequestTests(project: Checkout, github: (base: string) => Context, affectedTests = "true"): Outcome {
+    const pnpm = process.env.PNPM;
+    assert.ok(pnpm, "PNPM names the pnpm 10 binary the affected tests drive");
+    const picked = leg(github(project.base), {}, "all", project.cwd);
+    const dir = mkdtempSync(join(root, "affected-"));
+    const log = join(dir, "calls");
+    const env = {
+      ...interpolateAll(runTests.env, { inputs: { "affected-tests": affectedTests } }),
+      PATH: `${dirname(pnpm)}:${runners}:${process.env.PATH}`,
+      HOME: dir,
+      RUNNER_TEMP: dir,
+      TEST_LOG: log,
+      PRIMARY_LEG: "true",
+      ANTELOPEJS_CI_TIER: picked.tier,
+      ANTELOPEJS_TEST_BASE: picked["test-base"],
+    };
+    const run = runStep(runTests, project.cwd, env);
+    assert.equal(run.status, 0, run.stderr + run.stdout);
+    return { run, calls: (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n").map((line) => line.trim()).filter((line) => line !== "").sort(), base: project.base };
+  }
+
+  const pull = pullRequest("main", "feat/x");
+
+  test("a pull request that touches a package runs the tests of that package and of its dependents only", () => {
+    const { run, calls } = runPullRequestTests(workspace("affected-package", ["packages/a/src/index.js"]), pull);
+    assert.deepEqual(calls, ["a", "b"], "c has no link to a, d has no test script, the root test script stays out");
+    assert.match(run.summary, /^Tests: `pnpm --filter \.\.\.\[[0-9a-f]{40}\] --workspace-concurrency=1 run test`$/m, "the primary leg names the command");
+  });
+
+  test("a pull request that touches a package without a test script runs nothing and passes", () => {
+    const { calls } = runPullRequestTests(workspace("affected-no-script", ["packages/d/src/index.js"]), pull);
+    assert.deepEqual(calls, []);
+  });
+
+  test("a pull request that touches a file outside the packages runs the root test script", () => {
+    const { calls } = runPullRequestTests(workspace("affected-root-file", ["scripts/x.mjs"]), pull);
+    assert.deepEqual(calls, ["root"]);
+  });
+
+  const singles = [
+    { name: "vitest receives the changed-file option", script: "vitest run", expected: (base: string) => [`vitest run --changed=${base}`] },
+    { name: "jest receives the changed-file option", script: "jest", expected: (base: string) => [`jest --changedSince=${base}`] },
+    { name: "mocha has no changed-file mode, so the whole script runs", script: "mocha", expected: () => ["mocha"] },
+    { name: "a compound script runs whole", script: 'vitest run && echo done >> "$TEST_LOG"', expected: () => ["done", "vitest run"] },
+    { name: "a script with an environment prefix runs whole", script: "FORCE_COLOR=0 vitest run", expected: () => ["vitest run"] },
+  ];
+  singles.forEach(({ name, script, expected }, index) => {
+    test(`in a single package, ${name}`, () => {
+      const { calls, base } = runPullRequestTests(single(`affected-single-${index}`, script), pull);
+      assert.deepEqual(calls, expected(base));
+    });
+  });
+
+  const full = [
+    { name: "the merge queue", github: mergeGroup, affectedTests: "true" },
+    { name: "the nightly run", github: other("schedule", "main"), affectedTests: "true" },
+    { name: "a pull request without affected-tests", github: pull, affectedTests: "false" },
+  ];
+  full.forEach(({ name, github, affectedTests }, index) => {
+    test(`${name} runs the whole root test script on a workspace`, () => {
+      const { run, calls } = runPullRequestTests(workspace(`affected-full-${index}`, ["packages/a/src/index.js"]), github, affectedTests);
+      assert.deepEqual(calls, ["root"]);
+      assert.equal(run.summary, "", "the summary names no command when the whole suite runs");
+    });
+  });
 });
 
 describe("the flaky test filing", () => {

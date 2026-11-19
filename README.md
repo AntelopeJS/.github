@@ -525,12 +525,16 @@ checkout. Every job sets two variables for the commands it runs:
 
 - `ANTELOPEJS_CI_TIER` holds the tier, so a repository can run a browser smoke
   test in `full` and its whole browser suite in `nightly`.
-- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the diff base. A
-  repository with several packages can restrict its tests to the packages the
-  pull request touches and their dependents, with
-  `pnpm --filter "...[$ANTELOPEJS_TEST_BASE]" run test` or
-  `vitest run --changed "$ANTELOPEJS_TEST_BASE"`. It is empty in every other
-  tier, where all tests run.
+- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the diff base. It is
+  empty in every other tier, where all tests run. The `affected-tests` input
+  uses it to narrow the tests of a pull request. In a pnpm workspace, it runs
+  the `test` script of each package changed since the base and of its
+  dependents, with `pnpm --filter "...[$ANTELOPEJS_TEST_BASE]" run test`. When
+  a file outside the packages changes, it runs the root `test` script whole. In
+  a single package whose `test` script is one `vitest` or `jest` command, it
+  adds `--changed` or `--changedSince` to that command. Any other `test` script
+  runs whole. A repository can also narrow its own `test` script with the
+  variable, for example `vitest run --changed "$ANTELOPEJS_TEST_BASE"`.
 
 The rule lives in the `ci-tier` composite action, which each job calls. A
 caller cannot read `ci-node.yml`'s outputs before the whole call ends, so a
@@ -580,6 +584,7 @@ It accepts these optional inputs:
 | `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
+| `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 
 It accepts one optional secret, `NOTION_TOKEN`: a Notion integration token
 allowed to read, insert and update content in the Tasks database, which files
