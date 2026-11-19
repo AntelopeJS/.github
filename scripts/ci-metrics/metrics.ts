@@ -26,6 +26,9 @@ export interface Run {
   tier?: Tier;
 }
 
+/** A run the collector sampled. */
+export type SampledRun = Run & { jobs: Job[] };
+
 /** The runs started in the `days` before `to`. */
 export interface Dataset {
   to: string;
@@ -196,8 +199,8 @@ export function windowOf(dataset: Dataset): { from: string; to: string; days: nu
   return { from: new Date(time(dataset.to) - dataset.days * dayMs).toISOString(), to: dataset.to, days: dataset.days };
 }
 
-const sampled = (runs: readonly Run[]): (Run & { jobs: Job[] })[] =>
-  runs.filter((run): run is Run & { jobs: Job[] } => run.jobs !== undefined);
+const sampled = (runs: readonly Run[]): SampledRun[] =>
+  runs.filter((run): run is SampledRun => run.jobs !== undefined);
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
   const groups = new Map<string, T[]>();
@@ -227,11 +230,11 @@ function wallByEvent(runs: readonly Run[]): Record<string, Stat> {
   );
 }
 
-function tierStat(runs: readonly (Run & { jobs: Job[] })[]): TierStat {
+function tierStat(runs: readonly SampledRun[]): TierStat {
   return { wallMinutes: stat(runs.map(wallMinutes)), jobMinutes: stat(runs.map((run) => jobMinutes(run.jobs))) };
 }
 
-function byTier(runs: readonly (Run & { jobs: Job[] })[]): Partial<Record<Tier, TierStat>> {
+function byTier(runs: readonly SampledRun[]): Partial<Record<Tier, TierStat>> {
   const groups = groupBy(runs, (run) => run.tier ?? "unknown");
   return Object.fromEntries(tiers.flatMap((tier) => {
     const group = groups.get(tier);
@@ -239,7 +242,7 @@ function byTier(runs: readonly (Run & { jobs: Job[] })[]): Partial<Record<Tier, 
   }));
 }
 
-function queueTimes(runs: readonly (Run & { jobs: Job[] })[]): number[] {
+function queueTimes(runs: readonly SampledRun[]): number[] {
   return runs.flatMap((run) => run.jobs.flatMap((job) => {
     const seconds = queueSeconds(job);
     return seconds === null ? [] : [seconds];
@@ -273,7 +276,7 @@ export function estimateMinutes(dataset: Dataset): {
 
 const sum = (values: readonly number[]): number => values.reduce((total, value) => total + value, 0);
 
-function shardMinutes(runs: readonly (Run & { jobs: Job[] })[]): Record<string, Stat> {
+function shardMinutes(runs: readonly SampledRun[]): Record<string, Stat> {
   const jobs = runs.flatMap((run) => run.jobs).filter(
     (job) => shardPattern.test(job.name) && (job.conclusion === "success" || job.conclusion === "failure"),
   );

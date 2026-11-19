@@ -169,7 +169,9 @@ export async function collect(options: CollectOptions): Promise<Dataset> {
   const groups = new Map<string, Run[]>();
   for (const run of completed) {
     const key = `${run.repo}\n${run.path}`;
-    groups.set(key, [...(groups.get(key) ?? []), run]);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [run]);
+    else group.push(run);
   }
   const sample = [...groups.values()].flatMap((group) => pickSample(group, isCi(group[0]) ? options.ciSample : options.otherSample));
 
