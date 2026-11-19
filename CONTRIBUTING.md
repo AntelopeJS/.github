@@ -223,8 +223,9 @@ Anything merged into `main` must be releasable as stable at any time.
 ### Reusable release workflows
 
 Repositories call the reusable workflows of this repository,
-`release-npm-public.yml` or `release-npm-private.yml`, from their own
-`release.yml`. See the [caller workflow](README.md#caller-workflow).
+`release-npm.yml` or its wrappers `release-npm-public.yml` and
+`release-npm-private.yml`, from their own `release.yml`. See the
+[caller workflow](README.md#caller-workflow).
 
 Repositories call the shared workflows at the `v2` tag, which moves to each
 merge on `main` that changes them. `v1` stays frozen for the repositories that

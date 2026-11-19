@@ -1281,7 +1281,7 @@ describe("release-npm.yml", () => {
   });
 
   test("a preview run cannot write to the repository", () => {
-    assert.doesNotMatch(text, /permissions:/, "the job inherits the grant of the entry that calls it");
+    assert.doesNotMatch(text, /permissions:|id-token/, "the job inherits the grant of the entry that calls it, and a private caller grants no id-token");
     for (const entry of ["release-npm-public.yml", "release-npm-private.yml"]) {
       const caller = workflowText(entry);
       const permissions = caller.slice(caller.indexOf("    permissions:\n"), caller.indexOf("    uses: ./.github/workflows/release-npm.yml\n"));

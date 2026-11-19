@@ -57,6 +57,24 @@ describe("the frozen caller", () => {
     assert.deepEqual(sent.filter((name) => !declared.includes(name)), ["package-directory"]);
   });
 
+  test("release-npm.yml takes a registry beside inputs that default as the wrappers' do, so a caller passes only what it needs", () => {
+    const accepted = entries(release, ["workflow_call", "inputs"]);
+    assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name), ["registry"]);
+    assert.equal(accepted.has("integration-branch"), false);
+    const shape = (lines: string[] | undefined) => lines?.filter((line) => line.startsWith("default: ") || line.startsWith("type: "));
+    for (const file of ["release-npm-public.yml", "release-npm-private.yml"]) {
+      const wrapper = entries(read(`../../.github/workflows/${file}`), ["workflow_call", "inputs"]);
+      for (const name of accepted.keys()) {
+        if (name === "registry" || (name === "install-core" && file.includes("private"))) continue;
+        assert.deepEqual(shape(accepted.get(name)), shape(wrapper.get(name)), `${file} ${name}`);
+      }
+    }
+    const direct = caller.replace("release-npm-public.yml", "release-npm.yml").replace("    with:\n", "    with:\n      registry: public\n");
+    const passed = [...entries(direct, ["jobs", "release", "with"]).keys()];
+    assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
+    assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name).filter((name) => !passed.includes(name)), []);
+  });
+
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
     const entry = read(`../../.github/workflows/${file}`);

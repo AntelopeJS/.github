@@ -12,8 +12,10 @@ small workflow in each consuming repository.
 
 Each repository that publishes an npm package has a `release.yml` workflow
 that calls `release-npm-public.yml` or `release-npm-private.yml` of this
-repository. npm trusted publishing checks the calling workflow file, so both
-previews and stable releases run from that one `release.yml`. The event that
+repository. Both are thin wrappers of `release-npm.yml`, the one release
+workflow, which a caller may call directly with a `registry` input. npm trusted
+publishing checks the calling workflow file, so previews and stable releases
+run from that one `release.yml`. The event that
 starts the run decides what it publishes. A caller only declares the triggers.
 
 | Event | Branch | Publishes |
@@ -366,35 +368,40 @@ notes skip that commit, so it releases nothing by itself.
 
 ### Workflow inputs
 
-`release-npm-public.yml` and `release-npm-private.yml` take the same inputs.
-Each forwards them to `release-npm.yml`, which holds the one release job, with
-`registry` set to `public` or `private`. The registry picks the npm registry,
-the scope and `publishConfig` that the metadata check asks for, and whether
-`NPM_ANTELOPE_TOKEN` is required. Callers keep calling the two entry points.
+`release-npm.yml` holds the one release job, and a caller may call it directly.
+`release-npm-public.yml` and `release-npm-private.yml` stay as thin wrappers:
+each takes the same inputs but `registry`, and forwards them to
+`release-npm.yml` with `registry` set to `public` or `private`. The registry
+picks the npm registry, the scope and `publishConfig` that the metadata check
+asks for, and whether `NPM_ANTELOPE_TOKEN` is required. A caller of a wrapper
+keeps working unchanged.
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
+| `registry` | required | `public` publishes to npmjs with provenance, `private` to `https://npm.antelopejs.cloud/` with `NPM_ANTELOPE_TOKEN`. Only `release-npm.yml` takes it. |
 | `release-version` | `""` | Stable `M.m.p` version a `workflow_dispatch` run releases. The release train sets it. Empty, a dispatch only moves `devDependencies` pins. A preview ignores it. |
 | `release-commit` | `""` | Commit SHA a `workflow_dispatch` run releases, 40 hexadecimal characters. The release train sets it to the commit it planned. A stable run fails when the branch moved past it. A preview ignores it. |
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
-| `install-core` | `false` public, `true` private | Install the AntelopeJS CLI before releasing. |
+| `install-core` | `false`, and `true` for `release-npm-private.yml` | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
-| `integration-branch` | none | Unused. A caller that passes it keeps working. |
+| `integration-branch` | none | Unused. Only the two wrappers declare it, so that a caller that passes it keeps working. |
 
-The public workflow publishes to npmjs with public access and provenance and
-needs the `RELEASE_GITHUB_TOKEN` secret for a stable release. The private
-workflow publishes to `https://npm.antelopejs.cloud/` and also needs
-`NPM_ANTELOPE_TOKEN` for every run. Each validates that the package directory
-resolves inside the repository and holds a `package.json`, and checks the
-publication metadata of `package.json` before it publishes. Among them,
+Both registries need the `RELEASE_GITHUB_TOKEN` secret for a stable or repin
+run. The `public` registry publishes to npmjs with public access and
+provenance. The `private` registry publishes to `https://npm.antelopejs.cloud/`
+and also needs `NPM_ANTELOPE_TOKEN` for every run. Each validates that the
+package directory resolves inside the repository and holds a `package.json`,
+and checks the publication metadata of `package.json` before it publishes. Among them,
 `repository.url` must name the calling repository, and a package npm already
 holds must name it in its own `repository.url` too.
 
-Both runs write to the repository only with `RELEASE_GITHUB_TOKEN`, so the job
-holds `contents: read`, and the public one also `id-token: write` for npm
-trusted publishing. Each entry point grants these to its call of
-`release-npm.yml`, which declares no permissions and so holds exactly that
-grant.
+Both registries write to the repository only with `RELEASE_GITHUB_TOKEN`, so
+the job holds `contents: read`, and a public one also `id-token: write` for npm
+trusted publishing. Each wrapper grants these to its call of `release-npm.yml`,
+which declares no permissions and so holds exactly that grant. A caller of
+`release-npm.yml` grants the job `contents: read`, plus `id-token: write` for
+`registry: public`. A private caller grants no `id-token`, and the job never
+asks for it.
 
 Runs share a concurrency group per repository, event, pull request and package
 directory. A running release is never cancelled, except a pull request preview,
@@ -428,7 +435,8 @@ and the shared workflows at `@v2` work with it unchanged.
 - **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
   `NPM_ANTELOPE_TOKEN` for the private one, each passed by name.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
-  each dispatch input passed through under the same name.
+  each dispatch input passed through under the same name. `release-npm.yml@v2`
+  takes the same call with `registry: public` or `registry: private`.
 - **Repository setting.** The `npm-publish` environment allows the default
   branch.
 
@@ -476,7 +484,10 @@ jobs:
 
 A private package calls `release-npm-private.yml` and also passes
 `NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}`. The caller grants
-`id-token: write` only when one of its packages is public. A repository whose
+`id-token: write` only when one of its packages is public. A caller may call
+`release-npm.yml@v2` instead of a wrapper, with `registry: public` or
+`registry: private` under `with:`, and grants the job `contents: read` plus
+`id-token: write` for `public`. A repository whose
 package is not at its root also declares an optional `package-directory` input
 in `workflow_dispatch`, because the release train passes it, and forwards it
 with `package-directory: ${{ inputs.package-directory || 'packages/my-package' }}`.
