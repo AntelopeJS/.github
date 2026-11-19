@@ -762,10 +762,10 @@ branch into the branch named by its `branch` input after each push to the
 default branch, so that the branch always contains `main`. It pushes the merge
 commit with `RELEASE_GITHUB_TOKEN`, whose push starts the branch checks. When
 the merge conflicts, it pushes nothing and fails with a message that names the
-conflicting files. With the `NOTION_TOKEN` secret, it also files one task in the
-Tasks Inbox, or adds the new run to the open task it filed before. Without it,
-it opens one issue in the repository with the default token, or comments on the
-one it opened before, and the next successful sync closes that issue. A
+conflicting files: a `Next sync conflict` error annotation on the run, a line in
+the job summary, and a failed run. It also opens one issue in the repository
+with the default token, or comments on the one it opened before, and the next
+successful sync closes that issue. A
 repository admin resolves the conflict by merging `main` into the branch and
 pushing the merge commit straight to it: a pull request would squash it, and
 the same conflict would come back.
@@ -774,9 +774,9 @@ the same conflict would come back.
 | ----- | ------- | ----------- |
 | `branch` | `next` | Branch that receives the default branch. |
 | `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the branch ruleset lets push. |
-| `NOTION_TOKEN` (secret) | | Optional. Notion integration token allowed to read, insert and update content in the Tasks database. Without it, a conflict opens a GitHub issue. |
+| `NOTION_TOKEN` (secret) | | Optional and unused: no workflow writes to Notion. Kept so that callers which still pass it are accepted. |
 
-The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
+The calling job must grant `issues: write`: a
 called workflow cannot ask for more than its caller grants, so GitHub refuses
 to start the sync otherwise. `gh workflow run next-sync.yml --repo <owner/repo>`
 runs the sync on demand, for a push event GitHub dropped.
