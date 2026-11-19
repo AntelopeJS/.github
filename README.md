@@ -510,7 +510,7 @@ compared with.
 | ----- | ---- | --------- | ---- |
 | Pull request with the `ci:full` label, from a repository whose `CI_SELECTION` variable is `full`, or that changes a root file | `full` | the pull request base | the Node.js jobs and the tests |
 | Any other pull request, draft or ready, into any branch | `fast` | the pull request base | the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
-| `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test |
+| `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
 | Push to the default branch | `none` | none | none; `checks` succeeds |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
 | `schedule` | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
@@ -546,9 +546,10 @@ only, on the skills the change touches since the diff base, or since `HEAD^1`
 without one.
 
 In the `queue` tier only, which is the `merge_group` event, a failed
-`pnpm run test` runs once more. When the retry fails, the job fails. When it
-passes, the job passes and the `Annotate the flaky tests` step reads the log of
-the failed attempt. It writes one warning annotation per flaky test, titled
+`pnpm run test` runs once more, and so do failed `extra-commands`. When the
+retry fails, the job fails. When it passes, the job passes and the
+`Annotate the flaky tests` step reads the log of the failed attempt of each
+command that passed on its retry. It writes one warning annotation per flaky test, titled
 exactly `Flaky test`, with the message
 `<owner>/<repo>: <test> passed only on its merge-queue retry.`, where `<test>`
 is `<file> > <test title>`, the titles of nested suites joined by ` > `, or only
@@ -558,13 +559,17 @@ ran in, not to the repository. It reads the output of vitest, jest, mocha (the
 spec reporter) and `node --test` (the spec reporter of Node.js 24), unprefixed.
 When it finds no test file, `<file>` is `pnpm run test`, and when it parses
 nothing or the parsing fails, there is one annotation naming `pnpm run test`.
-GitHub keeps at most 10 warning annotations per step, so above 10 tests the step
-writes one annotation per test file, and above 10 files a single one naming
-`pnpm run test`. The message escapes `%`, carriage returns and line feeds as
-workflow commands require. The step also adds one list item to the job summary
-per annotation, `Flaky test: ` then the message in a code span. Nothing is filed anywhere
-else. A scan of the check run annotations of the repository is the
-machine-readable signal. A pull request never retries a failed test.
+The log of failed `extra-commands` goes through the same parsers, with
+`extra-commands` in place of `pnpm run test` as the name of the command. When
+both retries pass, the annotations of the tests come first. GitHub keeps at most
+10 warning annotations per step, so above 10 tests, counting both logs together,
+the step writes one annotation per test file, and above 10 files a single one
+per log, naming `pnpm run test` or `extra-commands`. The message escapes `%`,
+carriage returns and line feeds as workflow commands require. The step also adds
+one list item to the job summary per annotation, `Flaky test: ` then the message
+in a code span. Nothing is filed anywhere else. A scan of the check run
+annotations of the repository is the machine-readable signal. A pull request or
+a nightly run never retries a failed test or failed `extra-commands`.
 
 In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
 tests that pass alone but time out under load. On Linux, with the first
@@ -633,7 +638,7 @@ It accepts these optional inputs:
 | `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. The job that runs the tests uses the cache; a `Node <version>` job that runs only the checks does not. With `extra-commands-job`, the extra-commands job also uses it, under its own key. On Windows, the job restores the cache a second time. Tar creates a Windows symlink as a file link when its target is not extracted yet, so the second pass, with every target present, recreates pnpm's links as directory links. |
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
-| `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
+| `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. In the `queue` tier, a failure runs them once more, so they must be safe to run twice. |
 | `renovate-sync` | `false` | Accepted and ignored. Every caller passes `false` and runs the [Renovate sync](#renovate-sync) from its own job. |
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
