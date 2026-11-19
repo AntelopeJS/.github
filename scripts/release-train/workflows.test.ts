@@ -48,6 +48,34 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readFileSync(output, "utf8") };
 }
 
+interface Scope {
+  steps?: object;
+  inputs?: object;
+  github?: object;
+}
+
+function evaluate(expression: string, scope: Scope): unknown {
+  const source = expression
+    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+    .replace(/\.labels\.\*\.name\b/g, ".labels")
+    .replace(/\binputs\.([\w-]+)/g, 'inputs["$1"]')
+    .replace(/==/g, "===")
+    .replace(/!=/g, "!==");
+  assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
+  const contains = (list: string[], item: string): boolean => list.includes(item);
+  return new Function("steps", "inputs", "github", "contains", `return (${source})`)(scope.steps, scope.inputs, scope.github, contains);
+}
+
+function interpolate(template: string, scope: Scope): string {
+  return template.replace(/\$\{\{(.*?)\}\}/g, (_, expression: string) => String(evaluate(expression, scope) ?? ""));
+}
+
+function stepOf(text: string, name: string): string {
+  const step = text.split("\n      - ").find((candidate) => candidate.startsWith(`name: ${name}\n`));
+  assert.notEqual(step, undefined, `no step ${name}`);
+  return step ?? "";
+}
+
 function packageDirectory(name: string, manifest: object): string {
   const directory = join(root, name);
   mkdirSync(directory, { recursive: true });
@@ -314,14 +342,15 @@ describe("release-npm.yml", () => {
     );
   });
 
-  test("Resolve release mode previews a push to the default branch, releases a dispatch on it, and refuses any other event", () => {
-    const mode = (event: string, ref: string, version = "", commit = head) =>
+  test("Resolve release mode previews a push to the default branch, previews a pull request, releases a dispatch on the default branch, and refuses any other event", () => {
+    const mode = (event: string, ref: string, version = "", commit = head, pullRequest = "") =>
       runStep(text, "Resolve release mode", root, {
         GITHUB_EVENT_NAME: event,
         GITHUB_REF: ref,
         DEFAULT_BRANCH: "main",
         RELEASE_VERSION: version,
         RELEASE_COMMIT: commit,
+        PULL_REQUEST: pullRequest,
       });
     assert.equal(mode("push", "refs/heads/main").outputs, "mode=preview\ntag=next\n");
     assert.equal(mode("push", "refs/heads/main", "", "").outputs, "mode=preview\ntag=next\n");
@@ -332,10 +361,16 @@ describe("release-npm.yml", () => {
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "", "").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
+    assert.deepEqual(mode("pull_request", "refs/pull/12/merge", "", "", "12").outputs, "mode=pull-request\ntag=pr-12\n");
+    assert.equal(mode("pull_request_target", "refs/heads/main", "", "", "12").status, 1);
     const next = mode("push", "refs/heads/next");
     assert.deepEqual(
       [next.status, next.outputs, next.stderr],
-      [1, "", "A push to main publishes a preview, and a workflow_dispatch of main publishes a stable release. A push of refs/heads/next publishes nothing.\n"],
+      [
+        1,
+        "",
+        "A push to main publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of main publishes a stable release. A push of refs/heads/next publishes nothing.\n",
+      ],
     );
     assert.equal(mode("push", "refs/tags/v1.0.0").status, 1);
   });
@@ -859,6 +894,76 @@ describe("release-npm.yml", () => {
     assert.deepEqual([published.status, published.outputs], [0, ""]);
   });
 
+  test("Resolve release version derives a pull request preview from the head commit, and skips one npm already holds", () => {
+    const mergeCommit = "f".repeat(40);
+    const version = (env: Record<string, string>) =>
+      runStep(text, "Resolve release version", packagePath, {
+        PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+        MODE: "pull-request",
+        PULL_REQUEST: "12",
+        GITHUB_SHA: mergeCommit,
+        FAKE_NEXT_HEAD: "",
+        FAKE_LATEST: "",
+        FAKE_PUBLISHED: "",
+        ...env,
+      });
+    const suffix = `pr.12.3.g${head.slice(0, 7)}`;
+    assert.equal(version({ FAKE_LATEST: "0.4.2" }).outputs, `version=0.4.3-${suffix}\n`);
+    assert.equal(version({}).outputs, `version=0.4.2-${suffix}\n`);
+    assert.equal(version({ FAKE_LATEST: "0.4.2", FAKE_NEXT_HEAD: head }).outputs, `version=0.4.3-${suffix}\n`);
+    const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.4.3-${suffix}` });
+    assert.deepEqual([published.status, published.outputs, published.stdout], [0, "", `::notice::@antelopejs/x@0.4.3-${suffix} is already published.\n`]);
+  });
+
+  test("a private pull request preview publishes the pull request version under pr-<number>, recording the head commit as gitHead", () => {
+    const { directory, sha } = repository(`release-pull-request`, { "package.json": JSON.stringify({ name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/b": "^1.0.0" } }) });
+    const resolved = runStep(text, "Resolve release version", directory, {
+      PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+      MODE: "pull-request",
+      PULL_REQUEST: "12",
+      GITHUB_SHA: "f".repeat(40),
+      FAKE_LATEST: "0.4.2",
+      FAKE_NEXT_HEAD: sha,
+      FAKE_PUBLISHED: "",
+      ...hermeticGit,
+    });
+    const version = `0.4.3-pr.12.1.g${sha.slice(0, 7)}`;
+    assert.equal(resolved.outputs, `version=${version}\n`);
+    const preview = publishPreview(text, directory, version, { TAG: "pr-12", PINS: "" });
+    assert.equal(preview.status, 0, preview.stderr);
+    assert.deepEqual(preview.publication, {
+      manifest: { name: "@antelopejs/x", version, dependencies: { "@antelopejs/b": "^1.0.0" }, gitHead: sha },
+      args: ["publish", "--tag", "pr-12"],
+    });
+  });
+
+  test("a public pull request preview installs the pinned pkg-pr-new and runs it on the package with the pull request version", () => {
+    const installer = join(root, "pkg-pr-new-installer");
+    mkdirSync(installer);
+    const installed = join(root, "pkg-pr-new-install.log");
+    writeFileSync(join(installer, "npm"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${installed}'\n`);
+    chmodSync(join(installer, "npm"), 0o755);
+    const install = runStep(text, "Install pkg.pr.new", root, { PATH: `${installer}:${process.env.PATH ?? ""}` });
+    assert.equal(install.status, 0, install.stderr);
+    assert.deepEqual(readFileSync(installed, "utf8").trimEnd().split("\n"), ["install", "--no-save", "--no-audit", "--no-fund", "--prefix", join(root, "pkg-pr-new"), "pkg-pr-new@0.0.94"]);
+
+    const bin = join(root, "pkg-pr-new", "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "pkg-pr-new"), '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$@" > "$PKG_PR_NEW_LOG"\ncat package.json >> "$PKG_PR_NEW_LOG"\n');
+    chmodSync(join(bin, "pkg-pr-new"), 0o755);
+    const manifest = { name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/interface-x": "workspace:^", "@antelopejs/b": "catalog:" } };
+    const directory = packageDirectory(`release-pkg-pr-new`, manifest);
+    const log = join(root, "pkg-pr-new-publish.log");
+    const version = "0.4.3-pr.12.3.gabc1234";
+    const published = runStep(text, "Publish to pkg.pr.new", directory, { VERSION: version, PKG_PR_NEW_LOG: log });
+    assert.equal(published.status, 0, published.stderr);
+    const [cwd = "", ...rest] = readFileSync(log, "utf8").split("\n");
+    const args = rest.slice(0, 4);
+    assert.equal(realpathSync(cwd), realpathSync(directory));
+    assert.deepEqual(args, ["publish", "--pnpm", "--comment=update", "."]);
+    assert.deepEqual(JSON.parse(rest.slice(4).join("\n")), { ...manifest, version });
+  });
+
   test("Resolve release version publishes no preview when only the version and the changelog changed", () => {
     const repository = join(root, `release-version-changelog`);
     const directory = join(repository, "packages", "x");
@@ -1023,6 +1128,8 @@ describe("release-npm.yml", () => {
     assert.deepEqual(check({ REGISTRY: "private" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "private", NPM_ANTELOPE_TOKEN: "token" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "pull-request" }), [0, ""]);
+    assert.deepEqual(check({ REGISTRY: "private", MODE: "pull-request" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "repin", RELEASE_GITHUB_TOKEN: "token" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "npmjs" }), [1, "registry must be public or private, got 'npmjs'.\n"]);
@@ -1097,6 +1204,69 @@ describe("release-npm.yml", () => {
     assert.match(decide(previous, frontend), /^version=0\.5\.1-next\./);
     const dependency = commitFiles(previews, "fix(deps): x", { "package.json": manifest("0.5.1", { "@antelopejs/y": "~1.0.0" }) });
     assert.match(decide(frontend, dependency), /^version=0\.5\.1-next\./);
+  });
+
+  const condition = (step: string): string | undefined => /^ {8}if: (.*)$/m.exec(stepOf(text, step))?.[1];
+  const runs = (step: string, mode: string, registry = "public", version = "1.0.0"): boolean => {
+    const expression = condition(step);
+    return expression === undefined || evaluate(expression, { steps: { mode: { outputs: { mode } }, version: { outputs: { version } } }, inputs: { registry } }) === true;
+  };
+
+  test("each publishing step runs for the modes and registries it serves, and no other", () => {
+    const publishers = ["Publish preview", "Install pkg.pr.new", "Publish to pkg.pr.new", "Publish stable release"];
+    const published = (mode: string, registry: string, version = "1.0.0") => publishers.filter((step) => runs(step, mode, registry, version));
+    for (const registry of ["public", "private"]) {
+      assert.deepEqual(published("preview", registry), ["Publish preview"], `preview ${registry}`);
+      assert.deepEqual(published("stable", registry), ["Publish stable release"], `stable ${registry}`);
+      assert.deepEqual(published("repin", registry), [], `repin ${registry}`);
+      for (const mode of ["preview", "pull-request"]) assert.deepEqual(published(mode, registry, ""), [], `${mode} ${registry} without a version`);
+    }
+    assert.deepEqual(published("pull-request", "private"), ["Publish preview"]);
+    assert.deepEqual(published("pull-request", "public"), ["Install pkg.pr.new", "Publish to pkg.pr.new"]);
+  });
+
+  test("only a stable or repin run checks the plan, applies ranges and configures the release identity", () => {
+    for (const step of ["Check the planned commit", "Apply dependency ranges", "Configure release identity"]) {
+      for (const mode of ["preview", "pull-request", "stable", "repin"]) assert.equal(runs(step, mode), mode === "stable" || mode === "repin", `${step} in ${mode}`);
+    }
+    assert.equal(runs("Push the stable ranges", "repin"), true);
+    for (const mode of ["preview", "pull-request", "stable"]) assert.equal(runs("Push the stable ranges", mode), false, mode);
+  });
+
+  test("the job runs a pull request only when it carries the preview label, and a labeled event only for that label", () => {
+    const job = /^ {4}if: (.*)$/m.exec(text)?.[1] ?? "";
+    const gate = (event: string, action: string, labels: string[], label = "") =>
+      evaluate(job, { github: { event_name: event, event: { action, label: { name: label }, pull_request: { labels } } } });
+    assert.equal(gate("push", "", []), true);
+    assert.equal(gate("workflow_dispatch", "", []), true);
+    assert.equal(gate("pull_request", "opened", []), false);
+    assert.equal(gate("pull_request", "opened", ["ci:full"]), false);
+    assert.equal(gate("pull_request", "opened", ["preview"]), true);
+    assert.equal(gate("pull_request", "synchronize", ["ci:full", "preview"]), true);
+    assert.equal(gate("pull_request", "labeled", ["preview"], "preview"), true);
+    assert.equal(gate("pull_request", "labeled", ["preview", "ci:full"], "ci:full"), false);
+    assert.equal(gate("pull_request", "labeled", ["ci:full"], "ci:full"), false);
+  });
+
+  test("a pull request run uses no environment, has a group of its own per pull request, and cancels the run it replaces", () => {
+    const attribute = (indent: number, name: string): string => {
+      const prefix = `${" ".repeat(indent)}${name}: `;
+      const line = text.split("\n").find((candidate) => candidate.startsWith(prefix));
+      assert.notEqual(line, undefined, name);
+      return line?.slice(prefix.length) ?? "";
+    };
+    const scope = (event: string, number?: number) => ({ github: { repository: "AntelopeJS/x", event_name: event, event: { pull_request: number === undefined ? {} : { number } } }, inputs: { "package-directory": "." } });
+    const environment = attribute(4, "environment");
+    assert.equal(evaluate(environment, scope("push")), "npm-publish");
+    assert.equal(evaluate(environment, scope("workflow_dispatch")), "npm-publish");
+    assert.equal(evaluate(environment, scope("pull_request", 12)), "");
+    const group = (event: string, number?: number): string => interpolate(attribute(6, "group"), scope(event, number));
+    assert.notEqual(group("pull_request", 12), group("pull_request", 13));
+    assert.equal(group("pull_request", 12), group("pull_request", 12));
+    assert.notEqual(group("pull_request", 12), group("push"));
+    assert.notEqual(group("push"), group("workflow_dispatch"));
+    const cancel = attribute(6, "cancel-in-progress");
+    assert.deepEqual([evaluate(cancel, scope("pull_request", 12)), evaluate(cancel, scope("push")), evaluate(cancel, scope("workflow_dispatch"))], [true, false, false]);
   });
 
   test("only a job that installs restores and saves the pnpm cache", () => {

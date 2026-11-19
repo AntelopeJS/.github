@@ -19,6 +19,7 @@ starts the run decides what it publishes. A caller only declares the triggers.
 | Event | Branch | Publishes |
 | ----- | ------ | --------- |
 | `push` | the default branch | a preview under the npm dist-tag `next` |
+| `pull_request` | a pull request with the `preview` label | a pull request preview: a [pkg.pr.new](https://pkg.pr.new) package for a public package, the dist-tag `pr-<number>` on `https://npm.antelopejs.cloud/` for a private one |
 | `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest`, or nothing without `release-version` |
 
 Any other event or branch fails the run with the reason, so a push to `next`
@@ -27,8 +28,11 @@ the workflow can dispatch a stable release with any `release-version` above
 `latest` in the same major. The release train is the way to start one, not a
 guard against starting one by hand. A release runs no tests. The checks of the pull request that brought each commit are the gate.
 
-Both runs use the `npm-publish` environment of the repository. Its deployment
-branches need only the default branch.
+A push to the default branch and a stable run use the `npm-publish` environment
+of the repository. Its deployment branches need only the default branch. A pull
+request preview run uses no environment, because the branch policy of the
+environment allows only the default branch. A private pull request preview reads
+`NPM_ANTELOPE_TOKEN` as an organization secret.
 
 ### Preview versions
 
@@ -65,6 +69,38 @@ pnpm add @antelopejs/interface-database@0.4.3-next.161.g3f9a2c1 --save-exact
 Merge that pin into the default branch of the dependent. The release train
 releases the dependency first, then rewrites the range of the pin when it
 releases the dependent.
+
+### Pull request previews
+
+A pull request that carries the `preview` label publishes a preview of the
+package. It runs when the label is added and on each push to the pull request.
+Adding another label to a labeled pull request does not run it. It builds the
+head commit of the pull request, not the merge commit, and records that commit
+as the `gitHead`.
+
+The version is `<base>-pr.<number>.<commit count>.g<short sha>`, such as
+`0.4.3-pr.12.161.g3f9a2c1`. The base is the one of a `next` preview. Unlike a
+`next` preview, it publishes whether or not the package changed. A rerun of the
+same commit finds the version already on npm and publishes nothing.
+
+A public package publishes through [pkg.pr.new](https://pkg.pr.new), which
+comments the install commands on the pull request and updates that comment on
+each push. The pkg.pr.new GitHub App must be installed on the repository. It
+needs no token scope. The run installs `pkg-pr-new@0.0.94` and calls it with
+`--pnpm`, so that each `workspace:` and `catalog:` spec resolves.
+
+A private package publishes to `https://npm.antelopejs.cloud/` under the
+dist-tag `pr-<number>`, such as `pr-12`:
+
+```sh
+pnpm add @antelopejs-private/my-package@pr-12
+```
+
+A pull request preview never moves `latest` or `next`. It pins no workspace
+sibling, because `pnpm pack` writes each `workspace:` spec as the range in the
+`package.json` of the sibling. A preview that needs an unreleased change of a
+sibling does not get it. A pull request from a fork gets no secrets, so the
+credentials check fails a private preview of it.
 
 ### Release train
 
@@ -360,9 +396,11 @@ trusted publishing. Each entry point grants these to its call of
 `release-npm.yml`, which declares no permissions and so holds exactly that
 grant.
 
-Runs share a concurrency group per repository, event and package directory,
-and a running release is never cancelled. Previews and stable releases sit in
-different groups, so a queued preview never cancels a pending stable release.
+Runs share a concurrency group per repository, event, pull request and package
+directory. A running release is never cancelled, except a pull request preview,
+which a newer run of the same pull request cancels. Previews and stable
+releases sit in different groups, so a queued preview never cancels a pending
+stable release.
 
 ### What a caller declares
 
@@ -372,7 +410,10 @@ and the shared workflows at `@v2` work with it unchanged.
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
 - **Triggers.** `push` to the default branch for previews, and
-  `workflow_dispatch` for stable releases.
+  `workflow_dispatch` for stable releases. A caller that adds `pull_request`
+  with the types `opened`, `synchronize`, `reopened` and `labeled` publishes a
+  [pull request preview](#pull-request-previews) for each pull request that
+  carries the `preview` label.
 - **Dispatch inputs.** `release-version`, `release-commit` and
   `dependency-ranges` (default `"{}"`), all optional strings that the release
   train sets. A repository whose package is not at its root adds

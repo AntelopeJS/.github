@@ -111,7 +111,7 @@ describe("the frozen caller", () => {
       const wired = entries(job, ["jobs", "release", "with"]);
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
-      const resolve = (event: string, ref: string, dispatched: Record<string, string>) => {
+      const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
         const input = (name: string): string => {
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
           if (passed !== undefined) return dispatched[passed] ?? "";
@@ -120,6 +120,7 @@ describe("the frozen caller", () => {
         };
         const expression = (value: string): string => {
           if (value === "${{ github.event.repository.default_branch }}") return "main";
+          if (value === "${{ github.event.pull_request.number }}") return pullRequest;
           const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
           assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(forwarded.get(name)?.[0] ?? "")?.[1];

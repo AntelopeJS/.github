@@ -30,11 +30,12 @@ on:
 
 jobs:
   release:
+    if: github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview'))
     runs-on: ubuntu-latest
-    environment: npm-publish
+    environment: ${{ github.event_name != 'pull_request' && 'npm-publish' || '' }}
     concurrency:
-      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ inputs.package-directory }}
-      cancel-in-progress: false
+      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Resolve release mode
         id: mode
@@ -42,6 +43,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release-version }}
           RELEASE_COMMIT: ${{ inputs.release-commit }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "mode=preview" >> "$GITHUB_OUTPUT"
@@ -60,8 +62,11 @@ jobs:
             else
               echo "mode=stable" >> "$GITHUB_OUTPUT"
             fi
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo "mode=pull-request" >> "$GITHUB_OUTPUT"
+            echo "tag=pr-$PULL_REQUEST" >> "$GITHUB_OUTPUT"
           else
-            echo "A push to $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
+            echo "A push to $DEFAULT_BRANCH publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
           fi
 
@@ -94,6 +99,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || '' }}
 
       - name: Check the planned commit
         if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
@@ -261,6 +267,7 @@ jobs:
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           RELEASE_VERSION: ${{ inputs.release-version }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
@@ -271,8 +278,21 @@ jobs:
               return 1
             fi
           }
+          base_of() {
+            local latest major minor patch
+            latest=$(latest_of "$1")
+            if [ -n "$latest" ]; then
+              IFS=. read -r major minor patch <<< "$latest"
+              echo "$major.$minor.$((patch + 1))"
+            else
+              node -p "require('./package.json').version.split('-')[0]"
+            fi
+          }
+          held() {
+            [ -n "$(npm view "$1@$2" version 2>/dev/null || true)" ]
+          }
           preview_of() {
-            local name previous latest major minor patch base
+            local name previous base
             name=$(node -p "require('./package.json').name")
             previous=$(npm view "$name@next" gitHead 2>/dev/null || true)
             if [ -n "$previous" ] && git cat-file -e "$previous^{commit}" 2>/dev/null && PREVIOUS=$previous node <<'NODE'
@@ -293,23 +313,24 @@ jobs:
             then
               return 0
             fi
-            latest=$(latest_of "$name")
-            if [ -n "$latest" ]; then
-              IFS=. read -r major minor patch <<< "$latest"
-              base="$major.$minor.$((patch + 1))"
-            else
-              base=$(node -p "require('./package.json').version.split('-')[0]")
-            fi
+            base=$(base_of "$name")
             echo "$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
           }
           name=$(node -p "require('./package.json').name")
-          if [ "$MODE" = preview ]; then
+          if [ "$MODE" = pull-request ]; then
+            base=$(base_of "$name")
+            version="$base-pr.$PULL_REQUEST.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            if held "$name" "$version"; then
+              echo "::notice::$name@$version is already published."
+              exit 0
+            fi
+          elif [ "$MODE" = preview ]; then
             version=$(preview_of)
             if [ -z "$version" ]; then
               echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
               exit 0
             fi
-            if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
+            if held "$name" "$version"; then
               echo "::notice::$name@$version is already published."
               exit 0
             fi
@@ -706,7 +727,7 @@ jobs:
           SCRIPT
 
       - name: Publish preview
-        if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
+        if: (steps.mode.outputs.mode == 'preview' || (steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'private')) && steps.version.outputs.version != ''
         working-directory: ${{ inputs.package-directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -727,6 +748,25 @@ jobs:
           fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
           NODE
           bash "$RUNNER_TEMP/publish.sh" "$TAG"
+
+      - name: Install pkg.pr.new
+        if: steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'public' && steps.version.outputs.version != ''
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pkg-pr-new" pkg-pr-new@0.0.94
+
+      - name: Publish to pkg.pr.new
+        if: steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'public' && steps.version.outputs.version != ''
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
+          NODE
+          "$RUNNER_TEMP/pkg-pr-new/node_modules/.bin/pkg-pr-new" publish --pnpm --comment=update .
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'
