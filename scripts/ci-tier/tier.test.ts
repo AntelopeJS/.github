@@ -508,7 +508,7 @@ describe("the flaky test annotations", () => {
   }
 
   const warning = (message: string): string => `::warning title=Flaky test::AntelopeJS/example: ${message} passed only on its merge-queue retry.`;
-  const summaryLine = (message: string): string => `Flaky test: AntelopeJS/example: ${message} passed only on its merge-queue retry.`;
+  const summaryLine = (message: string): string => `- Flaky test: \`\` AntelopeJS/example: ${message} passed only on its merge-queue retry. \`\``;
 
   function expectAnnotations(log: string, messages: string[]): void {
     const { warnings, summary } = annotateLog(log);
@@ -523,6 +523,8 @@ describe("the flaky test annotations", () => {
     { name: "jest", fixture: "jest", messages: [`${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`, "test/broken.test.js"] },
     { name: "mocha", fixture: "mocha", messages: [`${math} > math > top level fails`, `${math} > math > add > adds 1 and 2`] },
     { name: "mocha with ES modules", fixture: "mocha-esm", messages: ["test/math.test.mjs > math > add > adds 1 and 2"] },
+    { name: "mocha with a timeout, a multi-line message and a suite title ending in a colon", fixture: "mocha-timeout", messages: ["test/timeout.test.js > slow suite > times out", "test/timeout.test.js > slow suite > multi-line message", "test/timeout.test.js > slow suite > ends with colon: > inner"] },
+    { name: "two mocha runs in one log", fixture: "mocha-two", messages: ["m1/a.test.js > first > flakes", "m2/b.test.js > root level bad", "m2/b.test.js > second > bad"] },
     { name: "node:test", fixture: "node-test", messages: ["test/broken.test.js", `${math} > math > add > adds 1 and 2`, `${math} > math > top level fails`] },
   ];
   for (const { name, fixture: file, messages } of runners) {
@@ -539,6 +541,16 @@ describe("the flaky test annotations", () => {
   test("jest: a test file slower than its slow threshold keeps its name", () => {
     const log = ["FAIL test/slow.test.js (6.12 s)", "  ● slow › waits", "", "    expect(received).toBe(expected)", ""].join("\n");
     expectAnnotations(log, ["test/slow.test.js > slow > waits"]);
+  });
+
+  test("jest: only the failure bullets of a FAIL block name tests", () => {
+    const log = ["FAIL test/a.test.js", "  ● list › fails", "", "    Error: list:", "      ● item one", "", "  ●  Cannot log after tests are done. Did you forget to wait for something async in your test?", ""].join("\n");
+    expectAnnotations(log, ["test/a.test.js > list > fails"]);
+  });
+
+  test("a parser that throws falls back to one annotation naming the command", () => {
+    const log = ["  1 failing", "", "  1) math", "       adds:", "     Error: boom", "      at Context.<anonymous> (file:///home/runner/work/x/x/test/a%2Fb.test.js:5:20)", ""].join("\n");
+    expectAnnotations(log, ["pnpm run test"]);
   });
 
   test("an unparseable log gives one annotation naming the command", () => {

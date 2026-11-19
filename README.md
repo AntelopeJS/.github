@@ -552,17 +552,19 @@ the failed attempt. It writes one warning annotation per flaky test, titled
 exactly `Flaky test`, with the message
 `<owner>/<repo>: <test> passed only on its merge-queue retry.`, where `<test>`
 is `<file> > <test title>`, the titles of nested suites joined by ` > `, or only
-`<file>` when the whole file failed to run. It reads the output of vitest, jest,
-mocha (the spec reporter) and `node --test` (the spec reporter of Node.js 24).
+`<file>` when the whole file failed to run. `<file>` is the path as the test
+runner printed it, so in a workspace it is relative to the package the runner
+ran in, not to the repository. It reads the output of vitest, jest, mocha (the
+spec reporter) and `node --test` (the spec reporter of Node.js 24), unprefixed.
 When it finds no test file, `<file>` is `pnpm run test`, and when it parses
-nothing, there is one annotation naming `pnpm run test`. GitHub keeps at most 10
-warning annotations per step, so above 10 tests the step writes one annotation
-per test file, and above 10 files a single one naming `pnpm run test`. The
-message escapes `%`, carriage returns and line feeds as workflow commands
-require. The step also adds one line to the job summary per annotation,
-`Flaky test: <message>`. Nothing is filed anywhere else: a scan of the check run
-annotations of the repository is the machine-readable signal. A pull request
-never retries a failed test.
+nothing or the parsing fails, there is one annotation naming `pnpm run test`.
+GitHub keeps at most 10 warning annotations per step, so above 10 tests the step
+writes one annotation per test file, and above 10 files a single one naming
+`pnpm run test`. The message escapes `%`, carriage returns and line feeds as
+workflow commands require. The step also adds one list item to the job summary
+per annotation, `Flaky test: ` then the message in a code span. Nothing is filed anywhere
+else. A scan of the check run annotations of the repository is the
+machine-readable signal. A pull request never retries a failed test.
 
 In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
 tests that pass alone but time out under load. On Linux, with the first
