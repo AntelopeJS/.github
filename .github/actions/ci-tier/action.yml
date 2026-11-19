@@ -1,38 +1,44 @@
 name: CI tier
-description: Pick the CI tier from the event, the target branch and the draft flag
+description: Pick the CI tier and the diff base from the event, the ci:full label and the files a pull request changes
+
+inputs:
+  selection:
+    description: full forces the full tier on a pull request; the caller passes its CI_SELECTION variable
+    default: ""
 
 outputs:
   tier:
-    description: none, draft, fast, full or nightly
+    description: none, fast, full, queue or nightly
     value: ${{ steps.tier.outputs.tier }}
+  base:
+    description: The commit the change is compared with, present in the checkout when there is one; the pull request base on a pull request, the merge group base in the merge queue, empty otherwise
+    value: ${{ steps.tier.outputs.base }}
 
 runs:
   using: composite
   steps:
-    - name: Pick the tier from the event, the target branch and the draft flag
+    - name: Pick the tier and the diff base from the event, the label and the changed files
       id: tier
       shell: bash
       env:
         EVENT: ${{ github.event_name }}
         REF_NAME: ${{ github.ref_name }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        REPOSITORY: ${{ github.repository }}
-        BASE_REF: ${{ github.base_ref }}
-        HEAD_REF: ${{ github.head_ref }}
-        HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-        DRAFT: ${{ github.event.pull_request.draft }}
+        PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
+        MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+        SELECTION: ${{ inputs.selection }}
+        TOKEN: ${{ github.token }}
       run: |
+        base=""
         case "$EVENT" in
           pull_request)
-            if [[ "$BASE_REF" == "$DEFAULT_BRANCH" && "$HEAD_REPOSITORY" == "$REPOSITORY" && "$HEAD_REF" =~ ^(next|develop)$ ]]; then
-              tier=none
-            elif [[ "$DRAFT" == true ]]; then
-              tier=draft
-            elif [[ "$BASE_REF" == "$DEFAULT_BRANCH" ]]; then
-              tier=full
-            else
-              tier=fast
-            fi
+            base="$PULL_REQUEST_BASE"
+            if [[ "$FULL_LABEL" == true || "$SELECTION" == full ]]; then tier=full; else tier=fast; fi
+            ;;
+          merge_group)
+            base="$MERGE_GROUP_BASE"
+            tier=queue
             ;;
           push)
             if [[ "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then tier=none; else tier=full; fi
@@ -40,4 +46,27 @@ runs:
           schedule) tier=nightly ;;
           *) tier=full ;;
         esac
-        echo "tier=${tier}" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "$base" ]] && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+          if ! git cat-file -e "${base}^{commit}" 2> /dev/null; then
+            credentials=$(printf 'x-access-token:%s' "$TOKEN" | base64 --wrap=0)
+            echo "::add-mask::${credentials}"
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
+              fetch --quiet --no-tags --depth=1 origin "$base"
+          fi
+          if [[ "$tier" == fast ]]; then
+            changed=$(git -c core.quotepath=off diff --name-only --no-renames "$base" HEAD)
+            while IFS= read -r file; do
+              case "$file" in
+                pnpm-lock.yaml | */pnpm-lock.yaml | .github/workflows/* | .github/actions/*) tier=full ;;
+                "" | */* | *.md) ;;
+                *) tier=full ;;
+              esac
+            done <<< "$changed"
+          fi
+        fi
+
+        {
+          echo "tier=${tier}"
+          echo "base=${base}"
+        } >> "$GITHUB_OUTPUT"

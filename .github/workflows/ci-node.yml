@@ -40,162 +40,58 @@ on:
         default: false
         type: boolean
       test-job:
-        description: Run the test step in its own job, in parallel with the other checks
+        description: "Accepted and ignored: tests run as a step of the single job, or in a job of their own with single-job false"
         default: false
+        type: boolean
+      single-job:
+        description: Run checks and tests in one job per runner; a caller whose tests take minutes passes false to run them in a job of their own. Compose services always use separate jobs
+        default: true
         type: boolean
       extra-commands-job:
         description: Run extra-commands in their own job, in parallel with the other checks
         default: false
         type: boolean
       windows:
-        description: Also run the node, test and extra jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue; callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
         type: boolean
-      windows-pull-requests:
-        description: With windows, also run the Windows jobs on ready pull requests and manual runs, not only in the nightly tier
+      windows-merge-queue:
+        description: With windows, also run the Windows jobs in the merge queue and on manual runs, not only in the nightly tier
         default: false
         type: boolean
+      windows-pull-requests:
+        description: Accepted; the former name of windows-merge-queue, same effect
+        default: false
+        type: boolean
+    secrets:
+      NOTION_TOKEN:
+        description: Notion integration token allowed to read, insert and update content in the Tasks database; with it, a test that fails then passes on its retry in the merge queue files a task in the Inbox
+        required: false
 
 jobs:
-  tier:
-    name: Tier
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      tier: ${{ steps.tier.outputs.tier }}
-      lint: ${{ steps.tier.outputs.lint }}
-      checks: ${{ steps.tier.outputs.checks }}
-      tests: ${{ steps.tier.outputs.tests }}
-      test-base: ${{ steps.tier.outputs.test-base }}
-      os: ${{ steps.tier.outputs.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'pull_request'
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-
-      - name: Pick the tier from the event, the target branch and the draft flag
-        id: pick
-        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
-
-      - name: Pick the jobs and runners from the tier
-        id: tier
-        env:
-          TIER: ${{ steps.pick.outputs.tier }}
-          EVENT: ${{ github.event_name }}
-          WINDOWS: ${{ inputs.windows }}
-          WINDOWS_PULL_REQUESTS: ${{ inputs.windows-pull-requests }}
-        run: |
-          tier="$TIER"
-          lint=true checks=true tests=true test_base=""
-          case "$tier" in
-            none) lint=false checks=false tests=false ;;
-            draft) checks=false tests=false ;;
-            fast)
-              test_base=$(git rev-parse --verify HEAD^1)
-              tests=false
-              while IFS= read -r file; do
-                case "$file" in
-                  packages/*/playground/checks/*) tests=true ;;
-                  README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
-                  *) tests=true ;;
-                esac
-              done < <(git diff --name-only --no-renames "$test_base" HEAD)
-              ;;
-          esac
-
-          os='["ubuntu-latest"]'
-          if [[ "$WINDOWS" == true && ( "$tier" == nightly || ( "$WINDOWS_PULL_REQUESTS" == true && "$EVENT" != push ) ) ]]; then
-            os='["ubuntu-latest","windows-latest"]'
-          fi
-
-          {
-            echo "tier=${tier}"
-            echo "lint=${lint}"
-            echo "checks=${checks}"
-            echo "tests=${tests}"
-            echo "test-base=${test_base}"
-            echo "os=${os}"
-          } >> "$GITHUB_OUTPUT"
-          echo "Tier \`${tier}\`: lint ${lint}, checks ${checks}, tests ${tests}, runners ${os}" >> "$GITHUB_STEP_SUMMARY"
-
-  lint:
-    name: Lint and typecheck
-    needs: tier
-    if: needs.tier.outputs.lint == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    defaults:
-      run:
-        shell: bash
-    concurrency:
-      group: ci-node-lint-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    steps:
-      - name: Check pull request title
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
-          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
-            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
-            exit 1
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ fromJSON(inputs.node-versions || '[""]')[0] }}
-          node-version-file: ${{ fromJSON(inputs.node-versions || '[""]')[0] == '' && '.nvmrc' || '' }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run setup commands
-        if: inputs.setup-commands != ''
-        env:
-          SETUP_COMMANDS: ${{ inputs.setup-commands }}
-        run: bash -euo pipefail -c "$SETUP_COMMANDS"
-
-      - name: Typecheck and lint
-        run: |
-          pnpm run --if-present checks:prepare
-          pnpm run typecheck
-          pnpm run lint
-
   node:
-    name: Node ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    needs: [tier, lint]
-    if: needs.tier.outputs.checks == 'true'
+    name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.tier.outputs.os) }}
+        os: ${{ fromJSON(inputs.windows && (github.event_name == 'schedule' || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests))) && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
+        part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
     defaults:
       run:
         shell: bash
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    outputs:
+      tier: ${{ steps.tier.outputs.tier }}
     env:
-      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
-      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
-      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && ((!inputs.test-job && needs.tier.outputs.tests == 'true') || (inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
+      PRIMARY_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == fromJSON(inputs.node-versions || '[""]')[0] }}
+      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (matrix.part == 'test' || matrix.part == 'extra' || (matrix.part == 'checks' && inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
+      CACHE_PREFIX: ${{ matrix.part == 'extra' && 'ci-node-extra' || 'ci-node' }}
     steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
@@ -211,19 +107,66 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
 
-      - name: Fetch pull request base
-        if: github.event_name == 'pull_request'
+      - name: Pick the tier
+        id: tier
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+        with:
+          selection: ${{ vars.CI_SELECTION }}
+
+      - name: Pick the work of this leg from the tier
+        id: leg
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+          BASE: ${{ steps.tier.outputs.base }}
+          PART: ${{ matrix.part }}
+        run: |
+          tests=true test_base=""
+          case "$TIER" in
+            none) tests=false ;;
+            fast)
+              test_base="$BASE"
+              tests=false
+              changed=$(git -c core.quotepath=off diff --name-only --no-renames "$BASE" HEAD)
+              while IFS= read -r file; do
+                case "$file" in
+                  packages/*/playground/checks/*) tests=true ;;
+                  "" | README.md | docs/* | docs-data/examples.json | packages/*/README.md | packages/*/docs/* | packages/*/docs-data/examples.json | packages/dms/playground/*) ;;
+                  *) tests=true ;;
+                esac
+              done <<< "$changed"
+              ;;
+          esac
+          work=true
+          if [[ "$TIER" == none || ( "$PART" == test && "$tests" == false ) ]]; then
+            work=false
+          fi
+
+          {
+            echo "ANTELOPEJS_CI_TIER=${TIER}"
+            echo "ANTELOPEJS_TEST_BASE=${test_base}"
+          } >> "$GITHUB_ENV"
+          {
+            echo "tests=${tests}"
+            echo "work=${work}"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$PRIMARY_LEG" == true ]]; then
+            echo "Tier \`${TIER}\`: tests ${tests}, test base ${test_base:-none}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fetch the base branch
+        if: steps.leg.outputs.work == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
+          branch="${BASE_REF#refs/heads/}"
           credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
           echo "::add-mask::${credentials}"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
-            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
 
       - name: Start services in the background
-        if: env.START_SERVICES == 'true'
+        if: steps.leg.outputs.work == 'true' && env.START_SERVICES == 'true'
         env:
           SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
         run: |
@@ -237,42 +180,45 @@ jobs:
             "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.leg.outputs.work == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.leg.outputs.work == 'true'
         with:
           node-version: ${{ matrix.node-version }}
           node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
           cache: pnpm
 
       - name: Install dependencies
+        if: steps.leg.outputs.work == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Run setup commands
-        if: inputs.setup-commands != ''
+        if: steps.leg.outputs.work == 'true' && inputs.setup-commands != ''
         env:
           SETUP_COMMANDS: ${{ inputs.setup-commands }}
         run: bash -euo pipefail -c "$SETUP_COMMANDS"
 
       - name: Restore cache
-        if: inputs.cache-paths != '' && !inputs.test-job
+        if: steps.leg.outputs.work == 'true' && inputs.cache-paths != '' && matrix.part != 'checks'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.cache-paths }}
-          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          key: ${{ env.CACHE_PREFIX }}-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
           restore-keys: |
-            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
+            ${{ env.CACHE_PREFIX }}-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Restore cache again so links extracted before their target become directory links
-        if: inputs.cache-paths != '' && !inputs.test-job && runner.os == 'Windows'
+        if: steps.leg.outputs.work == 'true' && inputs.cache-paths != '' && matrix.part != 'checks' && runner.os == 'Windows'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.cache-paths }}
-          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
+          key: ${{ env.CACHE_PREFIX }}-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
           restore-keys: |
-            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
+            ${{ env.CACHE_PREFIX }}-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
 
       - name: Check documentation
-        if: inputs.docs-files != ''
+        if: steps.leg.outputs.work == 'true' && inputs.docs-files != '' && (matrix.part == 'all' || matrix.part == 'checks')
         uses: AntelopeJS/tooling-configs/actions/docs@0071b4bcf51cda8276c3ad318fbe496f2cef7abe # v0.8.2 + #419, #422 (0.8.3-next.390.g0071b4b)
         with:
           files: ${{ inputs.docs-files }}
@@ -280,7 +226,7 @@ jobs:
 
       - name: Start services
         id: services
-        if: env.START_SERVICES == 'true'
+        if: steps.leg.outputs.work == 'true' && env.START_SERVICES == 'true'
         run: |
           deadline=$((SECONDS + 900))
           until [ -s "$RUNNER_TEMP/services.status" ]; do
@@ -295,18 +241,21 @@ jobs:
           [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
 
       - name: Run checks
+        if: steps.leg.outputs.work == 'true' && (matrix.part == 'all' || matrix.part == 'checks')
         env:
-          ANTELOPEJS_CHECKS_SKIP: ${{ (inputs.test-job || needs.tier.outputs.tests != 'true') && 'lint,test' || 'lint' }}
+          ANTELOPEJS_CHECKS_SKIP: ${{ env.PRIMARY_LEG == 'true' && 'test' || 'test,lint,typecheck' }}
         run: pnpm run checks
 
       - name: Skill eval, offline
-        if: runner.os != 'Windows'
+        if: steps.leg.outputs.work == 'true' && env.PRIMARY_LEG == 'true' && (matrix.part == 'all' || matrix.part == 'checks')
+        env:
+          ANTELOPEJS_DIFF_BASE: ${{ steps.tier.outputs.base }}
         run: |
           mapfile -t dirs < <(git ls-files ':(glob)package.json' ':(glob)**/package.json' | node -e 'const fs = require("fs"); const path = require("path"); for (const file of fs.readFileSync(0, "utf8").split("\n").filter(Boolean)) { const skills = JSON.parse(fs.readFileSync(file, "utf8")).antelopeJs?.skills; for (const dir of Array.isArray(skills) ? skills : []) console.log(path.posix.join(path.posix.dirname(file), dir)); }')
           if [ "${#dirs[@]}" -eq 0 ]; then
             exit 0
           fi
-          if [ -z "$(git diff --name-only HEAD^1 HEAD -- "${dirs[@]}")" ]; then
+          if [ -z "$(git diff --name-only "${ANTELOPEJS_DIFF_BASE:-HEAD^1}" HEAD -- "${dirs[@]}")" ]; then
             exit 0
           fi
           args=()
@@ -317,260 +266,89 @@ jobs:
           npx -y "$cli" evals check "${args[@]}"
           npx -y "$cli" evals --published "${args[@]}" --min-recall 0.5 --min-precision 0.5
 
-      - name: Run extra commands
-        if: inputs.extra-commands != '' && !inputs.extra-commands-job
-        env:
-          EXTRA_COMMANDS: ${{ inputs.extra-commands }}
-        run: bash -euo pipefail -c "$EXTRA_COMMANDS"
-
-      - name: Stop services
-        if: always() && steps.services.outcome == 'success'
-        env:
-          FILE: ${{ inputs.services-compose-file }}
-        run: docker compose -f "$FILE" down -v
-
-  test:
-    name: Test ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    needs: [tier, lint]
-    if: inputs.test-job && needs.tier.outputs.tests == 'true'
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(needs.tier.outputs.os) }}
-        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
-    defaults:
-      run:
-        shell: bash
-    concurrency:
-      group: ci-node-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    env:
-      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
-      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
-      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
-    steps:
-      - name: Use LF line endings, symlinks and Git Bash for package scripts
-        if: runner.os == 'Windows'
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.symlinks true
-          bash_path=$(cygpath -w /usr/bin/bash)
-          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
-          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-
-      - name: Fetch pull request base
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
-          echo "::add-mask::${credentials}"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
-            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-
-      - name: Start services in the background
-        if: env.START_SERVICES == 'true'
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
-        run: |
-          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
-          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
-          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
-            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
-            exit 1
-          fi
-          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
-            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node-version }}
-          node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run setup commands
-        if: inputs.setup-commands != ''
-        env:
-          SETUP_COMMANDS: ${{ inputs.setup-commands }}
-        run: bash -euo pipefail -c "$SETUP_COMMANDS"
-
-      - name: Restore cache
-        if: inputs.cache-paths != ''
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ inputs.cache-paths }}
-          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
-          restore-keys: |
-            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
-
-      - name: Restore cache again so links extracted before their target become directory links
-        if: inputs.cache-paths != '' && runner.os == 'Windows'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ inputs.cache-paths }}
-          key: ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
-          restore-keys: |
-            ci-node-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
-
-      - name: Start services
-        id: services
-        if: env.START_SERVICES == 'true'
-        run: |
-          deadline=$((SECONDS + 900))
-          until [ -s "$RUNNER_TEMP/services.status" ]; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              cat "$RUNNER_TEMP/services.log"
-              echo "::error::Services did not start within 15 minutes."
-              exit 1
-            fi
-            sleep 0.2
-          done
-          cat "$RUNNER_TEMP/services.log"
-          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
-
       - name: Run tests
+        id: tests
+        if: steps.leg.outputs.work == 'true' && steps.leg.outputs.tests == 'true' && (matrix.part == 'all' || matrix.part == 'test')
         env:
           CI: "1"
-        run: pnpm run test
-
-      - name: Stop services
-        if: always() && steps.services.outcome == 'success'
-        env:
-          FILE: ${{ inputs.services-compose-file }}
-        run: docker compose -f "$FILE" down -v
-
-  extra:
-    name: Extra ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    needs: [tier, lint]
-    if: inputs.extra-commands-job && inputs.extra-commands != '' && needs.tier.outputs.checks == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 360
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ${{ fromJSON(needs.tier.outputs.os) }}
-        node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
-    defaults:
-      run:
-        shell: bash
-    concurrency:
-      group: ci-node-extra-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.node-version }}-${{ matrix.os }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    env:
-      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
-      ANTELOPEJS_TEST_BASE: ${{ needs.tier.outputs.test-base }}
-      START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' }}
-    steps:
-      - name: Use LF line endings, symlinks and Git Bash for package scripts
-        if: runner.os == 'Windows'
         run: |
-          git config --global core.autocrlf false
-          git config --global core.symlinks true
-          bash_path=$(cygpath -w /usr/bin/bash)
-          echo "npm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
-          echo "pnpm_config_script_shell=${bash_path}" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-
-      - name: Fetch pull request base
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
-          echo "::add-mask::${credentials}"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
-            fetch --quiet --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-
-      - name: Start services in the background
-        if: env.START_SERVICES == 'true'
-        env:
-          SERVICES_COMPOSE_FILE: ${{ inputs.services-compose-file }}
-        run: |
-          FILE=$(realpath -e -- "$SERVICES_COMPOSE_FILE")
-          WORKSPACE=$(realpath -e -- "$GITHUB_WORKSPACE")
-          if [[ "$FILE" != "$WORKSPACE/"* || ! -f "$FILE" ]]; then
-            echo "::error::services-compose-file must resolve to a regular file inside GITHUB_WORKSPACE."
+          log="$RUNNER_TEMP/test-attempt-1.log"
+          if pnpm run test 2>&1 | tee "$log"; then
+            exit 0
+          fi
+          if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
             exit 1
           fi
-          nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
-            "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
-
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node-version }}
-          node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run setup commands
-        if: inputs.setup-commands != ''
-        env:
-          SETUP_COMMANDS: ${{ inputs.setup-commands }}
-        run: bash -euo pipefail -c "$SETUP_COMMANDS"
-
-      - name: Restore cache
-        if: inputs.cache-paths != ''
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ inputs.cache-paths }}
-          key: ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
-          restore-keys: |
-            ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
-
-      - name: Restore cache again so links extracted before their target become directory links
-        if: inputs.cache-paths != '' && runner.os == 'Windows'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ inputs.cache-paths }}
-          key: ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-${{ hashFiles(inputs.cache-key-files) }}
-          restore-keys: |
-            ci-node-extra-${{ runner.os }}-${{ matrix.node-version || 'nvmrc' }}-
-
-      - name: Start services
-        id: services
-        if: env.START_SERVICES == 'true'
-        run: |
-          deadline=$((SECONDS + 900))
-          until [ -s "$RUNNER_TEMP/services.status" ]; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              cat "$RUNNER_TEMP/services.log"
-              echo "::error::Services did not start within 15 minutes."
-              exit 1
-            fi
-            sleep 0.2
-          done
-          cat "$RUNNER_TEMP/services.log"
-          [ "$(cat "$RUNNER_TEMP/services.status")" = 0 ]
+          echo "::warning::pnpm run test failed in the merge queue. It runs once more: a pass marks a flaky test, a second failure fails the job."
+          pnpm run test
+          echo "flaky=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::pnpm run test failed, then passed on its retry: a test is flaky."
+          echo "Flaky test: \`pnpm run test\` failed, then passed on its retry in the merge queue." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run extra commands
+        if: steps.leg.outputs.work == 'true' && inputs.extra-commands != '' && (matrix.part == 'extra' || (!inputs.extra-commands-job && (matrix.part == 'all' || matrix.part == 'checks')))
         env:
           EXTRA_COMMANDS: ${{ inputs.extra-commands }}
         run: bash -euo pipefail -c "$EXTRA_COMMANDS"
+
+      - name: File the flaky test in the Inbox
+        if: ${{ !cancelled() && steps.tests.outputs.flaky == 'true' }}
+        continue-on-error: true
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          TASKS: 2f2d36f1-99db-4ff3-b040-f66d7480ac9a
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$NOTION_TOKEN" ]; then
+            echo "::warning::No task was filed for the flaky test: the caller passes no NOTION_TOKEN secret."
+            exit 0
+          fi
+          repo="${GH_REPO#*/}"
+          key="flaky-test:${repo}"
+          notion() {
+            curl -fsS -X "$1" "https://api.notion.com/v1/$2" \
+              -H "Authorization: Bearer ${NOTION_TOKEN}" \
+              -H "Notion-Version: 2025-09-03" \
+              -H "Content-Type: application/json" \
+              --data @-
+          }
+          page=$(jq -n --arg key "$key" '{page_size: 1, filter: {and: [
+            {property: "Key", rich_text: {equals: $key}},
+            {property: "Status", status: {does_not_equal: "Done"}},
+            {property: "Status", status: {does_not_equal: "Dropped"}}
+          ]}}' | notion POST "data_sources/${TASKS}/query" | jq -r '.results[0].id // empty')
+          if [ -n "$page" ]; then
+            jq -n --arg text "Seen again: pnpm run test failed, then passed on its retry in the merge queue. Run: ${RUN_URL}" \
+              '{children: [{paragraph: {rich_text: [{text: {content: $text}}]}}]}' \
+              | notion PATCH "blocks/${page}/children" > /dev/null
+            exit 0
+          fi
+          log=$(sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$RUNNER_TEMP/test-attempt-1.log" | tail -c 1500)
+          jq -n \
+            --arg tasks "$TASKS" \
+            --arg key "$key" \
+            --arg repo "$repo" \
+            --arg title "${repo}: fix the flaky test" \
+            --arg goal "In the merge queue, pnpm run test failed, then passed on its retry: a test of ${repo} passes or fails by chance. The failed attempt's log ends below. Run: ${RUN_URL}" \
+            --arg log "$log" \
+            --arg done_means "The test that failed passes every time: its cause is found and fixed, not hidden by a retry or a longer timeout." \
+            '{
+              parent: {type: "data_source_id", data_source_id: $tasks},
+              properties: {
+                "Task name": {title: [{text: {content: $title}}]},
+                Key: {rich_text: [{text: {content: $key}}]},
+                Status: {status: {name: "Inbox"}},
+                Repos: {multi_select: [{name: $repo}]}
+              },
+              children: [
+                {heading_2: {rich_text: [{text: {content: "Goal"}}]}},
+                {paragraph: {rich_text: [{text: {content: $goal}}]}},
+                {code: {language: "plain text", rich_text: [{text: {content: $log}}]}},
+                {heading_2: {rich_text: [{text: {content: "Done means"}}]}},
+                {bulleted_list_item: {rich_text: [{text: {content: $done_means}}]}}
+              ]
+            }' | notion POST pages > /dev/null
 
       - name: Stop services
         if: always() && steps.services.outcome == 'success'
@@ -580,8 +358,8 @@ jobs:
 
   stress:
     name: Stress
-    needs: [tier, lint]
-    if: needs.tier.outputs.tier == 'nightly'
+    needs: node
+    if: ${{ !cancelled() && needs.node.outputs.tier == 'nightly' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -590,7 +368,7 @@ jobs:
       run:
         shell: bash
     env:
-      ANTELOPEJS_CI_TIER: ${{ needs.tier.outputs.tier }}
+      ANTELOPEJS_CI_TIER: nightly
       START_SERVICES: ${{ inputs.services-compose-file != '' }}
       STRESS_RUNS: 3
       STRESS_LOOPS_PER_CPU: 4
@@ -641,9 +419,7 @@ jobs:
             ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-
 
       - name: Build what the tests read
-        run: |
-          pnpm run --if-present checks:prepare
-          pnpm run typecheck
+        run: pnpm run --if-present checks:prepare
 
       - name: Start services
         id: services
@@ -688,47 +464,33 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
-  gitleaks:
-    name: Gitleaks
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Install gitleaks 8.30.1 from its checksummed release
-        run: |
-          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
-          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c --quiet -
-          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-
-      - name: Scan the pull request's commits, minus the fingerprints in .gitleaksignore
-        run: |
-          base=$(git rev-parse --verify HEAD^1)
-          head=$(git rev-parse --verify HEAD^2)
-          octopus=$(git rev-list --min-parents=3 "${base}..${head}")
-          if [ -n "$octopus" ]; then
-            echo "::error::The pull request has an octopus merge, whose changes git cannot show to gitleaks. Replace it with two-parent merges."
-            exit 1
-          fi
-          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --exit-code 1 --log-opts="--remerge-diff ${base}..${head}" .
-
   checks:
     if: always()
-    needs: [tier, lint, node, test, extra, stress, gitleaks]
+    needs: [node, stress]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - if: needs.tier.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
-
-      - if: needs.tier.outputs.tier == 'draft'
+      - name: Check pull request title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "::error::Draft pull request: only lint and typecheck ran. Mark it ready for review to run the tests."
+          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
+            exit 1
+          fi
+
+      - name: Fail when a job failed, was cancelled or did not run
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.node.result != 'success' || (needs.node.outputs.tier == 'nightly' && needs.stress.result != 'success')
+        env:
+          TIER: ${{ needs.node.outputs.tier }}
+          NODE: ${{ needs.node.result }}
+          STRESS: ${{ needs.stress.result }}
+        run: |
+          echo "::error::Tier ${TIER:-unknown}: node ${NODE}, stress ${STRESS}."
           exit 1

@@ -453,111 +453,147 @@ Callers use `@v2`. `v1` keeps the previous interface.
 ## Node CI
 
 The reusable `ci-node.yml` workflow installs dependencies with the frozen
-lockfile and runs `pnpm run checks`. By default, it reads Node.js from `.nvmrc`.
-Callers can pass `node-versions` to check several versions. It reads pnpm from
-`packageManager` in `package.json`.
+lockfile, runs `pnpm run checks`, then `pnpm run test`. By default, it reads
+Node.js from `.nvmrc`. Callers can pass `node-versions` to check several
+versions. It reads pnpm from `packageManager` in `package.json`.
 
-Its `Tier` job picks how much to run from the event, the target branch and the
-draft flag, so a caller only declares the triggers: `pull_request` with the
-types `opened`, `synchronize`, `reopened` and `ready_for_review`, `push` on
-`next` (`develop` in `cloud`), a nightly `schedule` and `workflow_dispatch`.
-"Next" below is a head branch named `next` or `develop` of the same repository.
+Each job picks how much to run from the event, so a caller only declares the
+triggers: `pull_request`, `merge_group` for the merge queue, a nightly
+`schedule` and `workflow_dispatch`. The diff base is the commit the change is
+compared with.
 
-| Event | Tier | Jobs |
-| ----- | ---- | ---- |
-| Pull request from next into the default branch | `none` | none; `checks` succeeds |
-| Draft pull request | `draft` | `Lint and typecheck`; `checks` fails so a draft never shows a green gate |
-| Ready pull request into any other branch than the default one, such as `next` | `fast` | `Lint and typecheck`, then the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
-| Ready pull request into the default branch | `full` | `Lint and typecheck`, the Node.js jobs and the tests |
-| Push to the default branch | `none` | none; `checks` succeeds |
-| Push to any other branch, such as `next` | `full` | as above |
-| `schedule` | `nightly` | `full`, plus the Windows jobs and `Stress` |
-| `workflow_dispatch` and any other event | `full` | as above |
+| Event | Tier | Diff base | Jobs |
+| ----- | ---- | --------- | ---- |
+| Pull request with the `ci:full` label, from a repository whose `CI_SELECTION` variable is `full`, or that changes a root file | `full` | the pull request base | the Node.js jobs and the tests |
+| Any other pull request, draft or ready, into any branch | `fast` | the pull request base | the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
+| `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test |
+| Push to the default branch | `none` | none | none; `checks` succeeds |
+| Push to any other branch | `full` | none | the Node.js jobs and the tests |
+| `schedule` | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
+| `workflow_dispatch` and any other event | `full` | none | as `full` |
 
-The rule lives in the `ci-tier` composite action, which `Tier` calls. A caller
-cannot read `ci-node.yml`'s outputs before the whole call ends, so a repository
-that declares jobs of its own picks the same tier in its own job with that
-action, which needs no checkout and no input:
+A root file is a file at the repository root other than a `*.md` file, a
+`pnpm-lock.yaml` at any depth, or a file under `.github/workflows/` or
+`.github/actions/`. A run reads the labels the pull request has when it starts,
+so a `ci:full` label added later counts from the next push.
+
+The `node` job runs one job per runner, Node.js version and part:
+
+- By default, with `single-job`, one `Node <version>` job per runner runs the
+  checks, then the tests. A pull request on `.nvmrc` shows `Node .nvmrc` and
+  `checks`.
+- With `single-job: false`, or with `services-compose-file`, `Node <version>`
+  runs the checks and `Test <version>` runs the tests, in parallel. A caller
+  whose tests take minutes passes `single-job: false`.
+- With `extra-commands-job`, `Extra <version>` also runs `extra-commands` in
+  parallel.
+
+On Windows, the job name ends with ` on Windows`. The jobs run on Linux, also on
+Windows in the `nightly` tier when `windows` is set, and with
+`windows-merge-queue` also in the `queue` tier and on manual runs. A pull request
+never runs on Windows.
+
+Each job picks the tier, then its own work. It runs `pnpm run checks` with
+`test` in `ANTELOPEJS_CHECKS_SKIP`, since the tests run in a step of their own.
+Lint and typecheck run once per run, inside `pnpm run checks`, on the Linux job
+with the first `node-versions` entry or `.nvmrc`; the other jobs add
+`lint,typecheck` to `ANTELOPEJS_CHECKS_SKIP`. The skill evals run on that job
+only, on the skills the change touches since the diff base, or since `HEAD^1`
+without one.
+
+In the `queue` tier only, a failed `pnpm run test` runs once more. When the
+retry fails, the job fails. When it passes, the job passes with a warning and
+its summary names a flaky test. With the `NOTION_TOKEN` secret, the job then
+files a task in the Inbox of the Tasks database, keyed `flaky-test:<repo>`,
+with the end of the failed attempt's log, or adds a line to the open task of the
+repository. Without the secret, a warning says no task was filed. A pull request
+never retries a failed test.
+
+In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
+tests that pass alone but time out under load. On Linux, with the first
+`node-versions` entry or `.nvmrc`, it installs, runs `setup-commands` and
+`checks:prepare`, starts the services, then runs `pnpm run test` three times
+beside four busy loops per CPU. The loops take CPU time from the test runner's
+workers, as a loaded machine does, while the workers keep the count the runner
+picks from the CPUs it sees. It fails when any run fails, and its summary
+counts the failed runs. A pull request never runs it, and a caller sets nothing
+for it.
+
+On a pull request and in the merge queue, each job fetches the target branch
+into `origin/<branch>`, such as `origin/main`, and the diff base into the
+checkout. Every job sets two variables for the commands it runs:
+
+- `ANTELOPEJS_CI_TIER` holds the tier, so a repository can run a browser smoke
+  test in `full` and its whole browser suite in `nightly`.
+- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the diff base. A
+  repository with several packages can restrict its tests to the packages the
+  pull request touches and their dependents, with
+  `pnpm --filter "...[$ANTELOPEJS_TEST_BASE]" run test` or
+  `vitest run --changed "$ANTELOPEJS_TEST_BASE"`. It is empty in every other
+  tier, where all tests run.
+
+The rule lives in the `ci-tier` composite action, which each job calls. A
+caller cannot read `ci-node.yml`'s outputs before the whole call ends, so a
+repository that declares jobs of its own picks the same tier in its own job
+with that action. Its `selection` input, set to `full`, forces the `full` tier
+on a pull request. Its `tier` output holds the tier and its `base` output the
+diff base. On a pull request and in the merge queue, it fetches the diff base
+when the checkout lacks it. On a pull request, it reads the changed files from
+the checkout. Without a checkout, a pull request gets `fast` unless the label or
+`selection` asks for `full`:
 
 ```yaml
 jobs:
   tier:
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
       - id: tier
         uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+        with:
+          selection: ${{ vars.CI_SELECTION }}
 ```
-
-The Node.js, test and extra-commands jobs run on Linux, and also on Windows in
-the `nightly` tier when `windows` is set. With `windows-pull-requests`, they
-also run on Windows in the `fast` and `full` tiers of a pull request or a manual
-run. The Node.js, test and extra-commands jobs start once `Lint and typecheck`
-passed, so tests never start before it, whether they run in the test job or
-inside `pnpm run checks`. The Node.js jobs run `pnpm run checks` with `lint` in
-`ANTELOPEJS_CHECKS_SKIP`, since `Lint and typecheck` already ran it. They keep
-`typecheck`, whose build output later steps may read.
-`Lint and typecheck` runs `checks:prepare` when the repository defines it, then
-`typecheck` and `lint`, on the first `node-versions` entry or `.nvmrc`.
-
-In the `nightly` tier only, the `Stress` job looks for tests that pass alone
-but time out under load. On Linux, with the first `node-versions` entry or
-`.nvmrc`, it installs, runs `setup-commands`, `checks:prepare` and `typecheck`,
-starts the services, then runs `pnpm run test` three times beside four busy
-loops per CPU. The loops take CPU time from the test runner's workers, as a
-loaded machine does, while the workers keep the count the runner picks from
-the CPUs it sees. It fails when any run fails, and its summary counts the
-failed runs. A pull request never runs it, and a caller sets nothing for it.
-
-Every Node.js, test and extra-commands job sets two variables for the commands
-it runs:
-
-- `ANTELOPEJS_CI_TIER` holds the tier, so a repository can run a browser smoke
-  test in `full` and its whole browser suite in `nightly`.
-- `ANTELOPEJS_TEST_BASE` holds, in the `fast` tier only, the commit the pull
-  request is compared with: the first parent of the checked-out merge commit,
-  present in the checkout. A repository with several packages can restrict its
-  tests to the packages `git diff "$ANTELOPEJS_TEST_BASE" HEAD` touches and
-  their dependents. It is empty in every other tier, where all tests run.
 
 It accepts these optional inputs:
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
-| `node-versions` | `""` | JSON array of Node.js versions; each runs checks in its own job. Empty uses `.nvmrc`. |
+| `node-versions` | `""` | JSON array of Node.js versions; each runs in its own jobs. Empty uses `.nvmrc`. |
 | `docs-files` | `""` | Newline-separated files passed to the docs action as `files`; empty skips the step. |
 | `docs-typescript-project` | `""` | TypeScript project passed to the docs action as `typescript-project`. |
-| `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. |
-| `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. With `test-job`, the test job uses the cache instead of the Node.js job. With `extra-commands-job`, the extra-commands job also uses it, under its own key. On Windows, the job restores the cache a second time. Tar creates a Windows symlink as a file link when its target is not extracted yet, so the second pass, with every target present, recreates pnpm's links as directory links. |
+| `services-compose-file` | `""` | Compose file resolving to a regular file inside the repository; empty skips services. With it, the tests run in a job of their own. |
+| `cache-paths` | `""` | Newline-separated paths cached with `actions/cache`, such as downloaded binaries; empty skips the cache step. The job that runs the tests uses the cache; a `Node <version>` job that runs only the checks does not. With `extra-commands-job`, the extra-commands job also uses it, under its own key. On Windows, the job restores the cache a second time. Tar creates a Windows symlink as a file link when its target is not extracted yet, so the second pass, with every target present, recreates pnpm's links as directory links. |
 | `cache-key-files` | `pnpm-lock.yaml` | Newline-separated globs hashed into the cache key, next to the runner OS and Node.js version. |
 | `setup-commands` | `""` | Multiline shell commands run with `bash -euo pipefail` right after the root `pnpm install`, in every job, before checks, tests and `extra-commands`. Use it for installs that checks need, such as `pnpm --dir frontend-vue install --frozen-lockfile`; empty skips the step. |
 | `extra-commands` | `""` | Multiline shell commands run after checks with `bash -euo pipefail`. |
 | `renovate-sync` | `false` | Accepted and ignored. Every caller passes `false` and runs the [Renovate sync](#renovate-sync) from its own job. |
-| `test-job` | `false` | Run `pnpm run test` in its own job, in parallel with the other checks. The `node` job then adds `test` to `ANTELOPEJS_CHECKS_SKIP` for `pnpm run checks`. |
+| `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
+| `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `windows` | `true` | Also run the Node.js, test and extra-commands jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
-| `windows-pull-requests` | `false` | With `windows`, also run the Windows jobs in the `fast` and `full` tiers of pull requests and manual runs. |
+| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
+| `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 
-On a pull request, the `gitleaks` job scans the commits the pull request adds,
-merge commits included, with gitleaks 8.30.1 and fails on any finding. It reads
-the commits between the parents of the pull request's merge ref, so base branch
-commits merged into the pull request are not scanned again. It loads the
-repository's `.gitleaks.toml` and skips the fingerprints listed in its
-`.gitleaksignore`; both are optional. A fingerprint without its leading commit,
-`<file>:<rule>:<line>`, still matches after a rebase or a squash. A finding in a
-file whose merge conflict was resolved by hand is reported as `b/<file>`. The
-job fails on an octopus merge, whose changes it cannot scan. On other events
-the job is skipped.
+It accepts one optional secret, `NOTION_TOKEN`: a Notion integration token
+allowed to read, insert and update content in the Tasks database, which files
+the flaky test task. A caller that passes no secret keeps working.
 
-The `checks` job stays the single required result. It fails when the `Tier` job
-did not succeed, when any job it waits for failed or was cancelled, and in the
-`draft` tier. A job the tier skips does not fail it.
+The `checks` job stays the single required result. It checks that the pull
+request title uses Conventional Commits. It fails when the `node` job did not
+succeed, when any job it waits for failed or was cancelled, and in the
+`nightly` tier when `Stress` did not succeed.
 
-Services start with `docker compose up -d --wait`. With `test-job` and no `extra-commands` in the Node.js job, the Node.js job does not start them. After a successful start,
-cleanup runs with `docker compose down -v` even if checks or extra commands
-fail. Pull request titles must use Conventional Commits. See the [checks
+Services start with `docker compose up -d --wait` in the `Test` and `Extra`
+jobs, and in a `Node <version>` job only when it runs `extra-commands`. After a
+successful start, cleanup runs with `docker compose down -v` even if checks,
+tests or extra commands fail. See the [checks
 contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
 examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
@@ -698,10 +734,9 @@ of `main` back into `next` keeps the next pull request's diff to the work done
 since. The release train reads the cycle's commits from the head of that pull
 request, so the changelog lists every task. Title the pull request as described
 in
-[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable). Its
-checks are those `next` already ran on the same commit: `ci-node.yml` gives the
-pull request the `none` tier, so `ci / checks` succeeds without running again.
-See the [caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable).
+`ci-node.yml` runs its `fast` tier on it, as on any other pull request. See the
+[caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ## Link rot
 
