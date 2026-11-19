@@ -34,14 +34,16 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install the type checker
-        run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1
+      - name: Install the type checker and pnpm
+        run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1 pnpm@10.20.0
 
       - name: Typecheck
         run: |
           "$RUNNER_TEMP/tools/node_modules/.bin/tsc" -p scripts/ci-tier/tsconfig.json --typeRoots "$RUNNER_TEMP/tools/node_modules/@types"
 
       - name: Test
+        env:
+          PNPM: ${{ runner.temp }}/tools/node_modules/.bin/pnpm
         run: node --test 'scripts/ci-tier/*.test.ts'
 
       - name: Lint the Node CI workflow

@@ -63,6 +63,10 @@ on:
         description: Accepted; the former name of windows-merge-queue, same effect
         default: false
         type: boolean
+      affected-tests:
+        description: "In the fast tier, run only the tests the pull request can affect: in a pnpm workspace, the test script of each package changed since the diff base and of its dependents, or the whole test script when a file outside the packages changes; in a single package whose test script is one vitest or jest command, that command with its changed-file option; otherwise the whole test script"
+        default: false
+        type: boolean
     secrets:
       NOTION_TOKEN:
         description: Notion integration token allowed to read, insert and update content in the Tasks database; with it, a test that fails then passes on its retry in the merge queue files a task in the Inbox
@@ -271,16 +275,37 @@ jobs:
         if: steps.leg.outputs.work == 'true' && steps.leg.outputs.tests == 'true' && (matrix.part == 'all' || matrix.part == 'test')
         env:
           CI: "1"
+          AFFECTED_TESTS: ${{ inputs.affected-tests }}
         run: |
           log="$RUNNER_TEMP/test-attempt-1.log"
-          if pnpm run test 2>&1 | tee "$log"; then
+          command=(pnpm run test)
+          if [[ "$AFFECTED_TESTS" == true && "$ANTELOPEJS_CI_TIER" == fast ]]; then
+            filter="...[$ANTELOPEJS_TEST_BASE]"
+            if [[ "$(pnpm ls -r --depth -1 --json | jq length)" -gt 1 ]]; then
+              selected="$(pnpm --filter "$filter" --include-workspace-root ls --depth -1 --json)"
+              if ! jq -e --arg root "$(pwd -P)" 'any(.[]; .path == $root)' <<< "${selected:-[]}" > /dev/null; then
+                command=(pnpm --filter "$filter" --workspace-concurrency=1 run test)
+              fi
+            else
+              declare -A changed_option=([vitest]="--changed=$ANTELOPEJS_TEST_BASE" [jest]="--changedSince=$ANTELOPEJS_TEST_BASE")
+              single_runner='^(vitest|jest)( [^;&|<>()$`]*)?$'
+              test_script="$(jq -r '.scripts.test // ""' package.json)"
+              if [[ "$test_script" =~ $single_runner ]]; then
+                command+=("${changed_option[${BASH_REMATCH[1]}]}")
+              fi
+            fi
+            if [[ "$PRIMARY_LEG" == true ]]; then
+              echo "Tests: \`${command[*]}\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          if "${command[@]}" 2>&1 | tee "$log"; then
             exit 0
           fi
           if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
             exit 1
           fi
           echo "::warning::pnpm run test failed in the merge queue. It runs once more: a pass marks a flaky test, a second failure fails the job."
-          pnpm run test
+          "${command[@]}"
           echo "flaky=true" >> "$GITHUB_OUTPUT"
           echo "::warning::pnpm run test failed, then passed on its retry: a test is flaky."
           echo "Flaky test: \`pnpm run test\` failed, then passed on its retry in the merge queue." >> "$GITHUB_STEP_SUMMARY"
