@@ -8,36 +8,41 @@ on:
         required: true
         type: string
       release-version:
-        required: true
+        description: Stable version a workflow_dispatch run releases; a preview ignores it
+        default: ""
         type: string
       release-commit:
-        required: true
+        description: Commit SHA a workflow_dispatch run releases; the run fails when the branch moved past it
+        default: ""
         type: string
       dependency-ranges:
-        required: true
+        description: JSON object mapping each dependency name to the stable range that replaces its preview pin
+        default: "{}"
         type: string
       install-core:
-        required: true
+        description: Install the AntelopeJS CLI before releasing
+        default: false
         type: boolean
       package-directory:
-        required: true
-        type: string
-      integration-branch:
-        required: true
+        description: Relative path to the package directory to release
+        default: .
         type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
+        description: Token allowed to create the release commit, tag, and GitHub release
         required: false
       NPM_ANTELOPE_TOKEN:
+        description: Token allowed to install and publish private packages
         required: false
 
 jobs:
   release:
+    if: (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch) && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview')))
     runs-on: ubuntu-latest
-    environment: npm-publish
+    environment: ${{ github.event_name != 'pull_request' && 'npm-publish' || '' }}
     concurrency:
-      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ inputs.package-directory }}
-      cancel-in-progress: false
+      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Resolve release mode
         id: mode
@@ -45,9 +50,11 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release-version }}
           RELEASE_COMMIT: ${{ inputs.release-commit }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ] && [[ "$GITHUB_REF" == refs/heads/* ]] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "mode=preview" >> "$GITHUB_OUTPUT"
+            echo "tag=next" >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             [ -z "$RELEASE_VERSION" ] || [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
               echo "A stable release needs release-version as M.m.p, got '$RELEASE_VERSION'." >&2
@@ -62,8 +69,11 @@ jobs:
             else
               echo "mode=stable" >> "$GITHUB_OUTPUT"
             fi
+          elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo "mode=pull-request" >> "$GITHUB_OUTPUT"
+            echo "tag=pr-$PULL_REQUEST" >> "$GITHUB_OUTPUT"
           else
-            echo "A push to a branch other than $DEFAULT_BRANCH publishes a preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
+            echo "A push to $DEFAULT_BRANCH publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
           fi
 
@@ -87,7 +97,7 @@ jobs:
               exit 1
               ;;
           esac
-          if [ "$MODE" != preview ] && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
+          if { [ "$MODE" = stable ] || [ "$MODE" = repin ]; } && [ -z "$RELEASE_GITHUB_TOKEN" ]; then
             echo "RELEASE_GITHUB_TOKEN is not configured." >&2
             exit 1
           fi
@@ -96,9 +106,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || '' }}
 
       - name: Check the planned commit
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         env:
           RELEASE_COMMIT: ${{ inputs.release-commit }}
         run: |
@@ -263,6 +274,7 @@ jobs:
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           RELEASE_VERSION: ${{ inputs.release-version }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
@@ -272,6 +284,9 @@ jobs:
               cat "$RUNNER_TEMP/npm-view.log" >&2
               return 1
             fi
+          }
+          held() {
+            [ -n "$(npm view "$1@$2" version 2>/dev/null || true)" ]
           }
           preview_of() {
             local name previous latest major minor patch base
@@ -305,13 +320,19 @@ jobs:
             echo "$base-next.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
           }
           name=$(node -p "require('./package.json').name")
-          if [ "$MODE" = preview ]; then
+          if [ "$MODE" = pull-request ]; then
+            version="0.0.0-pr.$PULL_REQUEST.$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
+            if held "$name" "$version"; then
+              echo "::notice::$name@$version is already published."
+              exit 0
+            fi
+          elif [ "$MODE" = preview ]; then
             version=$(preview_of)
             if [ -z "$version" ]; then
               echo "::notice::$name ships nothing new since its last preview, so it gets no new one."
               exit 0
             fi
-            if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
+            if held "$name" "$version"; then
               echo "::notice::$name@$version is already published."
               exit 0
             fi
@@ -386,7 +407,7 @@ jobs:
 
       - name: Apply dependency ranges
         id: ranges
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         working-directory: ${{ inputs.package-directory }}
         env:
           MODE: ${{ steps.mode.outputs.mode }}
@@ -507,7 +528,7 @@ jobs:
         run: pnpm add --global @antelopejs/core
 
       - name: Configure release identity
-        if: steps.mode.outputs.mode != 'preview'
+        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -519,34 +540,6 @@ jobs:
           LOCKFILE: ${{ steps.lockfile.outputs.path }}
         run: |
           git add -- "$PACKAGE_DIRECTORY/package.json" "$LOCKFILE"
-
-      - name: Bring the stable ranges to the integration branch
-        if: steps.ranges.outputs.message != ''
-        env:
-          BRANCH: ${{ inputs.integration-branch }}
-          MESSAGE: ${{ steps.ranges.outputs.message }}
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if ! git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" > /dev/null; then
-            exit 0
-          fi
-          commit=$(git commit-tree "$(git write-tree)" -p HEAD -m "$MESSAGE")
-          worktree="$RUNNER_TEMP/integration-branch"
-          auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)
-          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
-          trap 'git config --local --unset-all http.https://github.com/.extraheader || true; git worktree remove --force "$worktree" 2> /dev/null || true' EXIT
-          git worktree add --quiet --detach "$worktree" "origin/$BRANCH"
-          if ! git -C "$worktree" cherry-pick "$commit" > /dev/null 2>&1; then
-            if [ -n "$(git -C "$worktree" diff --name-only --diff-filter=U)" ]; then
-              echo "::warning::$BRANCH changed the same dependency lines since the plan, so it keeps them and the Next sync of this release will conflict."
-            fi
-            git -C "$worktree" cherry-pick --abort
-            exit 0
-          fi
-          if ! git -C "$worktree" push --quiet origin "HEAD:refs/heads/$BRANCH"; then
-            echo "::warning::The stable ranges were not pushed to $BRANCH, so the Next sync of this release will conflict."
-          fi
 
       - name: Push the stable ranges
         if: steps.mode.outputs.mode == 'repin'
@@ -736,11 +729,12 @@ jobs:
           SCRIPT
 
       - name: Publish preview
-        if: steps.mode.outputs.mode == 'preview' && steps.version.outputs.version != ''
+        if: (steps.mode.outputs.mode == 'preview' || (steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'private')) && steps.version.outputs.version != ''
         working-directory: ${{ inputs.package-directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PINS: ${{ steps.version.outputs.pins }}
+          TAG: ${{ steps.mode.outputs.tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           set -euo pipefail
@@ -755,7 +749,26 @@ jobs:
           }
           fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
           NODE
-          bash "$RUNNER_TEMP/publish.sh" next
+          bash "$RUNNER_TEMP/publish.sh" "$TAG"
+
+      - name: Install pkg.pr.new
+        if: steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'public' && steps.version.outputs.version != ''
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pkg-pr-new" pkg-pr-new@0.0.94
+
+      - name: Publish to pkg.pr.new
+        if: steps.mode.outputs.mode == 'pull-request' && inputs.registry == 'public' && steps.version.outputs.version != ''
+        working-directory: ${{ inputs.package-directory }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
+          NODE
+          "$RUNNER_TEMP/pkg-pr-new/node_modules/.bin/pkg-pr-new" publish --pnpm --comment=update .
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'

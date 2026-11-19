@@ -8,7 +8,6 @@ import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
 const workflowText = (file: string): string => readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
 const text = workflowText("release-npm.yml");
-const nextSync = workflowText("next-sync.yml");
 const root = mkdtempSync(join(tmpdir(), "release-workflows-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -47,6 +46,34 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
     env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output, ...env },
   });
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readFileSync(output, "utf8") };
+}
+
+interface Scope {
+  steps?: object;
+  inputs?: object;
+  github?: object;
+}
+
+function evaluate(expression: string, scope: Scope): unknown {
+  const source = expression
+    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+    .replace(/\.labels\.\*\.name\b/g, ".labels")
+    .replace(/\binputs\.([\w-]+)/g, 'inputs["$1"]')
+    .replace(/==/g, "===")
+    .replace(/!=/g, "!==");
+  assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
+  const contains = (list: string[], item: string): boolean => list.includes(item);
+  return new Function("steps", "inputs", "github", "contains", `return (${source})`)(scope.steps, scope.inputs, scope.github, contains);
+}
+
+function interpolate(template: string, scope: Scope): string {
+  return template.replace(/\$\{\{(.*?)\}\}/g, (_, expression: string) => String(evaluate(expression, scope) ?? ""));
+}
+
+function stepOf(text: string, name: string): string {
+  const step = text.split("\n      - ").find((candidate) => candidate.startsWith(`name: ${name}\n`));
+  assert.notEqual(step, undefined, `no step ${name}`);
+  return step ?? "";
 }
 
 function packageDirectory(name: string, manifest: object): string {
@@ -154,16 +181,12 @@ function publishPreview(text: string, cwd: string, version: string, env: Record<
   previews += 1;
   const log = join(root, `npm-publish-${previews}.log`);
   assert.equal(runStep(text, "Write the publish script", cwd).status, 0);
-  const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
+  const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, TAG: "next", NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
   if (!existsSync(log)) return { ...result, publication: null };
   const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
   const tarball = args.find((arg) => arg.endsWith(".tgz"));
   const manifest = tarball === undefined ? readFileSync(join(directory, "package.json"), "utf8") : spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout;
   return { ...result, publication: { manifest: JSON.parse(manifest), args: args.filter((arg) => arg !== tarball) } };
-}
-
-function pinned(version: string, spec: string): string {
-  return `${JSON.stringify({ name: "@antelopejs/m", version, description: "m", license: "Apache-2.0", type: "module", dependencies: { "@antelopejs/interface-database": spec } }, null, 2)}\n`;
 }
 
 function lockfile(spec: string, version: string): string {
@@ -184,26 +207,6 @@ function lockfile(spec: string, version: string): string {
     "    resolution: {integrity: sha512-x}",
     "",
   ].join("\n");
-}
-
-let origins = 0;
-function promotedOrigin(): string {
-  origins += 1;
-  const bare = join(root, `origin-${origins}.git`);
-  const seed = join(root, `seed-${origins}`);
-  git(root, "init", "--quiet", "--bare", "--initial-branch=main", bare);
-  git(root, "clone", "--quiet", bare, seed);
-  commitFiles(seed, "feat: first", { "package.json": pinned("1.8.6", ">=0.4.1 <0.5.0"), "pnpm-lock.yaml": lockfile(">=0.4.1 <0.5.0", "0.4.2"), "src/feed.ts": "x\n" });
-  git(seed, "tag", "v1.8.6");
-  git(seed, "checkout", "--quiet", "-b", "next");
-  const preview = "0.4.3-next.117.g3645dff";
-  commitFiles(seed, "fix(database): pin the interface preview", { "package.json": pinned("1.8.6", preview), "pnpm-lock.yaml": lockfile(preview, preview) });
-  commitFiles(seed, "fix(database): close the change feed", { "src/feed.ts": "y\n" });
-  git(seed, "checkout", "--quiet", "main");
-  git(seed, "merge", "--quiet", "--squash", "next");
-  git(seed, "commit", "--quiet", "-m", "fix(database): close the change feed (#7)");
-  git(seed, "push", "--quiet", "origin", "main", "next", "--tags");
-  return bare;
 }
 
 describe("release-npm.yml", () => {
@@ -323,17 +326,34 @@ describe("release-npm.yml", () => {
     }
   });
 
-  test("Resolve release mode previews a push off the default branch and releases a dispatch on it", () => {
-    const mode = (event: string, ref: string, version = "", commit = head) =>
+  test("Apply dependency ranges refuses the release while a runtime preview remains after it rewrote another, and names the remaining one", () => {
+    const directory = packageDirectory(`release-remaining`, {
+      name: "@antelopejs/x",
+      dependencies: { "@antelopejs/core": "0.6.0-next.1.gabc1234", "@antelopejs/db": "0.5.0-next.2.gabc1234" },
+    });
+    const refused = runStep(text, "Apply dependency ranges", directory, { MODE: "stable", DEPENDENCY_RANGES: '{"@antelopejs/core":">=0.6.0 <0.7.0"}' });
+    assert.deepEqual(
+      [refused.status, refused.stderr],
+      [
+        1,
+        "A stable release depends only on stable registry version ranges. Give each preview a stable range in dependency-ranges, and replace each other spec:\n" +
+          "dependencies @antelopejs/db 0.5.0-next.2.gabc1234\n",
+      ],
+    );
+  });
+
+  test("Resolve release mode previews a push to the default branch, previews a pull request, releases a dispatch on the default branch, and refuses any other event", () => {
+    const mode = (event: string, ref: string, version = "", commit = head, pullRequest = "") =>
       runStep(text, "Resolve release mode", root, {
         GITHUB_EVENT_NAME: event,
         GITHUB_REF: ref,
         DEFAULT_BRANCH: "main",
         RELEASE_VERSION: version,
         RELEASE_COMMIT: commit,
+        PULL_REQUEST: pullRequest,
       });
-    assert.equal(mode("push", "refs/heads/next").outputs, "mode=preview\n");
-    assert.equal(mode("push", "refs/heads/next", "", "").outputs, "mode=preview\n");
+    assert.equal(mode("push", "refs/heads/main").outputs, "mode=preview\ntag=next\n");
+    assert.equal(mode("push", "refs/heads/main", "", "").outputs, "mode=preview\ntag=next\n");
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
@@ -341,7 +361,17 @@ describe("release-npm.yml", () => {
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "", "").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
-    assert.equal(mode("push", "refs/heads/main").status, 1);
+    assert.deepEqual(mode("pull_request", "refs/pull/12/merge", "", "", "12").outputs, "mode=pull-request\ntag=pr-12\n");
+    assert.equal(mode("pull_request_target", "refs/heads/main", "", "", "12").status, 1);
+    const next = mode("push", "refs/heads/next");
+    assert.deepEqual(
+      [next.status, next.outputs, next.stderr],
+      [
+        1,
+        "",
+        "A push to main publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of main publishes a stable release. A push of refs/heads/next publishes nothing.\n",
+      ],
+    );
     assert.equal(mode("push", "refs/tags/v1.0.0").status, 1);
   });
 
@@ -864,8 +894,78 @@ describe("release-npm.yml", () => {
     assert.deepEqual([published.status, published.outputs], [0, ""]);
   });
 
+  test("Resolve release version derives a pull request preview from the head commit, and skips one npm already holds", () => {
+    const mergeCommit = "f".repeat(40);
+    const version = (env: Record<string, string>) =>
+      runStep(text, "Resolve release version", packagePath, {
+        PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+        MODE: "pull-request",
+        PULL_REQUEST: "12",
+        GITHUB_SHA: mergeCommit,
+        FAKE_NEXT_HEAD: "",
+        FAKE_LATEST: "",
+        FAKE_PUBLISHED: "",
+        ...env,
+      });
+    const suffix = `pr.12.3.g${head.slice(0, 7)}`;
+    assert.equal(version({ FAKE_LATEST: "0.4.2" }).outputs, `version=0.0.0-${suffix}\n`);
+    assert.equal(version({}).outputs, `version=0.0.0-${suffix}\n`);
+    assert.equal(version({ FAKE_LATEST: "0.4.2", FAKE_NEXT_HEAD: head }).outputs, `version=0.0.0-${suffix}\n`);
+    const published = version({ FAKE_LATEST: "0.4.2", FAKE_PUBLISHED: `0.0.0-${suffix}` });
+    assert.deepEqual([published.status, published.outputs, published.stdout], [0, "", `::notice::@antelopejs/x@0.0.0-${suffix} is already published.\n`]);
+  });
+
+  test("a private pull request preview publishes the pull request version under pr-<number>, recording the head commit as gitHead", () => {
+    const { directory, sha } = repository(`release-pull-request`, { "package.json": JSON.stringify({ name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/b": "^1.0.0" } }) });
+    const resolved = runStep(text, "Resolve release version", directory, {
+      PATH: `${fakeNpm}:${process.env.PATH ?? ""}`,
+      MODE: "pull-request",
+      PULL_REQUEST: "12",
+      GITHUB_SHA: "f".repeat(40),
+      FAKE_LATEST: "0.4.2",
+      FAKE_NEXT_HEAD: sha,
+      FAKE_PUBLISHED: "",
+      ...hermeticGit,
+    });
+    const version = `0.0.0-pr.12.1.g${sha.slice(0, 7)}`;
+    assert.equal(resolved.outputs, `version=${version}\n`);
+    const preview = publishPreview(text, directory, version, { TAG: "pr-12", PINS: "" });
+    assert.equal(preview.status, 0, preview.stderr);
+    assert.deepEqual(preview.publication, {
+      manifest: { name: "@antelopejs/x", version, dependencies: { "@antelopejs/b": "^1.0.0" }, gitHead: sha },
+      args: ["publish", "--tag", "pr-12"],
+    });
+  });
+
+  test("a public pull request preview installs the pinned pkg-pr-new and runs it on the package with the pull request version", () => {
+    const installer = join(root, "pkg-pr-new-installer");
+    mkdirSync(installer);
+    const installed = join(root, "pkg-pr-new-install.log");
+    writeFileSync(join(installer, "npm"), `#!/bin/sh\nprintf '%s\\n' "$@" > '${installed}'\n`);
+    chmodSync(join(installer, "npm"), 0o755);
+    const install = runStep(text, "Install pkg.pr.new", root, { PATH: `${installer}:${process.env.PATH ?? ""}` });
+    assert.equal(install.status, 0, install.stderr);
+    assert.deepEqual(readFileSync(installed, "utf8").trimEnd().split("\n"), ["install", "--no-save", "--no-audit", "--no-fund", "--prefix", join(root, "pkg-pr-new"), "pkg-pr-new@0.0.94"]);
+
+    const bin = join(root, "pkg-pr-new", "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "pkg-pr-new"), '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$@" > "$PKG_PR_NEW_LOG"\ncat package.json >> "$PKG_PR_NEW_LOG"\n');
+    chmodSync(join(bin, "pkg-pr-new"), 0o755);
+    const manifest = { name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/interface-x": "workspace:^", "@antelopejs/b": "catalog:" } };
+    const directory = packageDirectory(`release-pkg-pr-new`, manifest);
+    const log = join(root, "pkg-pr-new-publish.log");
+    const version = "0.0.0-pr.12.3.gabc1234";
+    const published = runStep(text, "Publish to pkg.pr.new", directory, { VERSION: version, PKG_PR_NEW_LOG: log });
+    assert.equal(published.status, 0, published.stderr);
+    const [cwd = "", ...rest] = readFileSync(log, "utf8").split("\n");
+    const args = rest.slice(0, 4);
+    assert.equal(realpathSync(cwd), realpathSync(directory));
+    assert.deepEqual(args, ["publish", "--pnpm", "--comment=update", "."]);
+    assert.deepEqual(JSON.parse(rest.slice(4).join("\n")), { ...manifest, version });
+  });
+
   test("Resolve release version publishes no preview when only the version and the changelog changed", () => {
-    const repository = join(root, `release-back-merge`);
+    const repository = join(root, `release-version-changelog`);
     const directory = join(repository, "packages", "x");
     mkdirSync(directory, { recursive: true });
     git(repository, "init", "--quiet");
@@ -1028,68 +1128,25 @@ describe("release-npm.yml", () => {
     assert.deepEqual(check({ REGISTRY: "private" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "private", NPM_ANTELOPE_TOKEN: "token" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "pull-request" }), [0, ""]);
+    assert.deepEqual(check({ REGISTRY: "private", MODE: "pull-request" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin", RELEASE_GITHUB_TOKEN: "token" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "npmjs" }), [1, "registry must be public or private, got 'npmjs'.\n"]);
   });
 
-  test("a stable run that rewrites a pin brings the range to next, so the Next sync merges without a conflict", () => {
-    const release = (bringToNext: boolean): { sync: StepResult; next: string } => {
-      const bare = promotedOrigin();
-      const runner = join(root, `runner-${origins}`);
-      git(root, "clone", "--quiet", bare, runner);
-      const env = { ...hermeticGit, RUNNER_TEMP: join(root, `temp-${origins}`) };
-      mkdirSync(env.RUNNER_TEMP);
-      assert.equal(runStep(text, "Configure release identity", runner, env).status, 0);
-      const ranges = runStep(text, "Apply dependency ranges", runner, { ...env, DEPENDENCY_RANGES: '{"@antelopejs/interface-database":">=0.5.0 <0.6.0"}' });
-      assert.equal(ranges.status, 0, ranges.stderr);
-      writeFileSync(join(runner, "pnpm-lock.yaml"), lockfile(">=0.5.0 <0.6.0", "0.5.0"));
-      const message = ranges.outputs.replace(/^message=/, "").trim();
-      const planned = git(runner, "rev-parse", "HEAD");
-      assert.equal(runStep(text, "Stage stable dependencies", runner, { ...env, PACKAGE_DIRECTORY: ".", LOCKFILE: "pnpm-lock.yaml" }).status, 0);
-      if (bringToNext) {
-        const brought = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "next", MESSAGE: message, GITHUB_TOKEN: "token" });
-        assert.deepEqual([brought.status, brought.stdout], [0, ""], brought.stderr);
-        assert.equal(git(bare, "log", "-1", "--format=%s", "next"), message);
-      }
-      assert.equal(git(runner, "rev-parse", "HEAD"), planned);
-      assert.deepEqual(git(runner, "diff", "--cached", "--name-only").split("\n"), ["package.json", "pnpm-lock.yaml"]);
-      commitFiles(runner, "chore(release): v1.8.7", { "package.json": pinned("1.8.7", ">=0.5.0 <0.6.0"), "CHANGELOG.md": "## v1.8.7\n" });
-      git(runner, "tag", "v1.8.7");
-      git(runner, "push", "--quiet", "origin", "main", "--tags");
-      const sync = join(root, `sync-${origins}`);
-      mkdirSync(sync);
-      const result = runStep(nextSync, "Merge", sync, {
-        ...hermeticGit,
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: `url.${bare}.insteadOf`,
-        GIT_CONFIG_VALUE_0: "https://github.com/AntelopeJS/m.git",
-        GH_REPO: "AntelopeJS/m",
-        BRANCH: "next",
-        DEFAULT_BRANCH: "main",
-        TOKEN: "token",
-      });
-      return { sync: result, next: git(bare, "show", "next:package.json") };
-    };
-    const conflicted = release(false);
-    assert.equal(conflicted.sync.status, 1);
-    assert.equal(conflicted.sync.outputs, "files=package.json, pnpm-lock.yaml\n");
-    const merged = release(true);
-    assert.equal(merged.sync.status, 0, merged.sync.stdout + merged.sync.stderr);
-    assert.equal(`${merged.next}\n`, pinned("1.8.7", ">=0.5.0 <0.6.0"));
-  });
-
-  test("a repin run commits the devDependency ranges to the default branch and to next, and refuses a runtime pin or no range", () => {
+  test("a repin run commits the devDependency ranges to the default branch, and refuses a runtime pin or no range", () => {
     const preview = "0.4.3-next.117.g3645dff";
     const manifest = (spec: string) => `${JSON.stringify({ name: "@antelopejs/m", version: "1.8.6", devDependencies: { "@antelopejs/interface-database": spec } }, null, 2)}\n`;
-    origins += 1;
-    const bare = join(root, `origin-${origins}.git`);
-    const seed = join(root, `seed-${origins}`);
+    const bare = join(root, "repin-origin.git");
+    const seed = join(root, "repin-seed");
     git(root, "init", "--quiet", "--bare", "--initial-branch=main", bare);
     git(root, "clone", "--quiet", bare, seed);
     commitFiles(seed, "chore: pin the interface preview", { "package.json": manifest(preview), "pnpm-lock.yaml": lockfile(preview, preview) });
-    git(seed, "push", "--quiet", "origin", "main", "main:next");
-    const runner = join(root, `runner-${origins}`);
+    git(seed, "push", "--quiet", "origin", "main");
+    const runner = join(root, "repin-runner");
     git(root, "clone", "--quiet", bare, runner);
-    const env = { ...hermeticGit, RUNNER_TEMP: join(root, `temp-${origins}`), GITHUB_TOKEN: "token" };
+    const env = { ...hermeticGit, RUNNER_TEMP: join(root, "repin-temp"), GITHUB_TOKEN: "token" };
     mkdirSync(env.RUNNER_TEMP);
     assert.equal(runStep(text, "Configure release identity", runner, env).status, 0);
     const ranges = runStep(text, "Apply dependency ranges", runner, { ...env, MODE: "repin", DEPENDENCY_RANGES: '{"@antelopejs/interface-database":">=0.5.0 <0.6.0"}' });
@@ -1098,14 +1155,11 @@ describe("release-npm.yml", () => {
     assert.equal(message, "fix(deps): depend on the stable @antelopejs/interface-database");
     writeFileSync(join(runner, "pnpm-lock.yaml"), lockfile(">=0.5.0 <0.6.0", "0.5.0"));
     assert.equal(runStep(text, "Stage stable dependencies", runner, { ...env, PACKAGE_DIRECTORY: ".", LOCKFILE: "pnpm-lock.yaml" }).status, 0);
-    const brought = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "next", MESSAGE: message });
-    assert.deepEqual([brought.status, brought.stdout], [0, ""], brought.stderr);
     const pushed = runStep(text, "Push the stable ranges", runner, { ...env, MESSAGE: message, GITHUB_REF_NAME: "main" });
     assert.equal(pushed.status, 0, pushed.stderr);
-    for (const branch of ["main", "next"]) {
-      assert.equal(git(bare, "log", "-1", "--format=%s", branch), message);
-      assert.equal(`${git(bare, "show", `${branch}:package.json`)}\n`, manifest(">=0.5.0 <0.6.0"));
-    }
+    assert.equal(git(bare, "log", "-1", "--format=%s", "main"), message);
+    assert.equal(`${git(bare, "show", "main:package.json")}\n`, manifest(">=0.5.0 <0.6.0"));
+    assert.deepEqual(git(bare, "branch", "--list"), "* main");
     assert.deepEqual(git(bare, "tag", "--list"), "");
 
     const runtime = packageDirectory(`release-repin-runtime`, {
@@ -1120,30 +1174,7 @@ describe("release-npm.yml", () => {
     assert.deepEqual([empty.status, empty.outputs], [1, ""]);
   });
 
-  test("Bring the stable ranges to the integration branch leaves a next that changed the same lines, and a repository without next", () => {
-    const bare = promotedOrigin();
-    const seed = join(root, `seed-${origins}`);
-    git(seed, "checkout", "--quiet", "next");
-    commitFiles(seed, "fix(database): pin a newer interface preview", { "package.json": pinned("1.8.6", "0.4.3-next.130.gaaaaaaa") });
-    git(seed, "push", "--quiet", "origin", "next");
-    const nextTip = git(bare, "rev-parse", "next");
-    const runner = join(root, `runner-${origins}`);
-    git(root, "clone", "--quiet", bare, runner);
-    const env = { ...hermeticGit, RUNNER_TEMP: root, BRANCH: "next", GITHUB_TOKEN: "token" };
-    assert.equal(runStep(text, "Configure release identity", runner, hermeticGit).status, 0);
-    writeFileSync(join(runner, "package.json"), pinned("1.8.6", ">=0.5.0 <0.6.0"));
-    git(runner, "add", "package.json");
-    const kept = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, MESSAGE: "fix(deps): depend on the stable @antelopejs/interface-database" });
-    assert.deepEqual(
-      [kept.status, kept.stdout],
-      [0, "::warning::next changed the same dependency lines since the plan, so it keeps them and the Next sync of this release will conflict.\n"],
-    );
-    assert.equal(git(bare, "rev-parse", "next"), nextTip);
-    const absent = runStep(text, "Bring the stable ranges to the integration branch", runner, { ...env, BRANCH: "integration" });
-    assert.deepEqual([absent.status, absent.stdout], [0, ""]);
-  });
-
-  test("Resolve release version publishes no preview for a release back-merge or a separately released nested package", () => {
+  test("Resolve release version publishes no preview for a release commit or a separately released nested package", () => {
     const previews = join(root, `release-previews`);
     mkdirSync(previews);
     git(previews, "init", "--quiet");
@@ -1165,14 +1196,85 @@ describe("release-npm.yml", () => {
         FAKE_LATEST: "0.5.0",
         FAKE_PUBLISHED: "",
       }).outputs;
-    const backMerge = commitFiles(previews, "chore: merge main into next", { "package.json": manifest("0.5.1"), "CHANGELOG.md": "## v0.5.1\n" });
-    assert.equal(decide(previous, backMerge), "");
+    const released = commitFiles(previews, "chore(release): v0.5.1", { "package.json": manifest("0.5.1"), "CHANGELOG.md": "## v0.5.1\n" });
+    assert.equal(decide(previous, released), "");
     const nested = commitFiles(previews, "chore(release): inner v0.2.0", { "inner/CHANGELOG.md": "## v0.2.0\n", "inner/index.js": "y\n", "pnpm-lock.yaml": "inner: 0.2.0\n" });
     assert.equal(decide(previous, nested), "");
     const frontend = commitFiles(previews, "fix(frontend): x", { "frontend-vue/index.vue": "x\n" });
     assert.match(decide(previous, frontend), /^version=0\.5\.1-next\./);
     const dependency = commitFiles(previews, "fix(deps): x", { "package.json": manifest("0.5.1", { "@antelopejs/y": "~1.0.0" }) });
     assert.match(decide(frontend, dependency), /^version=0\.5\.1-next\./);
+  });
+
+  const condition = (step: string): string | undefined => /^ {8}if: (.*)$/m.exec(stepOf(text, step))?.[1];
+  const runs = (step: string, mode: string, registry = "public", version = "1.0.0"): boolean => {
+    const expression = condition(step);
+    return expression === undefined || evaluate(expression, { steps: { mode: { outputs: { mode } }, version: { outputs: { version } } }, inputs: { registry } }) === true;
+  };
+
+  test("each publishing step runs for the modes and registries it serves, and no other", () => {
+    const publishers = ["Publish preview", "Install pkg.pr.new", "Publish to pkg.pr.new", "Publish stable release"];
+    const published = (mode: string, registry: string, version = "1.0.0") => publishers.filter((step) => runs(step, mode, registry, version));
+    for (const registry of ["public", "private"]) {
+      assert.deepEqual(published("preview", registry), ["Publish preview"], `preview ${registry}`);
+      assert.deepEqual(published("stable", registry), ["Publish stable release"], `stable ${registry}`);
+      assert.deepEqual(published("repin", registry), [], `repin ${registry}`);
+      for (const mode of ["preview", "pull-request"]) assert.deepEqual(published(mode, registry, ""), [], `${mode} ${registry} without a version`);
+    }
+    assert.deepEqual(published("pull-request", "private"), ["Publish preview"]);
+    assert.deepEqual(published("pull-request", "public"), ["Install pkg.pr.new", "Publish to pkg.pr.new"]);
+  });
+
+  test("only a stable or repin run checks the plan, applies ranges and configures the release identity", () => {
+    for (const step of ["Check the planned commit", "Apply dependency ranges", "Configure release identity"]) {
+      for (const mode of ["preview", "pull-request", "stable", "repin"]) assert.equal(runs(step, mode), mode === "stable" || mode === "repin", `${step} in ${mode}`);
+    }
+    assert.equal(runs("Push the stable ranges", "repin"), true);
+    for (const mode of ["preview", "pull-request", "stable"]) assert.equal(runs("Push the stable ranges", mode), false, mode);
+  });
+
+  test("the job runs a push only of the default branch, and a pull request only when it carries the preview label, a labeled event only for that label", () => {
+    const job = /^ {4}if: (.*)$/m.exec(text)?.[1] ?? "";
+    const gate = (event: string, action: string, labels: string[], label = "", branch = "main") =>
+      evaluate(job, { github: { event_name: event, ref_name: branch, event: { action, label: { name: label }, pull_request: { labels }, repository: { default_branch: "main" } } } });
+    assert.equal(gate("push", "", []), true);
+    assert.equal(gate("push", "", [], "", "next"), false);
+    assert.equal(gate("workflow_dispatch", "", []), true);
+    assert.equal(gate("pull_request", "opened", []), false);
+    assert.equal(gate("pull_request", "opened", ["ci:full"]), false);
+    assert.equal(gate("pull_request", "opened", ["preview"]), true);
+    assert.equal(gate("pull_request", "synchronize", ["ci:full", "preview"]), true);
+    assert.equal(gate("pull_request", "labeled", ["preview"], "preview"), true);
+    assert.equal(gate("pull_request", "labeled", ["preview", "ci:full"], "ci:full"), false);
+    assert.equal(gate("pull_request", "labeled", ["ci:full"], "ci:full"), false);
+  });
+
+  test("a pull request run uses no environment, has a group of its own per pull request, and cancels the run it replaces", () => {
+    const attribute = (indent: number, name: string): string => {
+      const prefix = `${" ".repeat(indent)}${name}: `;
+      const line = text.split("\n").find((candidate) => candidate.startsWith(prefix));
+      assert.notEqual(line, undefined, name);
+      return line?.slice(prefix.length) ?? "";
+    };
+    const scope = (event: string, number?: number) => ({ github: { repository: "AntelopeJS/x", event_name: event, event: { pull_request: number === undefined ? {} : { number } } }, inputs: { "package-directory": "." } });
+    const environment = attribute(4, "environment");
+    assert.equal(evaluate(environment, scope("push")), "npm-publish");
+    assert.equal(evaluate(environment, scope("workflow_dispatch")), "npm-publish");
+    assert.equal(evaluate(environment, scope("pull_request", 12)), "");
+    const group = (event: string, number?: number): string => interpolate(attribute(6, "group"), scope(event, number));
+    assert.notEqual(group("pull_request", 12), group("pull_request", 13));
+    assert.equal(group("pull_request", 12), group("pull_request", 12));
+    assert.notEqual(group("pull_request", 12), group("push"));
+    assert.notEqual(group("push"), group("workflow_dispatch"));
+    const cancel = attribute(6, "cancel-in-progress");
+    assert.deepEqual([evaluate(cancel, scope("pull_request", 12)), evaluate(cancel, scope("push")), evaluate(cancel, scope("workflow_dispatch"))], [true, false, false]);
+  });
+
+  test("a pull request run builds the head commit of the pull request, and any other run the commit of its event", () => {
+    const ref = /^ {10}ref: (.*)$/m.exec(text)?.[1] ?? "";
+    const head = "a".repeat(40);
+    assert.equal(evaluate(ref, { github: { event: { pull_request: { head: { sha: head } } } } }), head);
+    assert.equal(evaluate(ref, { github: { event: { pull_request: { head: {} } } } }), "");
   });
 
   test("only a job that installs restores and saves the pnpm cache", () => {
@@ -1187,7 +1289,7 @@ describe("release-npm.yml", () => {
   });
 
   test("a preview run cannot write to the repository", () => {
-    assert.doesNotMatch(text, /permissions:/, "the job inherits the grant of the entry that calls it");
+    assert.doesNotMatch(text, /permissions:|id-token/, "the job inherits the grant of the entry that calls it, and a private caller grants no id-token");
     for (const entry of ["release-npm-public.yml", "release-npm-private.yml"]) {
       const caller = workflowText(entry);
       const permissions = caller.slice(caller.indexOf("    permissions:\n"), caller.indexOf("    uses: ./.github/workflows/release-npm.yml\n"));

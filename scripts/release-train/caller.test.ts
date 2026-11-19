@@ -57,6 +57,24 @@ describe("the frozen caller", () => {
     assert.deepEqual(sent.filter((name) => !declared.includes(name)), ["package-directory"]);
   });
 
+  test("release-npm.yml takes a registry beside inputs that default as the wrappers' do, so a caller passes only what it needs", () => {
+    const accepted = entries(release, ["workflow_call", "inputs"]);
+    assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name), ["registry"]);
+    assert.equal(accepted.has("integration-branch"), false);
+    const shape = (lines: string[] | undefined) => lines?.filter((line) => line.startsWith("default: ") || line.startsWith("type: "));
+    for (const file of ["release-npm-public.yml", "release-npm-private.yml"]) {
+      const wrapper = entries(read(`../../.github/workflows/${file}`), ["workflow_call", "inputs"]);
+      for (const name of accepted.keys()) {
+        if (name === "registry" || (name === "install-core" && file.includes("private"))) continue;
+        assert.deepEqual(shape(accepted.get(name)), shape(wrapper.get(name)), `${file} ${name}`);
+      }
+    }
+    const direct = caller.replace("release-npm-public.yml", "release-npm.yml").replace("    with:\n", "    with:\n      registry: public\n");
+    const passed = [...entries(direct, ["jobs", "release", "with"]).keys()];
+    assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
+    assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name).filter((name) => !passed.includes(name)), []);
+  });
+
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
     const entry = read(`../../.github/workflows/${file}`);
@@ -78,11 +96,17 @@ describe("the frozen caller", () => {
       }
     });
 
-    test(`${file} forwards every input and secret it declares to release-npm.yml, and names its registry`, () => {
+    test(`${file} forwards every input but integration-branch and every secret it declares to release-npm.yml, and names its registry`, () => {
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
       assert.deepEqual(forwarded.get("registry"), [registry]);
-      for (const name of entries(entry, ["workflow_call", "inputs"]).keys()) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
+      const declaredInputs = entries(entry, ["workflow_call", "inputs"]);
+      assert.deepEqual(
+        [...declaredInputs.keys()].filter((name) => !forwarded.has(name)),
+        ["integration-branch"],
+      );
+      assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
+      for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
       const secrets = entries(entry, ["jobs", "release", "secrets"]);
       assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
@@ -105,7 +129,7 @@ describe("the frozen caller", () => {
       const wired = entries(job, ["jobs", "release", "with"]);
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
-      const resolve = (event: string, ref: string, dispatched: Record<string, string>) => {
+      const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
         const input = (name: string): string => {
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
           if (passed !== undefined) return dispatched[passed] ?? "";
@@ -114,6 +138,7 @@ describe("the frozen caller", () => {
         };
         const expression = (value: string): string => {
           if (value === "${{ github.event.repository.default_branch }}") return "main";
+          if (value === "${{ github.event.pull_request.number }}") return pullRequest;
           const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
           assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(forwarded.get(name)?.[0] ?? "")?.[1];
@@ -135,7 +160,9 @@ describe("the frozen caller", () => {
         });
         return [result.status, readFileSync(output, "utf8"), result.stderr];
       };
-      assert.deepEqual(resolve("push", "refs/heads/next", {}), [0, "mode=preview\n", ""]);
+      const pushed = /^ {4}branches: \[(\w+)\]$/m.exec(caller)?.[1];
+      assert.equal(pushed, "main", "the frozen caller previews on a push to the default branch");
+      assert.deepEqual(resolve("push", `refs/heads/${pushed}`, {}), [0, "mode=preview\ntag=next\n", ""]);
       const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}" };
       assert.deepEqual(Object.keys(dispatched), declared);
       assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);

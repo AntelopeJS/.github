@@ -38,7 +38,6 @@ function source(
     manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
-    baseManifests: stable === null ? [] : [{ name: `@antelopejs/${name}`, version: stable, ...stableFields }],
     stableSiblings: {},
     commits,
     notes: commits,
@@ -477,18 +476,35 @@ describe("computePlan", () => {
     });
   });
 
-  test("refuses a pin whose stable is older than the preview, that is not exact or that names no commit", () => {
+  test("refuses a pin whose base is above its dependency's stable or planned release, that is not exact or whose last part names no commit", () => {
     const pinned = source("dms", "0.20.2", ["fix: x"], {
-      dependencies: { "@antelopejs/x": "0.3.0-next.1.gabc1234", "@antelopejs/z": "0.2.9-beta.1" },
+      dependencies: {
+        "@antelopejs/x": "0.3.0-next.1.gabc1234",
+        "@antelopejs/z": "0.2.9-beta.1",
+        "@antelopejs/w": "0.3.0-next.4.gabc1234",
+        "@antelopejs/v": "0.2.10-next.g3f9a2c1.4",
+      },
       optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
     });
-    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", [])];
-    const refused = entry(plan([pinned, ...listed]).entries, "dms");
+    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", []), source("w", "0.2.9", ["fix: w"]), source("v", "0.2.9", ["fix: v"])];
+    const refused = entry(plan([pinned, ...listed], [], (name) => name !== "@antelopejs/x").entries, "dms");
     assert.deepEqual(refused.status === "refused" && refused.reasons, [
       "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
       "depends on preview @antelopejs/z@0.2.9-beta.1, which names no commit",
+      "depends on preview @antelopejs/w@0.3.0-next.4.gabc1234, whose stable 0.2.10 is older than 0.3.0",
+      "depends on preview @antelopejs/v@0.2.10-next.g3f9a2c1.4, which names no commit",
       "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
     ]);
+  });
+
+  test("moves a pin of the preview cut from a release commit to that stable release, whose tag holds the commit", () => {
+    const dependent = source("e", "0.1.0", ["fix: e"], { dependencies: { "@antelopejs/p": "1.2.5-next.40.g20d3668" } });
+    const released = source("p", "1.2.4", []);
+    const holds = (holder: string) => (name: string, sha: string, where?: string) => name === "@antelopejs/p" && sha === "20d3668" && where === holder;
+    const moved = entry(plan([dependent, released], [], holds("stable")).entries, "e");
+    assert.equal(moved.status === "release" && moved.ranges["@antelopejs/p"], ">=1.2.4 <1.3.0");
+    const refused = entry(plan([dependent, released], [], holds("head")).entries, "e");
+    assert.deepEqual(refused.status === "refused" && refused.reasons, ["depends on preview @antelopejs/p@1.2.5-next.40.g20d3668, whose stable 1.2.4 is older than 1.2.5"]);
   });
 
   test("moves a pin only to a stable release whose branch contains the preview's commit", () => {
@@ -593,12 +609,12 @@ describe("computePlan", () => {
     assert.equal(entry(entries, "c").status, "release");
   });
 
-  test("the level reads the cycle's commits as well as the branch's, so a promotion titled too low still releases a minor", () => {
+  test("the level reads the cycle's commits as well as the branch's, so a squash commit titled too low still releases a minor", () => {
     const promoted = {
-      ...source("promoted", "0.3.1", ["fix: promote next (#16)"]),
+      ...source("promoted", "0.3.1", ["fix: tidy the api (#16)"]),
       notes: [commit("feat(api)!: rename read to fetch (#15)"), commit("chore: tidy (#14)")],
     };
-    const quiet = { ...source("quiet", "0.2.0", ["fix: promote next (#3)"]), notes: [commit("chore: tidy (#2)")] };
+    const quiet = { ...source("quiet", "0.2.0", ["fix: tidy the scripts (#3)"]), notes: [commit("chore: tidy (#2)")] };
     const result = plan([promoted, quiet]);
     assert.deepEqual(
       result.entries.map((candidate) => (candidate.status === "release" ? [candidate.to, candidate.level] : candidate.status)),
@@ -675,7 +691,7 @@ describe("computePlan", () => {
   });
 
   test("the reason of an unchanged package reads the cycle's notes, and names no version without a stable release", () => {
-    const promoted = { ...source("promoted", "0.3.1", ["chore: promote next (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
+    const promoted = { ...source("promoted", "0.3.1", ["chore: tidy the build (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
     const fresh = source("fresh", null, ["build: scaffold", "docs: describe"]);
     assert.deepEqual(
       plan([promoted, fresh]).entries.map((found) => found.status === "unchanged" && found.reason),

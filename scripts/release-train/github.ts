@@ -167,8 +167,8 @@ export function mergedPulls(system: System): MergedPulls {
 /**
  * Answers whether the branch a checkout was read at holds a commit. The branch holds it when the commit
  * is an ancestor of the branch head, or of the head of a pull request merged into the branch. A squash
- * merge of `next` into the default branch keeps the preview's commit only in the head of its pull request.
- * Any `gh` failure answers no.
+ * merge keeps a pull request's commits only in its head, so a pin to the preview of a merged pull request
+ * finds its commit there. Any `gh` failure answers no.
  */
 export function commitSearch(system: System, pulls: MergedPulls): (from: Checkout, revision: Revision, sha: string) => boolean {
   const answers = new Map<string, boolean>();

@@ -114,6 +114,31 @@ describe("go", () => {
     );
   });
 
+  test("dispatches nothing for a package whose runtime preview pin cannot move, when its dependency is left out or its main lacks the commit", () => {
+    const excluded = fakeSystem();
+    assert.equal(main(["go", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb], excluded.system), 0);
+    assert.deepEqual(dispatches(excluded.calls), []);
+    assert.ok(
+      excluded.output().includes(`     depends on preview @antelopejs/interface-database@0.4.3-next.12.g${short(commits.cursor)}, which is not in this release\n`),
+      excluded.output(),
+    );
+    assert.ok(excluded.output().endsWith("Published: nothing.\nRefused, not published: @antelopejs/mongodb.\n"), excluded.output());
+
+    const lacking = repository("go-lacking", (path) => {
+      commit(path, "feat: first", { "package.json": manifest("go-lacking", "0.1.0") });
+      git(path, "tag", "v0.1.0");
+      commit(path, "fix: retry with the feed", { "package.json": manifest("go-lacking", "0.1.0", { peerDependencies: { "@antelopejs/mongodb": `1.8.7-next.41.g${short(commits.later)}` } }) });
+    });
+    const missing = fakeSystem();
+    assert.equal(main(["go", interfaceDatabase, mongodb, lacking], missing.system), 0, missing.errors());
+    assert.deepEqual(dispatches(missing.calls).map(([repo]) => repo), ["AntelopeJS/interface-database", "AntelopeJS/mongodb"]);
+    assert.ok(
+      missing.output().includes(`     depends on preview @antelopejs/mongodb@1.8.7-next.41.g${short(commits.later)}, whose main does not contain commit ${short(commits.later)}\n`),
+      missing.output(),
+    );
+    assert.ok(missing.output().endsWith("Refused, not published: @antelopejs/go-lacking.\n"), missing.output());
+  });
+
   test("retries a run gh cannot read up to 8 times in a row", () => {
     const fails = (count: number): "fail"[] => Array.from({ length: count }, () => "fail" as const);
     const { system, output } = fakeSystem({}, { views: { "AntelopeJS/interface-database": [...fails(8), "running", ...fails(8)] } });
@@ -154,16 +179,16 @@ describe("go", () => {
     );
   });
 
-  test("waits until npm serves a release before it dispatches the release that depends on it", () => {
+  test("waits until npm serves a release before it dispatches the release that depends on it, with the stable range of that release", () => {
     const { system, calls } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 3 } });
-    assert.equal(main(["go", interfaceDatabase, mongodb], system), 0);
+    assert.equal(main(["go", mongodb, interfaceDatabase], system), 0);
     const steps = calls
       .filter((args) => args[0] === "view" || args[0] === "workflow")
-      .map((args) => (args[0] === "view" ? `view ${args[1]}` : `dispatch ${args[4]}`));
+      .map((args) => (args[0] === "view" ? `view ${args[1]}` : `dispatch ${args[4]} ${args.find((arg) => arg.startsWith("dependency-ranges="))}`));
     assert.deepEqual(steps, [
-      "dispatch AntelopeJS/interface-database",
+      "dispatch AntelopeJS/interface-database dependency-ranges={}",
       ...Array.from({ length: 4 }, () => "view @antelopejs/interface-database@0.5.0"),
-      "dispatch AntelopeJS/mongodb",
+      'dispatch AntelopeJS/mongodb dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}',
     ]);
   });
 
@@ -300,13 +325,6 @@ describe("go", () => {
     );
     assert.ok(output().includes("     moves dependencies @antelopejs/moves-a ^0.10.0 -> ^0.11.0\n"), output());
     assert.ok(output().endsWith("Published: @antelopejs/moves-a 0.11.0, @antelopejs/moves-b 0.12.2.\n"), output());
-  });
-
-  test("refuses --ref and dispatches nothing", () => {
-    const { system, calls, errors } = fakeSystem();
-    assert.equal(main(["go", "--ref", "next", mongodb], system), 1);
-    assert.equal(errors(), "go always releases the default branch, so it takes no --ref.\n");
-    assert.deepEqual(calls, []);
   });
 
   test("a re-plan that fails still says what was published and what was not", () => {
