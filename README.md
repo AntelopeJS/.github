@@ -718,74 +718,49 @@ counts.
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
 
-## Next branch
+## Trunk and the merge queue
 
-A repository with a `next` branch takes agents' pull requests on `next`, where
-each one merges on its own green checks, and reaches `main` through one pull
-request from `next` that Antony merges.
+A repository develops on trunk: every pull request targets `main`, and GitHub's
+merge queue squashes it onto `main` once the required check (`ci / checks`,
+plus `ubuntu` in the DMS repositories) passes on the queued result. The
+`merge_group` event runs the `queue` tier of `ci-node.yml`, and a push to
+`main` publishes the preview described in [npm releases](#npm-releases). There
+is no integration branch: nothing needs promoting, and `main` stays releasable
+as stable at any time.
 
-`scripts/next-branch-setup.sh <owner>/<repo>` sets a repository up. It prints
-the changes it would make; with `--apply` it makes them and prints only
-failures. It can run again at any time and changes only what differs:
+`scripts/next-branch-setup.sh <owner>/<repo>` sets up a rolling branch for a
+repository that still keeps one, `cloud` with its `develop`, and defaults to
+`--branch develop`. It prints the
+changes it would make; with `--apply` it makes them and prints only failures.
+It can run again at any time and changes only what differs. A trunk repository
+does not run it.
 
-- it creates `next` from the default branch when `next` does not exist, and
-  never moves an existing `next`;
-- it allows auto-merge in the repository;
-- it creates or updates the repository ruleset `next`: changes through pull
-  requests only, no approval, squash merges, the status checks the default
-  branch requires (`ci / checks`, plus `ubuntu` in the DMS repositories)
-  without the up-to-date requirement. Repository admins may push to `next`;
-- it creates or updates the repository ruleset `next history`, which nobody
-  bypasses: `next` cannot be deleted, not even by the automatic deletion of
-  a merged pull request's head branch, and cannot be force-pushed.
+### Develop sync
 
-It never changes the default branch's rulesets, and it refuses
-`k8s-gitops-infra`, `antelope-hardening` and `antelope-compliance`, whose pull
-requests always target `main`. `--branch develop` sets up `develop` instead,
-for `cloud`.
-
-The reusable `next-sync.yml` workflow merges the default branch into `next`
-after each push to it, a merged pull request or a release commit alike, so
-that `next` always contains `main` and its pull request to `main` stays up to
-date. It pushes the merge commit with `RELEASE_GITHUB_TOKEN`, whose push starts
-the `next` checks. When the merge conflicts, it pushes nothing and fails with
-a message that names the conflicting files. With the `NOTION_TOKEN` secret, it
-also files one task in the Tasks Inbox, or adds the new run to the open task it
-filed before. Without it, it opens one issue in the repository with the
-default token, or comments on the one it opened before, and the next
-successful sync closes that issue. A repository admin resolves the conflict by
-merging `main` into `next` and pushing the merge commit straight to `next`: a
-pull request would squash it, and the same conflict would come back.
+The reusable `next-sync.yml` workflow serves `cloud` alone, whose `develop`
+branch still takes pull requests before it reaches `main`. It merges the default
+branch into the branch named by its `branch` input after each push to the
+default branch, so that the branch always contains `main`. It pushes the merge
+commit with `RELEASE_GITHUB_TOKEN`, whose push starts the branch checks. When
+the merge conflicts, it pushes nothing and fails with a message that names the
+conflicting files. With the `NOTION_TOKEN` secret, it also files one task in the
+Tasks Inbox, or adds the new run to the open task it filed before. Without it,
+it opens one issue in the repository with the default token, or comments on the
+one it opened before, and the next successful sync closes that issue. A
+repository admin resolves the conflict by merging `main` into the branch and
+pushing the merge commit straight to it: a pull request would squash it, and
+the same conflict would come back.
 
 | Input | Default | Description |
 | ----- | ------- | ----------- |
 | `branch` | `next` | Branch that receives the default branch. |
-| `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the `next` ruleset lets push. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the branch ruleset lets push. |
 | `NOTION_TOKEN` (secret) | | Optional. Notion integration token allowed to read, insert and update content in the Tasks database. Without it, a conflict opens a GitHub issue. |
 
 The calling job must grant `issues: write`, with or without `NOTION_TOKEN`: a
 called workflow cannot ask for more than its caller grants, so GitHub refuses
-to start the sync otherwise.
-
-GitHub sometimes drops the push event of a merge, for instance when the merge
-call answers a 502 and lands anyway: no `Next sync` runs and `next` stays
-behind `main`. The caller therefore also listens to `workflow_dispatch`, and
-`gh workflow run next-sync.yml --repo <owner/repo>` merges `main` into `next`.
-The sync reads the default branch from the repository, not from the event, so a
-dispatch needs no input and is a no-op when `next` already holds `main`. Check
-that `next` holds `main` after a promotion with
-`gh api repos/<owner/repo>/compare/main...next --jq .behind_by`, which must
-print `0`.
-
-Merge the pull request from `next` to `main` with **Squash and merge**. `main`
-requires a linear history, so a merge commit cannot land there, and the merge
-of `main` back into `next` keeps the next pull request's diff to the work done
-since. The release train reads the cycle's commits from the head of that pull
-request, so the changelog lists every task. Title the pull request as described
-in
-[promoting `next` to stable](CONTRIBUTING.md#promoting-next-to-stable).
-`ci-node.yml` runs its `fast` tier on it, as on any other pull request. See the
-[caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+to start the sync otherwise. `gh workflow run next-sync.yml --repo <owner/repo>`
+runs the sync on demand, for a push event GitHub dropped.
 
 ## Link rot
 
@@ -832,15 +807,6 @@ over the last 30 days, writes its Markdown report to the job summary, and
 uploads it with the JSON report and dataset as the `nightly-report` artifact.
 It reads the organization with the run's `GITHUB_TOKEN`, so it sees the public
 repositories only.
-
-## Stale issues
-
-The reusable `stale.yml` workflow takes no inputs. Call it once a day with job
-permissions `actions: write`, `issues: write`, and `pull-requests: write`.
-A scheduled run does its work on Mondays (UTC) only and ends at once on other
-days; a manual run always works. Issues become stale after 60 inactive days and
-close after 30 more; the `pending` label exempts issues. Pull requests never
-become stale. See the [daily caller example](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 ## pnpm workspaces
 

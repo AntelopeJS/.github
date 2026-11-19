@@ -98,7 +98,7 @@ the default branch.
 
 ## Shared CI and maintenance workflows
 
-Repositories call `ci-node.yml` and `stale.yml` through the same `v2` tag as
+Repositories call `ci-node.yml` through the same `v2` tag as
 the [release workflows](#reusable-release-workflows). Call Node CI on the triggers its
 [tiers](README.md#node-ci) read, with the [Renovate sync](README.md#renovate-sync)
 in its own job so that only that job, and only on Renovate pull requests, holds
@@ -110,9 +110,10 @@ name: ci
 on:
   push:
     branches:
-      - next
+      - main
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -159,48 +160,9 @@ Applications keep the `.nvmrc` default.
 Optional inputs enable documentation checks, compose services, and commands
 after `checks`. See the [workflow inputs](README.md#node-ci).
 
-Call `stale.yml` once a day. The actions permission lets the stale action store
-its state in the actions cache:
-
-```yaml
-name: Stale issues
-on:
-  schedule:
-    - cron: "30 1 * * *"
-  workflow_dispatch:
-permissions: {}
-jobs:
-  stale:
-    permissions:
-      actions: write
-      issues: write
-      pull-requests: write
-    uses: AntelopeJS/.github/.github/workflows/stale.yml@v2
-```
-
-A repository with a [`next` branch](README.md#next-branch) calls
-`next-sync.yml` on each push to `main`, and on demand by `workflow_dispatch`,
-which catches `next` up when GitHub dropped the push event of a merge. The job
-must grant `issues: write`, which the sync uses to open and close the conflict
-issue when no `NOTION_TOKEN` secret exists:
-
-```yaml
-name: Next sync
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-permissions: {}
-jobs:
-  next-sync:
-    permissions:
-      issues: write
-    uses: AntelopeJS/.github/.github/workflows/next-sync.yml@v2
-    secrets:
-      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
-      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-```
+`next-sync.yml` serves `cloud` alone, which merges its `develop` branch into
+`next` on each push; a repository on trunk calls no sync. See
+[`develop` sync](README.md#develop-sync).
 
 Use the shared Renovate preset in `renovate.json5`:
 
@@ -263,11 +225,6 @@ breaking change gives a minor release, never a major one.
 
 ### Stable fixes during a cycle
 
-1. Open the fix against `main`. It ships with the next release train like any
-   other change.
-2. The Next sync workflow merges `main` into `next`, so the cycle includes the
-   fix. When the merge conflicts, it files a task in the Inbox, or opens an
-   issue when the repository has no `NOTION_TOKEN` secret. A repository
-   admin merges `origin/main` into `next`, resolves the conflicts and pushes
-   the merge commit straight to `next`, not through a pull request, which
-   would squash it and bring the same conflict back.
+1. Open the fix against `main`. The merge queue squashes it onto `main` once
+   the checks pass on the queued result, and it ships with the next release
+   train like any other change.
