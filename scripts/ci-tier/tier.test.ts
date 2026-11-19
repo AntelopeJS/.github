@@ -263,6 +263,7 @@ const contract: ContractRow[] = [
   { name: "PR changing the root package.json", github: pullRequest("main", "feat/x"), changed: ["package.json"], expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },
   { name: "PR changing a nested pnpm-lock.yaml", github: pullRequest("main", "feat/x"), changed: ["frontend/pnpm-lock.yaml"], expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },
   { name: "PR changing a workflow", github: pullRequest("main", "feat/x"), changed: [".github/workflows/ci.yml"], expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },
+  { name: "PR changing a workflow whose name is not ASCII", github: pullRequest("main", "feat/x"), changed: [".github/workflows/déploiement.yml"], expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },
   { name: "PR changing the root README.md only", github: pullRequest("main", "docs/x"), changed: ["README.md"], expected: { tier: "fast", base: BASE, tests: "false", "test-base": BASE, work: "true" } },
   { name: "PR labeled ci:full", github: pullRequest("main", "feat/x", { labels: ["bug", "ci:full"] }), expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },
   { name: "PR in a repository whose CI_SELECTION is full", github: pullRequest("main", "feat/x"), vars: { CI_SELECTION: "full" }, expected: { tier: "full", base: BASE, tests: "true", "test-base": "", work: "true" } },

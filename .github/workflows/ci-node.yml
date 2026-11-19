@@ -84,7 +84,7 @@ jobs:
       run:
         shell: bash
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
@@ -126,7 +126,7 @@ jobs:
             fast)
               test_base="$BASE"
               tests=false
-              changed=$(git diff --name-only --no-renames "$BASE" HEAD)
+              changed=$(git -c core.quotepath=off diff --name-only --no-renames "$BASE" HEAD)
               while IFS= read -r file; do
                 case "$file" in
                   packages/*/playground/checks/*) tests=true ;;

@@ -55,7 +55,7 @@ runs:
               fetch --quiet --no-tags --depth=1 origin "$base"
           fi
           if [[ "$tier" == fast ]]; then
-            changed=$(git diff --name-only --no-renames "$base" HEAD)
+            changed=$(git -c core.quotepath=off diff --name-only --no-renames "$base" HEAD)
             while IFS= read -r file; do
               case "$file" in
                 pnpm-lock.yaml | */pnpm-lock.yaml | .github/workflows/* | .github/actions/*) tier=full ;;
