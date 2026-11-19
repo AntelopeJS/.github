@@ -69,6 +69,57 @@ with another layout. `--baseline <dir>` reads that directory:
 node scripts/ci-metrics/main.ts --baseline ~/ci-plan-2026-11/data --json baseline.json
 ```
 
+## Nightly failures the merge queue missed
+
+`nightly-main.ts` counts the nightly CI failures that the merge queue let
+through, over a window of 30 days by default. The target is none in a month.
+It prints a Markdown report, writes the full report as JSON with `--json`, and
+saves or loads its dataset with `--save` and `--load`, like `main.ts`:
+
+```sh
+node scripts/ci-metrics/nightly-main.ts --days 30 --save nightly-dataset.json --json nightly-report.json
+```
+
+It reads every repository whose default branch has a `merge_queue` rule. For each
+one it reads the completed CI runs of the `schedule` event on the default
+branch from the window and the week before it. Then it reads the merge queue's
+CI runs (`merge_group`) of the same period. Each job that failed in the first
+attempt of a nightly of the window is a failure. The `checks` gate counts only
+when no other job failed. For each failure the report gives:
+
+- the kind. A job that is `infra` either never got a runner (it lists no
+  step), failed a runner setup step, or has an annotation that names billing, a
+  lost runner, a full disk or a network error. Any other failed job is `test`.
+- the tests, which are the failure annotations of the job, where its test
+  runner reports to GitHub.
+- the baseline, which is the last earlier nightly that passed the job, and the
+  commits from the baseline to the nightly, from the compare API. A commit
+  passed the queue when one of its `merge_group` runs succeeded, because the
+  queue merges the commit it tested.
+- whether it reproduces. Either a re-run of the nightly fails the job again or
+  the next nightly fails it again.
+
+These give one verdict per failure:
+
+| verdict | when |
+| --- | --- |
+| `missed` | a reproduced `test` failure whose commits since the baseline all passed the queue |
+| `unqueued` | a reproduced `test` failure with a commit since the baseline that has no passing queue run, such as a push that bypassed the queue or a commit from before the rollout |
+| `no-new-commit` | a reproduced `test` failure on the commit the baseline passed, such as a dependency or a service that changed |
+| `no-baseline` | a reproduced `test` failure with no nightly in the dataset that passed the job before |
+| `flake` | a `test` failure that the next nightly and any re-run did not repeat |
+| `pending` | a `test` failure that nothing repeated yet, before the next nightly |
+| `infra` | an `infra` failure |
+
+A job that keeps failing since the same baseline counts once, with the verdict
+of its first failure, which its next nightly settles. The counts are per
+repository and organization-wide over the window. The daily run recomputes
+them from the API, so the 30-day total needs no saved state. The report also
+details the failures of each repository's latest nightly when it failed.
+
+A run reads about three calls per repository, plus a few per failed nightly,
+through the same client as `main.ts`.
+
 ## Checks
 
 ```sh
