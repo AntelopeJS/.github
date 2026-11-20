@@ -76,6 +76,7 @@ test("a third-party release waits three days before it can merge on its own", as
   const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", packageFile: "package.json" };
   assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: "3 days" });
   assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, undefined);
+  assert.equal((await rules({ ...vue, updateType: "pin" })).minimumReleaseAge, undefined);
   assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);
 });
 

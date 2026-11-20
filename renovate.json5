@@ -55,8 +55,8 @@
       automerge: true,
     },
     {
-      description: 'A third-party release waits three days before it can auto-merge, so a compromised version is found and pulled first',
-      matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
+      description: 'A third-party release waits three days before it can auto-merge, so a compromised version is found and pulled first; a pin has no release date, so it does not wait',
+      matchUpdateTypes: ['pinDigest', 'digest', 'patch', 'minor'],
       matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**'],
       minimumReleaseAge: '3 days',
     },

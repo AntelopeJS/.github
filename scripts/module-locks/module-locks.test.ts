@@ -317,21 +317,23 @@ describe("module-locks-renovate.yml", () => {
     assert.equal(copied.status, 0, copied.stderr);
     assert.equal(readFileSync(join(dir, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"), "utf8"), "recorded\n");
 
-    for (const path of [".git/hooks/post-commit", "antelope-lock/.git/hooks/x@1/post-commit", "src/index.ts", "antelope-lock/@antelopejs/api@1.1.0/nested/pnpm-lock.yaml"]) {
+    for (const path of [".git/hooks/post-commit", "antelope-lock/.git/hooks/x@1/post-commit", "src/index.ts", "antelope-lock/@antelopejs/api@1.1.0/nested/pnpm-lock.yaml", "antelope-lock/@antelopejs/api@1.1.0/.gitattributes"]) {
       const refused = runStep(renovate, COPY, dir, artifacts({ [path]: "#!/bin/sh\n" }));
       assert.equal(refused.status, 1, path);
       assert.match(refused.stdout, /::error::The module-locks artifacts hold .*, which is not a module lock file/, path);
     }
-    assert.equal(existsSync(join(dir, ".git/hooks/post-commit")), false);
   });
 
-  test("commits the locks, and stops after two lock commits on the branch", () => {
+  test("commits the locks without running git hooks, and stops after two lock commits on the branch", () => {
     const { dir } = bump({ "README.md": "base\n", ...lock("antelope-lock", "@antelopejs/api@1.0.0") }, { "README.md": "bump\n" }, {});
     const author = { AUTHOR: "41898282+github-actions[bot]@users.noreply.github.com", MESSAGE: LOCK_COMMIT, BASE_REF: "main" };
     const record = (version: string): StepResult => {
       write(dir, lock("antelope-lock", `@antelopejs/api@${version}`));
       return runStep(renovate, COMMIT, dir, author);
     };
+
+    write(dir, { ".git/hooks/post-commit": `#!/bin/sh\ntouch "${join(dir, "hook-ran")}"\n` });
+    chmodSync(join(dir, ".git/hooks/post-commit"), 0o755);
 
     for (const version of ["1.1.0", "1.2.0"]) {
       const commit = record(version);
@@ -340,8 +342,13 @@ describe("module-locks-renovate.yml", () => {
     }
     assert.equal(git(dir, "log", "-1", "--format=%an <%ae> %s"), `github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> ${LOCK_COMMIT}`);
 
+    assert.equal(existsSync(join(dir, "hook-ran")), false);
+    const head = git(dir, "rev-parse", "HEAD");
+
     const third = record("1.3.0");
     assert.equal(third.status, 1);
+    assert.equal(third.outputs.committed, undefined);
+    assert.equal(git(dir, "rev-parse", "HEAD"), head);
     assert.match(third.stdout, /::error::The checks recorded module locks again after 2 lock commits on this branch/);
   });
 
