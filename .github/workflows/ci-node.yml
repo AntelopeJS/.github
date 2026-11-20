@@ -75,7 +75,11 @@ on:
 jobs:
   node:
     name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    runs-on: ${{ matrix.os }}
+    # Linux legs on our runners when the CALLING repository's variable RUNNER_CI names a scale set (the
+    # private repositories: antelope-ci); Windows legs, and every leg when RUNNER_CI is empty or unset
+    # (every public repository), on GitHub's runners. Set RUNNER_CI per repository, never at organisation
+    # level: the runner group refuses public repositories, and their jobs would wait forever.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.RUNNER_CI || matrix.os }}
     permissions:
       contents: read
     strategy:
@@ -465,7 +469,7 @@ jobs:
     name: Stress
     needs: node
     if: ${{ !cancelled() && needs.node.outputs.tier == 'nightly' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -572,7 +576,7 @@ jobs:
   checks:
     if: always()
     needs: [node, stress]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     defaults:
