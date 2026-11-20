@@ -1,0 +1,55 @@
+name: Module locks committed
+description: Fail when an install or a test run of this job wrote an antelope-lock/ file that is not committed, and on a Renovate pull request upload what it wrote for module-locks-renovate.yml
+
+outputs:
+  recorded:
+    description: true when the job wrote an antelope-lock/ file that is not committed
+    value: ${{ steps.locks.outputs.recorded }}
+
+runs:
+  using: composite
+  steps:
+    - name: Find the module locks the job wrote
+      id: locks
+      shell: bash
+      run: |
+        changes=$(git status --porcelain --untracked-files=all -- ':(glob)**/antelope-lock/**')
+        if [ -z "$changes" ]; then
+          exit 0
+        fi
+        printf '%s\n' "$changes" > "$RUNNER_TEMP/module-locks-changes"
+        copy="$RUNNER_TEMP/module-locks-$(date +%s%N)-$RANDOM"
+        mkdir -p "$copy"
+        git ls-files -z --others --modified --exclude-standard -- ':(glob)**/antelope-lock/**' | while IFS= read -r -d '' file; do
+          if [ -f "$file" ]; then
+            mkdir -p "$copy/$(dirname "$file")"
+            cp "$file" "$copy/$file"
+          fi
+        done
+        {
+          echo "recorded=true"
+          echo "copy=${copy}"
+          echo "name=$(basename "$copy")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload the module locks for the Renovate pull request
+      if: >-
+        steps.locks.outputs.recorded == 'true'
+        && runner.os == 'Linux'
+        && github.event_name == 'pull_request'
+        && startsWith(github.head_ref, 'renovate/')
+        && github.event.pull_request.head.repo.full_name == github.repository
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.locks.outputs.name }}
+        path: ${{ steps.locks.outputs.copy }}
+        include-hidden-files: true
+        retention-days: 1
+
+    - name: Fail on the module locks the job wrote
+      if: steps.locks.outputs.recorded == 'true'
+      shell: bash
+      run: |
+        cat "$RUNNER_TEMP/module-locks-changes"
+        echo "::error::This job wrote module locks that are not committed: commit the antelope-lock/ files listed above, and delete the lock of any version they replace. On a Renovate pull request, module-locks-renovate.yml commits them."
+        exit 1

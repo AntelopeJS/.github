@@ -1,0 +1,238 @@
+name: Module locks refresh
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: Newline-separated folders that hold an antelope.config.ts, refreshed with ajs project modules update --fix; empty refreshes none
+        default: "."
+        type: string
+      setup-commands:
+        description: Multiline shell commands run after the root pnpm install, before the refresh; write variables the configurations read to $GITHUB_ENV
+        default: ""
+        type: string
+      commands:
+        description: Multiline shell commands run after the refresh, before the changes are read, such as a test run that records the locks of a test configuration
+        default: ""
+        type: string
+    secrets:
+      RELEASE_GITHUB_TOKEN:
+        description: Token that pushes antelopejs/module-locks and opens its pull request, so that the pull request's checks start
+        required: true
+
+env:
+  BRANCH: antelopejs/module-locks
+
+jobs:
+  refresh:
+    name: Refresh the module locks
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    concurrency:
+      group: module-locks-refresh-${{ github.event_name == 'pull_request' && github.ref || 'default' }}
+      cancel-in-progress: false
+    outputs:
+      state: ${{ steps.describe.outputs.state }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --reporter=silent
+
+      - name: Run setup commands
+        if: inputs.setup-commands != ''
+        env:
+          SETUP_COMMANDS: ${{ inputs.setup-commands }}
+        run: bash -euo pipefail -c "$SETUP_COMMANDS"
+
+      - name: Run ajs project modules update --fix in each project, a second time when the first run fails, until a core release carries AntelopeJS/antelopejs#535
+        env:
+          PROJECTS: ${{ inputs.projects }}
+        run: |
+          while IFS= read -r project; do
+            if [ -z "$project" ]; then
+              continue
+            fi
+            folder=$project
+            until [ -x "$folder/node_modules/.bin/ajs" ]; do
+              if [ "$folder" = . ] || [ "$folder" = / ]; then
+                echo "::error::No node_modules/.bin/ajs in ${project} or a folder above it: add @antelopejs/core to its dependencies."
+                exit 1
+              fi
+              folder=$(dirname "$folder")
+            done
+            ajs="$folder/node_modules/.bin/ajs"
+            "$ajs" project modules update --fix -p "$project" >&2 || "$ajs" project modules update --fix -p "$project" >&2
+          done <<< "$PROJECTS"
+          pnpm install --no-frozen-lockfile --reporter=silent >&2
+
+      - name: Run the commands after the refresh
+        if: inputs.commands != ''
+        env:
+          COMMANDS: ${{ inputs.commands }}
+        run: bash -euo pipefail -c "$COMMANDS"
+
+      - name: Describe the refresh
+        id: describe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out="$RUNNER_TEMP/module-locks"
+          mkdir -p "$out"
+          lock_folders() {
+            grep -E '(^|/)antelope-lock/' | sed 's|/[^/]*$||' | sort -u || true
+          }
+          git add -A
+          git ls-tree -r --name-only HEAD | lock_folders > "$out/before"
+          git ls-files | lock_folders > "$out/after"
+          comm -3 "$out/before" "$out/after" > "$out/moved"
+          git diff --cached --name-only HEAD | lock_folders | comm -12 - "$out/before" | comm -12 - "$out/after" > "$out/resolved"
+          git diff --cached --binary > "$out/refresh.patch"
+
+          if git diff --cached --quiet; then
+            echo "state=current" >> "$GITHUB_OUTPUT"
+            echo "No module lock changed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "Refreshes the AntelopeJS module locks: \`ajs project modules update --fix\` records the newest release each module's range accepts and resolves the dependencies of every locked module again."
+            if [ -s "$out/moved" ]; then
+              echo
+              echo "| Lock folder | Module | From | To |"
+              echo "| --- | --- | --- | --- |"
+              awk -F'\t' '
+                {
+                  side = $1 != "" ? "from" : "to"
+                  path = $1 != "" ? $1 : $2
+                  at = index(path, "antelope-lock/")
+                  folder = substr(path, 1, at + length("antelope-lock") - 1)
+                  module = substr(path, at + length("antelope-lock/"))
+                  split_at = match(module, /@[^@]*$/)
+                  name = substr(module, 1, split_at - 1)
+                  key = folder SUBSEP name
+                  if (!(key in seen)) { seen[key]; order[++count] = key; folders[key] = folder; names[key] = name }
+                  versions[key, side] = versions[key, side] (versions[key, side] == "" ? "" : ", ") "`" substr(module, split_at + 1) "`"
+                }
+                END {
+                  for (i = 1; i <= count; i++) {
+                    key = order[i]
+                    from = versions[key, "from"] == "" ? "none" : versions[key, "from"]
+                    to = versions[key, "to"] == "" ? "none" : versions[key, "to"]
+                    printf "| `%s` | `%s` | %s | %s |\n", folders[key], names[key], from, to
+                  }
+                }' "$out/moved"
+            fi
+            if [ -s "$out/resolved" ]; then
+              echo
+              echo "Resolved again at the same version:"
+              echo
+              sed 's/.*/- `&`/' "$out/resolved"
+            fi
+            if ! git diff --cached --quiet -- ':(glob)**/antelope.config.ts' ':(glob)**/package.json'; then
+              echo
+              echo "A release outside a range moved these ranges. Check each one before you merge:"
+              echo
+              echo '```diff'
+              git diff --cached -- ':(glob)**/antelope.config.ts' ':(glob)**/package.json'
+              echo '```'
+            fi
+            if ! git diff --cached --quiet -- . ':(exclude,glob)**/antelope-lock/**'; then
+              echo
+              echo "Other files:"
+              echo
+              echo '```'
+              git diff --cached --stat -- . ':(exclude,glob)**/antelope-lock/**'
+              echo '```'
+            fi
+          } > "$out/body.md"
+          cat "$out/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+          state=changed
+          credentials=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 --wrap=0)
+          echo "::add-mask::${credentials}"
+          if git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" fetch -q origin "refs/heads/${BRANCH}" 2> /dev/null &&
+            git merge-base --is-ancestor HEAD FETCH_HEAD &&
+            [ "$(git write-tree)" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+            state=proposed
+          fi
+          echo "state=${state}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.describe.outputs.state != 'current'
+        with:
+          name: module-locks
+          path: ${{ runner.temp }}/module-locks
+          retention-days: 1
+
+  publish:
+    name: Open or update the pull request
+    needs: refresh
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: module-locks-publish
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      BASE: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      STATE: ${{ needs.refresh.outputs.state }}
+      TITLE: "build(deps): update the AntelopeJS module locks"
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.STATE == 'changed'
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.STATE != 'current'
+        with:
+          name: module-locks
+          path: ${{ runner.temp }}/module-locks
+
+      - name: Push the refreshed locks
+        if: env.STATE == 'changed'
+        run: |
+          git apply --index "$RUNNER_TEMP/module-locks/refresh.patch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --no-verify -q -m "$TITLE"
+          git push --no-verify -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
+
+      - name: Open, update or close the pull request
+        run: |
+          number=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not))[0].number // empty')
+          if [ "$STATE" = current ]; then
+            if [ -n "$number" ]; then
+              gh pr close -R "$GITHUB_REPOSITORY" "$number" --delete-branch --comment "No module lock on \`${BASE}\` changed since this pull request opened, or \`${BASE}\` already has these locks." > /dev/null
+            fi
+            exit 0
+          fi
+          echo -e "\nOpened by the [module locks refresh](${RUN_URL})." >> "$RUNNER_TEMP/module-locks/body.md"
+          if [ -n "$number" ]; then
+            gh pr edit -R "$GITHUB_REPOSITORY" "$number" --body-file "$RUNNER_TEMP/module-locks/body.md" > /dev/null
+          else
+            gh pr create -R "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/module-locks/body.md" > /dev/null
+          fi
