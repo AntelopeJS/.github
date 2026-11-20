@@ -673,6 +673,16 @@ request title uses Conventional Commits. It fails when the `node` job did not
 succeed, when any job it waits for failed or was cancelled, and in the
 `nightly` tier when `Stress` did not succeed.
 
+The Linux jobs run on the runner named by the calling repository's `RUNNER_CI`
+variable when it is set, and on `ubuntu-latest` when it is empty or unset. A
+reusable workflow reads the caller's variables, so each private repository sets
+`RUNNER_CI` to its self-hosted runner scale set, and a public repository sets
+nothing. Set it per repository, never at the organisation level: a runner group
+limited to the private repositories would leave a public repository's jobs
+waiting. The Windows legs stay on `windows-latest`, and the release workflows stay
+on GitHub's runners, because npm provenance needs a GitHub-hosted runner. The
+renovate-sync, next-sync and tier-checks jobs follow the same variable.
+
 Services start with `docker compose up -d --wait` in the `Test` and `Extra`
 jobs, and in a `Node <version>` job only when it runs `extra-commands`. After a
 successful start, cleanup runs with `docker compose down -v` even if checks,

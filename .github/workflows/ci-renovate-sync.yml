@@ -10,7 +10,11 @@ jobs:
       github.event_name == 'pull_request'
       && startsWith(github.head_ref, 'renovate/')
       && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    # Our runners when the CALLING repository's variable RUNNER_CI names a scale set (the private
+    # repositories: antelope-ci); GitHub's when it is empty or unset, which is the case for every public
+    # repository. Set RUNNER_CI per repository, never at organisation level: the runner group refuses
+    # public repositories, and their jobs would wait for a runner forever.
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 360
     concurrency:
       group: ci-renovate-sync-${{ github.event.pull_request.number }}
