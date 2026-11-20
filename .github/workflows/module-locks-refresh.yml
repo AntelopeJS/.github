@@ -80,7 +80,7 @@ jobs:
               folder=$(dirname "$folder")
             done
             ajs="$folder/node_modules/.bin/ajs"
-            "$ajs" project modules update --fix -p "$project" >&2 || "$ajs" project modules update --fix -p "$project" >&2
+            "$ajs" project modules update --fix -p "$project" < /dev/null >&2 || "$ajs" project modules update --fix -p "$project" < /dev/null >&2
           done <<< "$PROJECTS"
           pnpm install --no-frozen-lockfile --reporter=silent >&2
 

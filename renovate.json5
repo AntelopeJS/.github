@@ -49,10 +49,16 @@
       groupName: 'AntelopeJS modules',
     },
     {
-      description: "GitHub's auto-merge puts a green pull request in the merge queue; cloud and antelope-web have no merge queue, so a person merges there",
+      description: "GitHub's auto-merge puts a green pull request in the merge queue; these repositories have no merge queue, so a person merges there",
       matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
-      matchRepositories: ['!AntelopeJS/cloud', '!AntelopeJS/antelope-web'],
+      matchRepositories: ['!AntelopeJS/cloud', '!AntelopeJS/antelope-web', '!AntelopeJS/k8s-gitops-infra', '!AntelopeJS/antelope-hardening', '!AntelopeJS/antelope-compliance'],
       automerge: true,
+    },
+    {
+      description: 'A third-party release waits three days before it can auto-merge, so a compromised version is found and pulled first',
+      matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
+      matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**'],
+      minimumReleaseAge: '3 days',
     },
     {
       description: 'ignorePaths leaves out **/test/** of config:recommended so the custom managers read the test stacks; every other manager still skips it',

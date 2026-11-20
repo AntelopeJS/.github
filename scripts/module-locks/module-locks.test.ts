@@ -16,6 +16,9 @@ const DESCRIBE = "Describe the refresh";
 const FIND = "Find the module locks the job wrote";
 const FAIL = "Fail on the module locks the job wrote";
 const PRUNE = "Delete the locks of the versions the bump replaces";
+const COPY = "Copy the recorded locks into the checkout";
+const COMMIT = "Commit the locks";
+const LOCK_COMMIT = "build(deps): record the module locks of the bumped modules";
 const BRANCH = "antelopejs/module-locks";
 
 const root = mkdtempSync(join(tmpdir(), "module-locks-"));
@@ -208,6 +211,14 @@ describe("module-locks-refresh.yml", () => {
     assert.equal(refreshRun(dir, ".").describe.outputs.state, "proposed");
   });
 
+  test("refreshes every project even when ajs reads its standard input", () => {
+    const dir = repository({ "a/antelope.config.ts": "", "b/antelope.config.ts": "" });
+    const log = installAjs(dir, "cat > /dev/null");
+
+    assert.equal(runStep(refresh, UPDATE, dir, { PROJECTS: "a\nb\n" }).status, 0);
+    assert.equal(readFileSync(log, "utf8"), "project modules update --fix -p a\nproject modules update --fix -p b\n");
+  });
+
   test("fails with the fix when no folder holds node_modules/.bin/ajs", () => {
     const dir = repository({ "playground/antelope.config.ts": "export default {};\n" });
 
@@ -292,6 +303,46 @@ describe("module-locks-renovate.yml", () => {
 
     assert.equal(prune.status, 0, prune.stderr);
     assert.equal(git(dir, "status", "--porcelain", "--untracked-files=all"), "?? antelope-lock/@antelopejs/api@11.1.0/pnpm-lock.yaml");
+  });
+
+  test("copies only module lock files from the artifacts, and refuses anything else", () => {
+    const dir = repository(lock("antelope-lock", "@antelopejs/api@1.0.0"));
+    const artifacts = (files: Record<string, string>): Record<string, string> => {
+      const temp = mkdtempSync(join(root, "artifacts-"));
+      write(join(temp, "module-locks-artifacts"), files);
+      return { RUNNER_TEMP: temp };
+    };
+
+    const copied = runStep(renovate, COPY, dir, artifacts(lock("packages/m/antelope-lock", "@antelopejs/api@1.1.0", "recorded\n")));
+    assert.equal(copied.status, 0, copied.stderr);
+    assert.equal(readFileSync(join(dir, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"), "utf8"), "recorded\n");
+
+    for (const path of [".git/hooks/post-commit", "antelope-lock/.git/hooks/x@1/post-commit", "src/index.ts", "antelope-lock/@antelopejs/api@1.1.0/nested/pnpm-lock.yaml"]) {
+      const refused = runStep(renovate, COPY, dir, artifacts({ [path]: "#!/bin/sh\n" }));
+      assert.equal(refused.status, 1, path);
+      assert.match(refused.stdout, /::error::The module-locks artifacts hold .*, which is not a module lock file/, path);
+    }
+    assert.equal(existsSync(join(dir, ".git/hooks/post-commit")), false);
+  });
+
+  test("commits the locks, and stops after two lock commits on the branch", () => {
+    const { dir } = bump({ "README.md": "base\n", ...lock("antelope-lock", "@antelopejs/api@1.0.0") }, { "README.md": "bump\n" }, {});
+    const author = { AUTHOR: "41898282+github-actions[bot]@users.noreply.github.com", MESSAGE: LOCK_COMMIT, BASE_REF: "main" };
+    const record = (version: string): StepResult => {
+      write(dir, lock("antelope-lock", `@antelopejs/api@${version}`));
+      return runStep(renovate, COMMIT, dir, author);
+    };
+
+    for (const version of ["1.1.0", "1.2.0"]) {
+      const commit = record(version);
+      assert.equal(commit.status, 0, commit.stderr);
+      assert.equal(commit.outputs.committed, "true");
+    }
+    assert.equal(git(dir, "log", "-1", "--format=%an <%ae> %s"), `github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> ${LOCK_COMMIT}`);
+
+    const third = record("1.3.0");
+    assert.equal(third.status, 1);
+    assert.match(third.stdout, /::error::The checks recorded module locks again after 2 lock commits on this branch/);
   });
 
   test("leaves a lock no removed line names, such as the version a range resolved to", () => {

@@ -858,14 +858,17 @@ Mend's hosted Renovate cannot run `ajs`, so a Renovate bump of a module arrives
 without its lock, and the checks record it. The reusable
 `module-locks-renovate.yml` workflow runs after those checks, on a pull request
 from a `renovate/*` branch of the same repository. When the run uploaded
-`module-locks-*` artifacts, it downloads them into the pull request's head. In
-the folder of each new lock, it deletes the locks of the same package whose
-version a line the pull request removed names and no line it adds names.
-It commits the result as `github-actions[bot]`, an author the
-[Renovate preset](#renovate-preset) ignores. It pushes the commit to the branch
-with an installation token of the same app, so the checks run again on the new
-head. The lock
-of a version a range resolved to stays until the next refresh deletes it.
+`module-locks-*` artifacts, it downloads them into a scratch folder. The job
+that uploaded them ran the bumped dependencies, so it copies into the pull
+request's head only regular files at `antelope-lock/<package>@<version>/<file>`
+paths, and fails on anything else. In the folder of each new lock, it deletes
+the locks of the same package whose version a line the pull request removed
+names and no line it adds names. It commits the result as `github-actions[bot]`,
+an author the [Renovate preset](#renovate-preset) ignores, with git hooks off.
+Only then does it mint an installation token of the same app and push, so the
+checks run again on the new head. A branch that already holds two of these
+commits gets no third: the job fails and names the locks to commit by hand. The
+lock of a version a range resolved to stays until the next refresh deletes it.
 
 ```yaml
 jobs:
@@ -903,7 +906,9 @@ The preset:
   conflicts, since the merge queue tests the merged result;
 - enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
   green one enters the merge queue. Majors stay manual, and so does every update
-  in `cloud` and `antelope-web`, which have no merge queue;
+  in `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
+  `antelope-compliance`, which have no merge queue. A third-party release waits
+  three days before such an update opens; an `@antelopejs` one does not;
 - reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
   `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin, and
   bumps them in one `AntelopeJS modules` pull request, whose locks the

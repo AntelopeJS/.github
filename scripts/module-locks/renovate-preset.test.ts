@@ -32,9 +32,14 @@ const { applyPackageRules }: { applyPackageRules(config: Config, stage: string):
 const preset = JSON5.parse(readFileSync(new URL("../../renovate.json5", import.meta.url), "utf8"));
 const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolveConfigPresets(preset)).config));
 
-async function rules(upgrade: Upgrade): Promise<{ enabled: boolean; groupName?: string; automerge: boolean }> {
+async function rules(upgrade: Upgrade): Promise<{ enabled: boolean; groupName?: string; automerge: boolean; minimumReleaseAge?: string }> {
   const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
-  return { enabled: result.enabled !== false, groupName: typeof result.groupName === "string" ? result.groupName : undefined, automerge: result.automerge === true };
+  return {
+    enabled: result.enabled !== false,
+    groupName: typeof result.groupName === "string" ? result.groupName : undefined,
+    automerge: result.automerge === true,
+    minimumReleaseAge: typeof result.minimumReleaseAge === "string" ? result.minimumReleaseAge : undefined,
+  };
 }
 
 const testStack = { repository: "AntelopeJS/dms-mailing", manager: "custom.regex", depName: "@antelopejs/dms", packageFile: "packages/dms-mailing/src/test/antelope-modules.ts" };
@@ -46,11 +51,12 @@ test("Renovate runs daily in the Brussels night and rebases a branch only on a c
 });
 
 test("a patch or minor bump of a test stack module merges through the queue in one AntelopeJS modules pull request", async () => {
-  assert.deepEqual(await rules({ ...testStack, updateType: "minor" }), { enabled: true, groupName: "AntelopeJS modules", automerge: true });
+  assert.deepEqual(await rules({ ...testStack, updateType: "minor" }), { enabled: true, groupName: "AntelopeJS modules", automerge: true, minimumReleaseAge: undefined });
   assert.deepEqual(await rules({ ...testStack, updateType: "patch", repository: "AntelopeJS/template-dms-demo", packageFile: "antelope.config.ts" }), {
     enabled: true,
     groupName: "AntelopeJS modules",
     automerge: true,
+    minimumReleaseAge: undefined,
   });
 });
 
@@ -60,10 +66,17 @@ test("a major bump stays manual", async () => {
 });
 
 test("a repository without a merge queue never merges on its own", async () => {
-  for (const repository of ["AntelopeJS/cloud", "AntelopeJS/antelope-web"]) {
+  for (const repository of ["AntelopeJS/cloud", "AntelopeJS/antelope-web", "AntelopeJS/k8s-gitops-infra", "AntelopeJS/antelope-hardening", "AntelopeJS/antelope-compliance"]) {
     assert.equal((await rules({ ...testStack, repository, updateType: "patch", packageFile: "antelope.config.ts" })).automerge, false, repository);
     assert.equal((await rules({ repository, manager: "npm", depName: "vue", updateType: "minor", packageFile: "package.json" })).automerge, false, repository);
   }
+});
+
+test("a third-party release waits three days before it can merge on its own", async () => {
+  const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", packageFile: "package.json" };
+  assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: "3 days" });
+  assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, undefined);
+  assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);
 });
 
 test("only the module managers read **/test/**", async () => {
