@@ -3,8 +3,11 @@ name: Module locks of a Renovate pull request
 on:
   workflow_call:
     secrets:
-      RELEASE_GITHUB_TOKEN:
-        description: Token that pushes the locks to the Renovate branch, so that the pull request's checks run again on the new head
+      RELEASE_APP_ID:
+        description: ID of the GitHub App whose installation token pushes the locks to the Renovate branch, so that the pull request's checks run again on the new head
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        description: Private key of that GitHub App
         required: true
 
 jobs:
@@ -88,10 +91,18 @@ jobs:
             done < <(git ls-tree -d --name-only HEAD -- "$(dirname "$lock")/")
           done < "$work/recorded"
 
+      - name: Create the push token
+        id: token
+        if: steps.recorded.outputs.found == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Commit the locks to the Renovate branch
         if: steps.recorded.outputs.found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           git add -A -- ':(glob)**/antelope-lock/**'
           if git diff --cached --quiet; then

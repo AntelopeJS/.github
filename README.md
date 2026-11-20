@@ -790,8 +790,9 @@ dependencies of every locked module again and deletes the locks no environment
 uses. It runs a second time when the first run fails, until a core release
 carries AntelopeJS/antelopejs#535. The workflow then runs
 `pnpm install --no-frozen-lockfile` and the caller's `commands`. When a file
-changed, it pushes the result to `antelopejs/module-locks` with
-`RELEASE_GITHUB_TOKEN` and opens a pull request into the default branch, or
+changed, it pushes the result to `antelopejs/module-locks` with an installation
+token of the `antelopejs-release` GitHub App and opens a pull request into the
+default branch, or
 updates the one already open. The pull request body lists the module versions
 that moved, the locks resolved again at the same version, the ranges that moved
 in `antelope.config.ts` and `package.json`, and the other files that changed.
@@ -806,7 +807,8 @@ folder above it.
 | `projects` | `.` | Newline-separated folders that hold an `antelope.config.ts`, such as `playground` or `e2e/playground`. |
 | `setup-commands` | `""` | Multiline shell commands run after the root `pnpm install`, before the refresh. Write the variables a configuration needs to load to `$GITHUB_ENV`. |
 | `commands` | `""` | Multiline shell commands run after the refresh, such as a test run that records the locks of a test configuration again after it deletes them. |
-| `RELEASE_GITHUB_TOKEN` (secret) | | Token that pushes the branch and opens the pull request. A push made with it starts the pull request's checks. |
+| `RELEASE_APP_ID` (secret) | | ID of the GitHub App whose installation token pushes the branch and opens the pull request. A push made with it starts the pull request's checks. The app needs `contents: write` and `pull_requests: write` on the repository. |
+| `RELEASE_APP_PRIVATE_KEY` (secret) | | Private key of that GitHub App. |
 
 Call it daily:
 
@@ -830,7 +832,8 @@ jobs:
       projects: |
         playground
     secrets:
-      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 ### Module locks committed
@@ -860,7 +863,8 @@ the folder of each new lock, it deletes the locks of the same package whose
 version a line the pull request removed names and no line it adds names.
 It commits the result as `github-actions[bot]`, an author the
 [Renovate preset](#renovate-preset) ignores. It pushes the commit to the branch
-with `RELEASE_GITHUB_TOKEN`, so the checks run again on the new head. The lock
+with an installation token of the same app, so the checks run again on the new
+head. The lock
 of a version a range resolved to stays until the next refresh deletes it.
 
 ```yaml
@@ -879,7 +883,8 @@ jobs:
       actions: read
     uses: AntelopeJS/.github/.github/workflows/module-locks-renovate.yml@v2
     secrets:
-      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 `needs` names every job that records locks.

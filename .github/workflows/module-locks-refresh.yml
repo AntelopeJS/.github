@@ -16,8 +16,11 @@ on:
         default: ""
         type: string
     secrets:
-      RELEASE_GITHUB_TOKEN:
-        description: Token that pushes antelopejs/module-locks and opens its pull request, so that the pull request's checks start
+      RELEASE_APP_ID:
+        description: ID of the GitHub App whose installation token pushes antelopejs/module-locks and opens its pull request, so that the pull request's checks start
+        required: true
+      RELEASE_APP_PRIVATE_KEY:
+        description: Private key of that GitHub App
         required: true
 
 env:
@@ -142,23 +145,23 @@ jobs:
               echo
               echo "Resolved again at the same version:"
               echo
-              sed 's/.*/- `&`/' "$out/resolved"
+              sed "s/.*/- \`&\`/" "$out/resolved"
             fi
             if ! git diff --cached --quiet -- ':(glob)**/antelope.config.ts' ':(glob)**/package.json'; then
               echo
               echo "A release outside a range moved these ranges. Check each one before you merge:"
               echo
-              echo '```diff'
+              echo "\`\`\`diff"
               git diff --cached -- ':(glob)**/antelope.config.ts' ':(glob)**/package.json'
-              echo '```'
+              echo "\`\`\`"
             fi
             if ! git diff --cached --quiet -- . ':(exclude,glob)**/antelope-lock/**'; then
               echo
               echo "Other files:"
               echo
-              echo '```'
+              echo "\`\`\`"
               git diff --cached --stat -- . ':(exclude,glob)**/antelope-lock/**'
-              echo '```'
+              echo "\`\`\`"
             fi
           } > "$out/body.md"
           cat "$out/body.md" >> "$GITHUB_STEP_SUMMARY"
@@ -196,11 +199,17 @@ jobs:
         shell: bash
     env:
       BASE: ${{ github.event.repository.default_branch }}
-      GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
       STATE: ${{ needs.refresh.outputs.state }}
       TITLE: "build(deps): update the AntelopeJS module locks"
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      - name: Create the push token
+        id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.STATE == 'changed'
         with:
@@ -214,6 +223,8 @@ jobs:
 
       - name: Push the refreshed locks
         if: env.STATE == 'changed'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           git apply --index "$RUNNER_TEMP/module-locks/refresh.patch"
           git config user.name "github-actions[bot]"
@@ -222,6 +233,8 @@ jobs:
           git push --no-verify -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
 
       - name: Open, update or close the pull request
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           number=$(gh pr list -R "$GITHUB_REPOSITORY" --head "$BRANCH" --base "$BASE" --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not))[0].number // empty')
           if [ "$STATE" = current ]; then
