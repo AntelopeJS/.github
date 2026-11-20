@@ -63,6 +63,10 @@ on:
         description: Accepted; the former name of windows-merge-queue, same effect
         default: false
         type: boolean
+      module-locks:
+        description: Fail a leg whose install or tests wrote an antelope-lock/ file that is not committed; on a Renovate pull request, upload what it wrote for module-locks-renovate.yml
+        default: false
+        type: boolean
       affected-tests:
         description: "In the fast tier, run only the tests the pull request can affect: in a pnpm workspace, the test script of each package changed since the diff base and of its dependents, or the whole test script when a file outside the packages changes; in a single package whose test script is one vitest or jest command, that command with its changed-file option; otherwise the whole test script"
         default: false
@@ -328,6 +332,10 @@ jobs:
           echo "::warning::extra-commands failed in the merge queue. They run once more: a pass marks a flaky test, a second failure fails the job."
           bash -euo pipefail -c "$EXTRA_COMMANDS"
           echo "flaky=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check that the module locks are committed
+        if: ${{ !cancelled() && steps.leg.outputs.work == 'true' && inputs.module-locks }}
+        uses: AntelopeJS/.github/.github/actions/module-locks-committed@v2
 
       - name: Annotate the flaky tests
         if: ${{ !cancelled() && (steps.tests.outputs.flaky == 'true' || steps.extra.outputs.flaky == 'true') }}

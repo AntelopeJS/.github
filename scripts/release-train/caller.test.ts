@@ -175,5 +175,5 @@ test("no shared workflow reads RELEASE_GITHUB_TOKEN, and each one that writes to
   const workflows = readdirSync(directory).filter((name) => name.endsWith(".yml"));
   assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN")), []);
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
-  assert.deepEqual(minting, ["next-sync.yml", "release-npm.yml"]);
+  assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml"]);
 });
