@@ -41,7 +41,7 @@ on:
 jobs:
   release:
     if: (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch) && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview')))
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.repository.visibility != 'public' && vars.RUNNER_CI || 'ubuntu-latest' }}
     environment: ${{ github.event_name != 'pull_request' && 'npm-publish' || '' }}
     concurrency:
       group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}

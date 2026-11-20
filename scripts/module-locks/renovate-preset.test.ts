@@ -17,6 +17,7 @@ interface Upgrade {
   repository: string;
   manager: string;
   depName: string;
+  currentVersion: string;
   updateType: string;
   packageFile: string;
 }
@@ -42,7 +43,7 @@ async function rules(upgrade: Upgrade): Promise<{ enabled: boolean; groupName?: 
   };
 }
 
-const testStack = { repository: "AntelopeJS/dms-mailing", manager: "custom.regex", depName: "@antelopejs/dms", packageFile: "packages/dms-mailing/src/test/antelope-modules.ts" };
+const testStack = { repository: "AntelopeJS/dms-mailing", manager: "custom.regex", depName: "@antelopejs/dms", currentVersion: "1.2.0", packageFile: "packages/dms-mailing/src/test/antelope-modules.ts" };
 
 test("Renovate runs daily in the Brussels night and rebases a branch only on a conflict", () => {
   assert.deepEqual(config.schedule, ["* 0-3 * * *"]);
@@ -62,18 +63,29 @@ test("a patch or minor bump of a test stack module merges through the queue in o
 
 test("a major bump stays manual", async () => {
   assert.equal((await rules({ ...testStack, updateType: "major" })).automerge, false);
-  assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", updateType: "major", packageFile: "package.json" })).automerge, false);
+  assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "major", packageFile: "package.json" })).automerge, false);
+});
+
+test("a 0.x minor stays manual, while a 0.x patch and a minor from 1.x on merge on their own", async () => {
+  const action = { repository: "AntelopeJS/dms-media", manager: "github-actions", depName: "pnpm/action-setup", packageFile: ".github/workflows/ci.yml" };
+  for (const currentVersion of ["0.4.0", "0.0.3"]) {
+    assert.equal((await rules({ ...testStack, currentVersion, updateType: "minor" })).automerge, false, currentVersion);
+    assert.equal((await rules({ ...testStack, currentVersion, updateType: "patch" })).automerge, true, currentVersion);
+  }
+  assert.equal((await rules({ ...action, currentVersion: "v0.4.0", updateType: "minor" })).automerge, false);
+  for (const currentVersion of ["1.0.0", "10.2.0"]) assert.equal((await rules({ ...testStack, currentVersion, updateType: "minor" })).automerge, true, currentVersion);
+  assert.equal((await rules({ ...action, currentVersion: "v4.1.0", updateType: "minor" })).automerge, true);
 });
 
 test("a repository without a merge queue never merges on its own", async () => {
   for (const repository of ["AntelopeJS/cloud", "AntelopeJS/antelope-web", "AntelopeJS/k8s-gitops-infra", "AntelopeJS/antelope-hardening", "AntelopeJS/antelope-compliance"]) {
     assert.equal((await rules({ ...testStack, repository, updateType: "patch", packageFile: "antelope.config.ts" })).automerge, false, repository);
-    assert.equal((await rules({ repository, manager: "npm", depName: "vue", updateType: "minor", packageFile: "package.json" })).automerge, false, repository);
+    assert.equal((await rules({ repository, manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "minor", packageFile: "package.json" })).automerge, false, repository);
   }
 });
 
 test("a third-party release waits three days before it can merge on its own", async () => {
-  const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", packageFile: "package.json" };
+  const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", packageFile: "package.json" };
   assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: "3 days" });
   assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, undefined);
   assert.equal((await rules({ ...vue, updateType: "pin" })).minimumReleaseAge, undefined);
@@ -82,7 +94,7 @@ test("a third-party release waits three days before it can merge on its own", as
 
 test("only the module managers read **/test/**", async () => {
   assert.equal((await rules({ ...testStack, updateType: "patch" })).enabled, true);
-  assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", updateType: "minor", packageFile: "packages/dms-media/src/test/fixture/package.json" })).enabled, false);
+  assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "minor", packageFile: "packages/dms-media/src/test/fixture/package.json" })).enabled, false);
 });
 
 test("the custom managers read every shape a project or a test stack pins a module in", () => {
