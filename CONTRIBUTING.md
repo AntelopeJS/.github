@@ -170,6 +170,16 @@ Use the shared Renovate preset in `renovate.json5`:
 { "extends": ["github>AntelopeJS/.github:renovate.json5"] }
 ```
 
+Keep only what is specific to the repository in its `renovate.json`; the
+[preset](README.md#renovate-preset) already reads the module versions of
+`antelope.config.ts` and the test stacks.
+
+A repository that commits an `antelope-lock/` folder refreshes it daily with
+`module-locks-refresh.yml`, passes `module-locks: true` to `ci-node.yml` (or
+runs the `module-locks-committed` action after its own install), and commits the
+locks of a Renovate bump with `module-locks-renovate.yml`. See [module
+locks](README.md#module-locks) for the caller jobs.
+
 ## Release channels
 
 Work reaches the npm `next` dist-tag when it merges into `main`, and the

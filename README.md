@@ -670,6 +670,7 @@ It accepts these optional inputs:
 | `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
+| `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
@@ -770,6 +771,143 @@ counts.
 
 The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
 when the caller job id is `ci`.
+
+## Module locks
+
+A project records the dependencies of each npm module it installs in
+`antelope-lock/<package>@<version>/`, next to its `antelope.config.ts`, and a
+module's tests record theirs next to its `package.json`. An install replays the
+lock of a module version and writes one only for a version that has none, so a
+locked module's dependencies move only when `ajs project modules update` runs.
+Three shared pieces keep the committed locks complete and current.
+
+### Module locks refresh
+
+The reusable `module-locks-refresh.yml` workflow runs
+`ajs project modules update --fix` in each project of its `projects` input. The
+command records the newest release each range accepts, resolves the
+dependencies of every locked module again and deletes the locks no environment
+uses. It runs a second time when the first run fails, until a core release
+carries AntelopeJS/antelopejs#535. The workflow then runs
+`pnpm install --no-frozen-lockfile` and the caller's `commands`. When a file
+changed, it pushes the result to `antelopejs/module-locks` with
+`RELEASE_GITHUB_TOKEN` and opens a pull request into the default branch, or
+updates the one already open. The pull request body lists the module versions
+that moved, the locks resolved again at the same version, the ranges that moved
+in `antelope.config.ts` and `package.json`, and the other files that changed.
+When nothing changed, it closes that pull request. On a `pull_request` event it
+only refreshes and writes the summary, as a dry run.
+
+`ajs` is the `node_modules/.bin/ajs` of the project folder or of the closest
+folder above it.
+
+| Input | Default | Description |
+| ----- | ------- | ----------- |
+| `projects` | `.` | Newline-separated folders that hold an `antelope.config.ts`, such as `playground` or `e2e/playground`. |
+| `setup-commands` | `""` | Multiline shell commands run after the root `pnpm install`, before the refresh. Write the variables a configuration needs to load to `$GITHUB_ENV`. |
+| `commands` | `""` | Multiline shell commands run after the refresh, such as a test run that records the locks of a test configuration again after it deletes them. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Token that pushes the branch and opens the pull request. A push made with it starts the pull request's checks. |
+
+Call it daily:
+
+```yaml
+name: module locks
+
+on:
+  schedule:
+    - cron: "47 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    permissions:
+      contents: read
+    uses: AntelopeJS/.github/.github/workflows/module-locks-refresh.yml@v2
+    with:
+      projects: |
+        playground
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+```
+
+### Module locks committed
+
+The `module-locks-committed` action runs as a step of the job that installs the
+modules or runs the tests, after them. It fails the job when the job wrote an
+`antelope-lock/` file anywhere in the repository that is not committed, and
+lists the files. On a pull request from a `renovate/*` branch of the same
+repository, a Linux job first uploads the files it wrote as a `module-locks-*`
+artifact, at their paths in the repository. A Windows job only fails. Use
+`module-locks: true` of `ci-node.yml` when the tests run there, or the action in
+a job of your own:
+
+```yaml
+      - run: pnpm exec ajs project modules install
+      - uses: AntelopeJS/.github/.github/actions/module-locks-committed@v2
+```
+
+### Module locks of a Renovate pull request
+
+Mend's hosted Renovate cannot run `ajs`, so a Renovate bump of a module arrives
+without its lock, and the checks record it. The reusable
+`module-locks-renovate.yml` workflow runs after those checks, on a pull request
+from a `renovate/*` branch of the same repository. When the run uploaded
+`module-locks-*` artifacts, it downloads them into the pull request's head. In
+the folder of each new lock, it deletes the locks of the same package whose
+version a line the pull request removed names and no line it adds names.
+It commits the result as `github-actions[bot]`, an author the
+[Renovate preset](#renovate-preset) ignores. It pushes the commit to the branch
+with `RELEASE_GITHUB_TOKEN`, so the checks run again on the new head. The lock
+of a version a range resolved to stays until the next refresh deletes it.
+
+```yaml
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
+    with:
+      module-locks: true
+  module-locks:
+    needs: ci
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      actions: read
+    uses: AntelopeJS/.github/.github/workflows/module-locks-renovate.yml@v2
+    secrets:
+      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+```
+
+`needs` names every job that records locks.
+
+## Renovate preset
+
+Every repository's `renovate.json` extends `renovate.json5`:
+
+```json
+{ "extends": ["github>AntelopeJS/.github:renovate.json5"] }
+```
+
+The preset:
+
+- runs daily before 4:00 in Europe/Brussels, and rebases a branch only when it
+  conflicts, since the merge queue tests the merged result;
+- enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
+  green one enters the merge queue. Majors stay manual, and so does every update
+  in `cloud` and `antelope-web`, which have no merge queue;
+- reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
+  `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin, and
+  bumps them in one `AntelopeJS modules` pull request, whose locks the
+  [Renovate lock job](#module-locks-of-a-renovate-pull-request) commits;
+- groups GitHub Actions updates, and `@antelopejs/tooling-configs` with the
+  linters it pins;
+- ignores the commits of `github-actions[bot]` on its branches.
+
+A repository's own `renovate.json` keeps only what is specific to it.
 
 ## Trunk and the merge queue
 
