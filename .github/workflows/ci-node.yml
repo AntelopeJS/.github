@@ -528,7 +528,9 @@ jobs:
             ci-node-${{ runner.os }}-${{ fromJSON(inputs.node-versions || '[""]')[0] || 'nvmrc' }}-
 
       - name: Build what the tests read
-        run: pnpm run --if-present checks:prepare
+        run: |
+          pnpm run --if-present checks:prepare
+          pnpm run --if-present typecheck
 
       - name: Start services
         id: services
