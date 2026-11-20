@@ -52,6 +52,7 @@ interface Scope {
   steps?: object;
   inputs?: object;
   github?: object;
+  vars?: object;
 }
 
 function evaluate(expression: string, scope: Scope): unknown {
@@ -63,7 +64,7 @@ function evaluate(expression: string, scope: Scope): unknown {
     .replace(/!=/g, "!==");
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
   const contains = (list: string[], item: string): boolean => list.includes(item);
-  return new Function("steps", "inputs", "github", "contains", `return (${source})`)(scope.steps, scope.inputs, scope.github, contains);
+  return new Function("steps", "inputs", "github", "vars", "contains", "fromJSON", `return (${source})`)(scope.steps, scope.inputs, scope.github, scope.vars, contains, JSON.parse);
 }
 
 function interpolate(template: string, scope: Scope): string {
@@ -1271,6 +1272,17 @@ describe("release-npm.yml", () => {
     for (const mode of ["preview", "pull-request", "stable"]) assert.equal(runs("Push the stable ranges", mode), false, mode);
   });
 
+  test("the job runs on the caller's RUNNER_CI runner for a private or internal repository when it is set, and on ubuntu-latest otherwise, and always for a public one", () => {
+    const runsOn = /^ {4}runs-on: (.*)$/m.exec(text)?.[1] ?? "";
+    const runner = (visibility: string, vars: object) => evaluate(runsOn, { github: { event: { repository: { visibility } } }, vars });
+    assert.equal(runner("private", { RUNNER_CI: "antelope-ci" }), "antelope-ci");
+    assert.equal(runner("internal", { RUNNER_CI: "antelope-ci" }), "antelope-ci");
+    assert.equal(runner("private", {}), "ubuntu-latest");
+    assert.equal(runner("private", { RUNNER_CI: "" }), "ubuntu-latest");
+    assert.equal(runner("public", { RUNNER_CI: "antelope-ci" }), "ubuntu-latest");
+    assert.equal(runner("public", {}), "ubuntu-latest");
+  });
+
   test("the job runs a push only of the default branch, and a pull request only when it carries the preview label, a labeled event only for that label", () => {
     const job = /^ {4}if: (.*)$/m.exec(text)?.[1] ?? "";
     const gate = (event: string, action: string, labels: string[], label = "", branch = "main") =>
@@ -1343,6 +1355,26 @@ describe("release-npm.yml", () => {
     };
     assert.match(grant("release-npm-public.yml"), /^ {6}id-token: write$/m);
     assert.doesNotMatch(grant("release-npm-private.yml"), /id-token/);
+  });
+});
+
+describe("ci-node.yml", () => {
+  test("Windows legs join the matrix only for a public repository, and only in the tiers that ran them before", () => {
+    const matrix = /^ {8}os: (.*)$/m.exec(workflowText("ci-node.yml"))?.[1] ?? "";
+    const os = (visibility: string, event: string, inputs: object): unknown =>
+      evaluate(matrix, { github: { event_name: event, event: { repository: { visibility } } }, inputs });
+    const events = ["schedule", "merge_group", "workflow_dispatch", "pull_request", "push"];
+    for (const visibility of ["public", "private", "internal"]) {
+      for (const event of events) {
+        for (const [windows, queue, pullRequests] of [[true, false, false], [true, true, false], [true, false, true], [true, true, true], [false, true, false], [false, false, false]]) {
+          const inputs = { windows, "windows-merge-queue": queue, "windows-pull-requests": pullRequests };
+          const manual = event === "merge_group" || event === "workflow_dispatch";
+          const before = windows && (event === "schedule" || (manual && (queue || pullRequests)));
+          const expected = visibility === "public" && before ? ["ubuntu-latest", "windows-latest"] : ["ubuntu-latest"];
+          assert.deepEqual(os(visibility, event, inputs), expected, `${visibility} ${event} ${JSON.stringify(inputs)}`);
+        }
+      }
+    }
   });
 });
 

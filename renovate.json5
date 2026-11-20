@@ -55,6 +55,12 @@
       automerge: true,
     },
     {
+      description: 'A 0.x minor can break, so it stays manual; 1.x and later keep auto-merge',
+      matchUpdateTypes: ['minor'],
+      matchCurrentVersion: '/^v?0\\./',
+      automerge: false,
+    },
+    {
       description: 'A third-party release waits three days before it can auto-merge, so a compromised version is found and pulled first; a pin has no release date, so it does not wait',
       matchUpdateTypes: ['pinDigest', 'digest', 'patch', 'minor'],
       matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**'],

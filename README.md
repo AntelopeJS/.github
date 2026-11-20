@@ -557,7 +557,7 @@ The `node` job runs one job per runner, Node.js version and part:
 On Windows, the job name ends with ` on Windows`. The jobs run on Linux, also on
 Windows in the `nightly` tier when `windows` is set, and with
 `windows-merge-queue` also in the `queue` tier and on manual runs. A pull request
-never runs on Windows.
+never runs on Windows, and neither does a private or internal repository.
 
 Each job picks the tier, then its own work. It runs `pnpm run checks` with
 `test` in `ANTELOPEJS_CHECKS_SKIP`, since the tests run in a step of their own.
@@ -667,7 +667,7 @@ It accepts these optional inputs:
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public. Private and internal repositories skip it: we have no Windows runner of our own, and GitHub bills their hosted minutes. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
@@ -689,9 +689,11 @@ reusable workflow reads the caller's variables, so each private repository sets
 `RUNNER_CI` to its self-hosted runner scale set, and a public repository sets
 nothing. Set it per repository, never at the organisation level: a runner group
 limited to the private repositories would leave a public repository's jobs
-waiting. The Windows legs stay on `windows-latest`, and the release workflows stay
-on GitHub's runners, because npm provenance needs a GitHub-hosted runner. The
-renovate-sync, next-sync and tier-checks jobs follow the same variable.
+waiting. The Windows legs run only for a public repository, on `windows-latest`.
+The npm release workflows follow `RUNNER_CI` for a private or internal
+repository, and a public repository's release stays on `ubuntu-latest`, because
+npm provenance needs a GitHub-hosted runner. The renovate-sync, next-sync and
+tier-checks jobs follow the same variable.
 
 Services start with `docker compose up -d --wait` in the `Test` and `Extra`
 jobs, and in a `Node <version>` job only when it runs `extra-commands`. After a
@@ -905,9 +907,10 @@ The preset:
 - runs daily before 4:00 in Europe/Brussels, and rebases a branch only when it
   conflicts, since the merge queue tests the merged result;
 - enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
-  green one enters the merge queue. Majors stay manual, and so does every update
-  in `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
-  `antelope-compliance`, which have no merge queue. A third-party release waits
+  green one enters the merge queue. Majors stay manual, and so do 0.x minors,
+  which can break; a minor from 1.x on keeps auto-merge. Every update in
+  `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
+  `antelope-compliance` stays manual, since they have no merge queue. A third-party release waits
   three days before such an update opens; an `@antelopejs` one does not;
 - reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
   `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin, and
