@@ -343,8 +343,8 @@ A stable run then does the following.
    compare link, one line per task with one block per commit type and the
    oldest first, the breaking changes and the contributors. It reads the tasks
    the way the plan does, from the heads of the pull requests merged into the
-   default branch since the last stable tag (`gh pr list` with
-   `RELEASE_GITHUB_TOKEN`), and fails when `gh` fails. It leaves out a revert
+   default branch since the last stable tag (`gh pr list` with the release
+   app token), and fails when `gh` fails. It leaves out a revert
    and the commit it reverts, with the tasks of their pull requests, as the
    plan does. A subject that is not conventional is left out. When the release writes stable ranges, the notes
    also list `Depend on the stable <names>` under Fixes. It writes them under a
@@ -398,8 +398,13 @@ keeps working unchanged.
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
 | `integration-branch` | none | Unused. Only the two wrappers declare it, so that a caller that passes it keeps working. |
 
-Both registries need the `RELEASE_GITHUB_TOKEN` secret for a stable or repin
-run. The `public` registry publishes to npmjs with public access and
+Both registries need the `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` secrets
+for a stable or repin run. From them `actions/create-github-app-token` mints a
+token of the `antelopejs-release` GitHub App, scoped to the calling repository,
+that pushes the release commit and tag and creates the GitHub release. The app
+needs `contents: write`, and `pull_requests: read` for the release notes of a
+private repository. `RELEASE_GITHUB_TOKEN` is still declared so that a caller
+that passes it keeps working, and no step reads it. The `public` registry publishes to npmjs with public access and
 provenance. The `private` registry publishes to `https://npm.antelopejs.cloud/`
 and also needs `NPM_ANTELOPE_TOKEN` for every run. Each validates that the
 package directory resolves inside the repository and holds a `package.json`,
@@ -407,7 +412,7 @@ and checks the publication metadata of `package.json` before it publishes. Among
 `repository.url` must name the calling repository, and a package npm already
 holds must name it in its own `repository.url` too.
 
-Both registries write to the repository only with `RELEASE_GITHUB_TOKEN`, so
+Both registries write to the repository only with the release app token, so
 the job holds `contents: read`, and a public one also `id-token: write` for npm
 trusted publishing. Each wrapper grants these to its call of `release-npm.yml`,
 which declares no permissions and so holds exactly that grant. A caller of
@@ -441,11 +446,13 @@ and the shared workflows at `@v2` work with it unchanged.
   The release train sends nothing else.
 - **Permissions.** `contents: write`, and `id-token: write` when a package is
   public. The release jobs ask only `contents: read`, because they write with
-  `RELEASE_GITHUB_TOKEN`.
+  the release app token.
 - **Optional inputs.** Every other input of the shared workflows has a default
   that fits this caller. A caller may set `install-core`.
 - **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
-  `NPM_ANTELOPE_TOKEN` for the private one, each passed by name.
+  `NPM_ANTELOPE_TOKEN` for the private one, each passed by name. The shared
+  workflows no longer read `RELEASE_GITHUB_TOKEN`: a stable or repin run needs
+  `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` passed the same way.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name. `release-npm.yml@v2`
   takes the same call with `registry: public` or `registry: private`.
@@ -785,7 +792,9 @@ The reusable `next-sync.yml` workflow serves `cloud` alone, whose `develop`
 branch still takes pull requests before it reaches `main`. It merges the default
 branch into the branch named by its `branch` input after each push to the
 default branch, so that the branch always contains `main`. It pushes the merge
-commit with `RELEASE_GITHUB_TOKEN`, whose push starts the branch checks. When
+commit with a token of the `antelopejs-release` GitHub App, minted from
+`RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` and scoped to the repository,
+whose push starts the branch checks. When
 the merge conflicts, it pushes nothing and fails with a message that names the
 conflicting files: a `Next sync conflict` error annotation on the run, a line in
 the job summary, and a failed run. It also opens one issue in the repository
@@ -798,7 +807,9 @@ the same conflict would come back.
 | Input | Default | Description |
 | ----- | ------- | ----------- |
 | `branch` | `next` | Branch that receives the default branch. |
-| `RELEASE_GITHUB_TOKEN` (secret) | | Token of a repository admin, which the branch ruleset lets push. |
+| `RELEASE_APP_ID` (secret) | | ID of the GitHub App whose token pushes the merge. The branch ruleset must list the app as a bypass actor. |
+| `RELEASE_APP_PRIVATE_KEY` (secret) | | Private key of that GitHub App. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Optional and unused. Kept so that callers which still pass it are accepted. |
 | `NOTION_TOKEN` (secret) | | Optional and unused: no workflow writes to Notion. Kept so that callers which still pass it are accepted. |
 
 The calling job must grant `issues: write`: a

@@ -1158,17 +1158,18 @@ describe("release-npm.yml", () => {
 
   test("Validate release credentials asks the private registry's token and refuses another registry", () => {
     const check = (env: Record<string, string>) => {
-      const result = runStep(text, "Validate release credentials", root, { MODE: "preview", RELEASE_GITHUB_TOKEN: "", NPM_ANTELOPE_TOKEN: "", ...env });
+      const result = runStep(text, "Validate release credentials", root, { MODE: "preview", RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", NPM_ANTELOPE_TOKEN: "", ...env });
       return [result.status, result.stderr];
     };
     assert.deepEqual(check({ REGISTRY: "public" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "private" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "private", NPM_ANTELOPE_TOKEN: "token" }), [0, ""]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, "RELEASE_APP_ID is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable", RELEASE_APP_ID: "1" }), [1, "RELEASE_APP_PRIVATE_KEY is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "pull-request" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "private", MODE: "pull-request" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, "RELEASE_GITHUB_TOKEN is not configured.\n"]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin", RELEASE_GITHUB_TOKEN: "token" }), [0, ""]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, "RELEASE_APP_ID is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin", RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "npmjs" }), [1, "registry must be public or private, got 'npmjs'.\n"]);
   });
 

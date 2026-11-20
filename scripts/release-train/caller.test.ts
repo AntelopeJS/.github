@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -96,7 +96,7 @@ describe("the frozen caller", () => {
       }
     });
 
-    test(`${file} forwards every input but integration-branch and every secret it declares to release-npm.yml, and names its registry`, () => {
+    test(`${file} forwards every input but integration-branch and every secret but RELEASE_GITHUB_TOKEN to release-npm.yml, and names its registry`, () => {
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
       assert.deepEqual(forwarded.get("registry"), [registry]);
@@ -108,7 +108,7 @@ describe("the frozen caller", () => {
       assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
       for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
       const secrets = entries(entry, ["jobs", "release", "secrets"]);
-      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
+      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()].filter((name) => name !== "RELEASE_GITHUB_TOKEN"));
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
     });
 
@@ -168,4 +168,12 @@ describe("the frozen caller", () => {
       assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);
     });
   }
+});
+
+test("no shared workflow reads RELEASE_GITHUB_TOKEN, and each one that writes to the repository mints a release app token", () => {
+  const directory = new URL("../../.github/workflows/", import.meta.url);
+  const workflows = readdirSync(directory).filter((name) => name.endsWith(".yml"));
+  assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN")), []);
+  const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
+  assert.deepEqual(minting, ["next-sync.yml", "release-npm.yml"]);
 });
