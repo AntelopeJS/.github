@@ -78,7 +78,13 @@ describe("the frozen caller", () => {
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
     const entry = read(`../../.github/workflows/${file}`);
-    const job = registry === "public" ? caller : caller.replace("release-npm-public.yml", file).replace("  id-token: write\n", "");
+    const job =
+      registry === "public"
+        ? caller
+        : caller
+            .replace("release-npm-public.yml", file)
+            .replace("  id-token: write\n", "")
+            .replace(/(\n {6}RELEASE_APP_PRIVATE_KEY: .*\n)/, "$1      NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}\n");
 
     test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
       assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
@@ -87,8 +93,11 @@ describe("the frozen caller", () => {
       assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
       const required = [...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name);
       assert.deepEqual(required.filter((name) => !passed.includes(name)), []);
-      const secrets = [...entries(entry, ["workflow_call", "secrets"])].filter(([, lines]) => lines.includes("required: true"));
-      assert.deepEqual(secrets, []);
+      const declaredSecrets = entries(entry, ["workflow_call", "secrets"]);
+      assert.deepEqual([...declaredSecrets].filter(([, lines]) => lines.includes("required: true")), []);
+      const passedSecrets = entries(job, ["jobs", "release", "secrets"]);
+      assert.deepEqual([...passedSecrets.keys()].sort(), [...declaredSecrets.keys()].sort(), `the caller forwards every secret ${file} declares`);
+      for (const [name, value] of passedSecrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
       const granted = entries(job, ["permissions"]);
       for (const [scope, [level = ""]] of entries(entry, ["jobs", "release", "permissions"])) {
         const grant = granted.get(scope)?.[0];
