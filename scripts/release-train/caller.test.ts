@@ -201,7 +201,7 @@ test("each release app token asks only the permissions its job uses", () => {
     return [...(steps[0] ?? "").matchAll(/^ {10}(permission-[\w-]+: \w+)$/gm)].map(([, line]) => line ?? "");
   };
   assert.deepEqual(asked("release-npm.yml"), ["permission-contents: write", "permission-pull-requests: read"]);
-  assert.deepEqual(asked("next-sync.yml"), ["permission-contents: write"]);
+  assert.deepEqual(asked("next-sync.yml"), ["permission-contents: write", "permission-workflows: write"]);
   assert.deepEqual(asked("module-locks-renovate.yml"), ["permission-contents: write"]);
-  assert.deepEqual(asked("module-locks-refresh.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
+  assert.deepEqual(asked("module-locks-refresh.yml"), ["permission-contents: write", "permission-pull-requests: write", "permission-workflows: write"]);
 });
