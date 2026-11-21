@@ -95,7 +95,7 @@ jobs:
               }
               END { exit !found }' "$1"
           }
-          git ls-files -z --others --exclude-standard -- ':(glob)**/antelope-lock/**' | xargs -0 -r -n1 dirname | sort -u > "$work/recorded"
+          git ls-files -z --others --exclude-standard -- ':(glob)**/antelope-lock/**' | xargs -0 -r -n1 dirname -- | sort -u > "$work/recorded"
           while IFS= read -r lock; do
             name="${lock%@*}"
             while IFS= read -r committed; do
@@ -104,7 +104,7 @@ jobs:
                 git rm -rq -- "$committed"
                 echo "Deleted ${committed}: the bump replaces ${version}."
               fi
-            done < <(git ls-tree -d --name-only HEAD -- "$(dirname "$lock")/")
+            done < <(git ls-tree -d --name-only HEAD -- "$(dirname -- "$lock")/")
           done < "$work/recorded"
 
       - name: Commit the locks
@@ -135,6 +135,7 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Push the locks to the Renovate branch
         if: steps.commit.outputs.committed == 'true'

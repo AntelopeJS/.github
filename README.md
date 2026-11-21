@@ -398,13 +398,14 @@ keeps working unchanged.
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
 | `integration-branch` | none | Unused. Only the two wrappers declare it, so that a caller that passes it keeps working. |
 
-Both registries need the `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` secrets
-for a stable or repin run. From them `actions/create-github-app-token` mints a
-token of the `antelopejs-release` GitHub App, scoped to the calling repository,
-that pushes the release commit and tag and creates the GitHub release. The app
-needs `contents: write`, and `pull_requests: read` for the release notes of a
-private repository. `RELEASE_GITHUB_TOKEN` is still declared so that a caller
-that passes it keeps working, and no step reads it. The `public` registry publishes to npmjs with public access and
+A stable or repin run writes with a token of the `antelopejs-release` GitHub
+App, which `actions/create-github-app-token` mints from the `RELEASE_APP_ID`
+and `RELEASE_APP_PRIVATE_KEY` secrets, scoped to the calling repository and to
+`contents: write` and `pull_requests: read` (the release notes read merged pull
+requests). It pushes the release commit and tag and creates the GitHub release.
+While a caller does not forward both app secrets, the run falls back to
+`RELEASE_GITHUB_TOKEN` with a warning, and it fails when neither is set. The
+fallback goes away once every caller is re-synced and the token is revoked. The `public` registry publishes to npmjs with public access and
 provenance. The `private` registry publishes to `https://npm.antelopejs.cloud/`
 and also needs `NPM_ANTELOPE_TOKEN` for every run. Each validates that the
 package directory resolves inside the repository and holds a `package.json`,
@@ -428,16 +429,18 @@ stable release.
 
 ### What a caller declares
 
-`antelopejs-sync` of `@antelopejs/tooling-configs` 0.8.5 writes this caller,
-and the shared workflows at `@v2` work with it unchanged.
+`antelopejs-sync` of the first `@antelopejs/tooling-configs` release after
+0.9.2 writes this caller. A caller written by an older `antelopejs-sync`
+forwards only `RELEASE_GITHUB_TOKEN`, and keeps releasing with it through the
+fallback. Every caller forwards the two app secrets before the token is
+revoked, and the fallback is then removed.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
-- **Triggers.** `push` to the default branch for previews, and
-  `workflow_dispatch` for stable releases. A caller that adds `pull_request`
-  with the types `opened`, `synchronize`, `reopened` and `labeled` publishes a
-  [pull request preview](#pull-request-previews) for each pull request that
-  carries the `preview` label.
+- **Triggers.** `push` to the default branch for previews, `pull_request`
+  with the types `labeled`, `synchronize` and `reopened` for a
+  [pull request preview](#pull-request-previews) of each pull request that
+  carries the `preview` label, and `workflow_dispatch` for stable releases.
 - **Dispatch inputs.** `release-version`, `release-commit` and
   `dependency-ranges` (default `"{}"`), all optional strings that the release
   train sets. A repository whose package is not at its root adds
@@ -449,10 +452,11 @@ and the shared workflows at `@v2` work with it unchanged.
   the release app token.
 - **Optional inputs.** Every other input of the shared workflows has a default
   that fits this caller. A caller may set `install-core`.
-- **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
-  `NPM_ANTELOPE_TOKEN` for the private one, each passed by name. The shared
-  workflows no longer read `RELEASE_GITHUB_TOKEN`: a stable or repin run needs
-  `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` passed the same way.
+- **Secrets.** `RELEASE_GITHUB_TOKEN`, `RELEASE_APP_ID` and
+  `RELEASE_APP_PRIVATE_KEY`, plus `NPM_ANTELOPE_TOKEN` for the private
+  workflow, each passed by name. A stable or repin run mints its token from the
+  two app secrets, and falls back to `RELEASE_GITHUB_TOKEN` until the token is
+  revoked.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name. `release-npm.yml@v2`
   takes the same call with `registry: public` or `registry: private`.
@@ -461,8 +465,8 @@ and the shared workflows at `@v2` work with it unchanged.
 
 ### Caller workflow
 
-The caller is the `release.yml` of the repository. It needs both triggers and
-passes the inputs the release train sets:
+The caller is the `release.yml` of the repository. It declares the three
+triggers, passes the inputs the release train sets and forwards the secrets:
 
 ```yaml
 name: Release
@@ -470,6 +474,8 @@ name: Release
 on:
   push:
     branches: [main]
+  pull_request:
+    types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
       release-version:
@@ -499,6 +505,8 @@ jobs:
       dependency-ranges: ${{ inputs.dependency-ranges }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 A private package calls `release-npm-private.yml` and also passes
@@ -667,7 +675,7 @@ It accepts these optional inputs:
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public. Private and internal repositories skip it: we have no Windows runner of our own, and GitHub bills their hosted minutes. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it: we have no Windows runner of our own, and GitHub bills their hosted minutes. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
@@ -791,8 +799,10 @@ command records the newest release each range accepts, resolves the
 dependencies of every locked module again and deletes the locks no environment
 uses. It runs a second time when the first run fails, until a core release
 carries AntelopeJS/antelopejs#535. The workflow then runs
-`pnpm install --no-frozen-lockfile` and the caller's `commands`. When a file
-changed, it pushes the result to `antelopejs/module-locks` with an installation
+`pnpm install --no-frozen-lockfile` and the caller's `commands`. It fails
+without pushing when the change touches `.github/` or `.gitmodules`, adds a
+symlink or a submodule, or holds a path `git apply` refuses, such as one under
+`.git` or outside the checkout. When a file changed, it pushes the result to `antelopejs/module-locks` with an installation
 token of the `antelopejs-release` GitHub App and opens a pull request into the
 default branch, or
 updates the one already open. The pull request body lists the module versions
@@ -962,7 +972,7 @@ the same conflict would come back.
 | `branch` | `next` | Branch that receives the default branch. |
 | `RELEASE_APP_ID` (secret) | | ID of the GitHub App whose token pushes the merge. The branch ruleset must list the app as a bypass actor. |
 | `RELEASE_APP_PRIVATE_KEY` (secret) | | Private key of that GitHub App. |
-| `RELEASE_GITHUB_TOKEN` (secret) | | Optional and unused. Kept so that callers which still pass it are accepted. |
+| `RELEASE_GITHUB_TOKEN` (secret) | | Pushes the merge, with a warning, while `RELEASE_APP_ID` or `RELEASE_APP_PRIVATE_KEY` is unset. The sync fails when neither is set. Removed once every caller forwards the app secrets and the token is revoked. |
 | `NOTION_TOKEN` (secret) | | Optional and unused: no workflow writes to Notion. Kept so that callers which still pass it are accepted. |
 
 The calling job must grant `issues: write`: a
@@ -1031,7 +1041,7 @@ releasing a package below `packages/` needs no extra input. This is the job
 ```yaml
 jobs:
   release-packages-dms-automation:
-    if: github.event_name == 'push' || inputs.package-directory == 'packages/dms-automation'
+    if: github.event_name != 'workflow_dispatch' || inputs.package-directory == 'packages/dms-automation'
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v2
     with:
       release-version: ${{ inputs.release-version }}
@@ -1040,6 +1050,8 @@ jobs:
       package-directory: packages/dms-automation
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 Both workflows install from the nearest directory at or above the package

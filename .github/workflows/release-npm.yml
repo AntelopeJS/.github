@@ -28,6 +28,9 @@ on:
         default: .
         type: string
     secrets:
+      RELEASE_GITHUB_TOKEN:
+        description: Token the release falls back to while RELEASE_APP_ID or RELEASE_APP_PRIVATE_KEY is unset. Removed once every caller forwards the app secrets
+        required: false
       RELEASE_APP_ID:
         description: ID of the GitHub App whose installation token creates the release commit, tag, and GitHub release
         required: false
@@ -81,11 +84,13 @@ jobs:
           fi
 
       - name: Validate release credentials
+        id: credentials
         env:
           MODE: ${{ steps.mode.outputs.mode }}
           REGISTRY: ${{ inputs.registry }}
           RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
           RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
           NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           case "$REGISTRY" in
@@ -102,21 +107,25 @@ jobs:
               ;;
           esac
           if [ "$MODE" = stable ] || [ "$MODE" = repin ]; then
-            for name in RELEASE_APP_ID RELEASE_APP_PRIVATE_KEY; do
-              test -n "${!name}" || {
-                echo "$name is not configured." >&2
-                exit 1
-              }
-            done
+            if [ -n "$RELEASE_APP_ID" ] && [ -n "$RELEASE_APP_PRIVATE_KEY" ]; then
+              echo "app=true" >> "$GITHUB_OUTPUT"
+            elif [ -n "$RELEASE_GITHUB_TOKEN" ]; then
+              echo "::warning::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not forwarded, so this release writes with RELEASE_GITHUB_TOKEN. Run antelopejs-sync to forward them before the token is revoked."
+            else
+              echo "RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured, and no RELEASE_GITHUB_TOKEN stands in for them." >&2
+              exit 1
+            fi
           fi
 
       - name: Create the release token
         id: token
-        if: steps.mode.outputs.mode == 'stable' || steps.mode.outputs.mode == 'repin'
+        if: steps.credentials.outputs.app == 'true'
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -561,7 +570,7 @@ jobs:
         if: steps.mode.outputs.mode == 'repin'
         env:
           MESSAGE: ${{ steps.ranges.outputs.message }}
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.token.outputs.token || secrets.RELEASE_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git commit --quiet -m "$MESSAGE"
@@ -576,7 +585,7 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           DEPENDENCY_RANGES: ${{ inputs.dependency-ranges }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token || secrets.RELEASE_GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RESUME: ${{ steps.version.outputs.resume }}
         run: |
@@ -818,7 +827,7 @@ jobs:
         working-directory: ${{ inputs.package-directory }}
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.token.outputs.token || secrets.RELEASE_GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}
         run: |
           auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)

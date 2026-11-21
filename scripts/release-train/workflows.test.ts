@@ -8,6 +8,7 @@ import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
 const workflowText = (file: string): string => readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
 const text = workflowText("release-npm.yml");
+const NO_CREDENTIALS = "RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured, and no RELEASE_GITHUB_TOKEN stands in for them.";
 const root = mkdtempSync(join(tmpdir(), "release-workflows-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -53,6 +54,8 @@ interface Scope {
   inputs?: object;
   github?: object;
   vars?: object;
+  needs?: object;
+  secrets?: object;
 }
 
 function evaluate(expression: string, scope: Scope): unknown {
@@ -64,7 +67,7 @@ function evaluate(expression: string, scope: Scope): unknown {
     .replace(/!=/g, "!==");
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
   const contains = (list: string[], item: string): boolean => list.includes(item);
-  return new Function("steps", "inputs", "github", "vars", "contains", "fromJSON", `return (${source})`)(scope.steps, scope.inputs, scope.github, scope.vars, contains, JSON.parse);
+  return new Function("steps", "inputs", "github", "vars", "needs", "secrets", "contains", "fromJSON", `return (${source})`)(scope.steps, scope.inputs, scope.github, scope.vars, scope.needs, scope.secrets, contains, JSON.parse);
 }
 
 function interpolate(template: string, scope: Scope): string {
@@ -1165,14 +1168,37 @@ describe("release-npm.yml", () => {
     assert.deepEqual(check({ REGISTRY: "public" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "private" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
     assert.deepEqual(check({ REGISTRY: "private", NPM_ANTELOPE_TOKEN: "token" }), [0, ""]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, "RELEASE_APP_ID is not configured.\n"]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable", RELEASE_APP_ID: "1" }), [1, "RELEASE_APP_PRIVATE_KEY is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable" }), [1, `${NO_CREDENTIALS}\n`]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "stable", RELEASE_APP_ID: "1" }), [1, `${NO_CREDENTIALS}\n`]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "pull-request" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "private", MODE: "pull-request" }), [1, "NPM_ANTELOPE_TOKEN is not configured.\n"]);
-    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, "RELEASE_APP_ID is not configured.\n"]);
+    assert.deepEqual(check({ REGISTRY: "public", MODE: "repin" }), [1, `${NO_CREDENTIALS}\n`]);
     assert.deepEqual(check({ REGISTRY: "public", MODE: "repin", RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" }), [0, ""]);
     assert.deepEqual(check({ REGISTRY: "npmjs" }), [1, "registry must be public or private, got 'npmjs'.\n"]);
   });
+
+  for (const mode of ["stable", "repin"]) {
+    test(`a ${mode} run writes with the app token when both app secrets are set, else with RELEASE_GITHUB_TOKEN, and fails with neither`, () => {
+      const mint = /^ {8}if: (.*)$/m.exec(stepOf(text, "Create the release token"))?.[1] ?? "";
+      const writers = ["Push the stable ranges", "Write release notes", "Publish stable release"].map((name) => /^ {10}\w+: (\$\{\{ steps\.token\.outputs\.token.*\}\})$/m.exec(stepOf(text, name))?.[1] ?? "");
+      const run = (secrets: Record<string, string>) => {
+        const result = runStep(text, "Validate release credentials", root, { MODE: mode, REGISTRY: "public", RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", RELEASE_GITHUB_TOKEN: "", NPM_ANTELOPE_TOKEN: "", ...secrets });
+        const app = /^app=(.*)$/m.exec(result.outputs)?.[1] ?? "";
+        const minted = evaluate(mint, { steps: { credentials: { outputs: { app } } } }) === true;
+        const steps = { token: { outputs: { token: minted ? "app-token" : "" } } };
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr, tokens: [...new Set(writers.map((expression) => interpolate(expression, { steps, secrets: { RELEASE_GITHUB_TOKEN: secrets.RELEASE_GITHUB_TOKEN ?? "" } })))] };
+      };
+      const app = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" });
+      assert.deepEqual([app.status, app.tokens, app.stdout], [0, ["app-token"], ""]);
+      const appOnly = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" });
+      assert.deepEqual([appOnly.status, appOnly.tokens], [0, ["app-token"]]);
+      const token = run({ RELEASE_APP_ID: "1", RELEASE_GITHUB_TOKEN: "pat" });
+      assert.deepEqual([token.status, token.tokens], [0, ["pat"]]);
+      assert.match(token.stdout, /^::warning::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not forwarded/);
+      const neither = run({});
+      assert.deepEqual([neither.status, neither.stderr], [1, `${NO_CREDENTIALS}\n`]);
+    });
+  }
 
   test("a repin run commits the devDependency ranges to the default branch, and refuses a runtime pin or no range", () => {
     const preview = "0.4.3-next.117.g3645dff";
@@ -1358,11 +1384,44 @@ describe("release-npm.yml", () => {
   });
 });
 
+describe("next-sync.yml", () => {
+  const sync = workflowText("next-sync.yml");
+
+  test("pushes with the app token when both app secrets are set, else with RELEASE_GITHUB_TOKEN, and fails with neither", () => {
+    const mint = /^ {8}if: (.*)$/m.exec(stepOf(sync, "Create the push token"))?.[1] ?? "";
+    const pusher = /^ {10}TOKEN: (.*)$/m.exec(stepOf(sync, "Merge"))?.[1] ?? "";
+    const run = (secrets: Record<string, string>) => {
+      const result = runStep(sync, "Pick the push credentials", root, { RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", RELEASE_GITHUB_TOKEN: "", ...secrets });
+      const app = /^app=(.*)$/m.exec(result.outputs)?.[1] ?? "";
+      const minted = evaluate(mint, { steps: { credentials: { outputs: { app } } } }) === true;
+      return [result.status, interpolate(pusher, { steps: { token: { outputs: { token: minted ? "app-token" : "" } } }, secrets: { RELEASE_GITHUB_TOKEN: secrets.RELEASE_GITHUB_TOKEN ?? "" } }), result.stdout.split(" ")[0]];
+    };
+    assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [0, "app-token", ""]);
+    assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" }), [0, "app-token", ""]);
+    assert.deepEqual(run({ RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [0, "pat", "::warning::RELEASE_APP_ID"]);
+    assert.deepEqual(run({}), [1, "", "::error::RELEASE_APP_ID"]);
+  });
+});
+
 describe("ci-node.yml", () => {
-  test("Windows legs join the matrix only for a public repository, and only in the tiers that ran them before", () => {
-    const matrix = /^ {8}os: (.*)$/m.exec(workflowText("ci-node.yml"))?.[1] ?? "";
-    const os = (visibility: string, event: string, inputs: object): unknown =>
-      evaluate(matrix, { github: { event_name: event, event: { repository: { visibility } } }, inputs });
+  const ciNode = workflowText("ci-node.yml");
+  const jobText = (name: string): string => {
+    const start = ciNode.indexOf(`\n  ${name}:\n`);
+    assert.notEqual(start, -1, `no job ${name}`);
+    const next = /\n {2}[\w-]+:\n/g;
+    next.lastIndex = start + 1;
+    return ciNode.slice(start, next.exec(ciNode)?.index);
+  };
+
+  test("Windows legs join the matrix only for a repository the API reports public, and only in the tiers that ran them before", () => {
+    const gate = /^ {4}if: (.*)$/m.exec(jobText("windows"))?.[1] ?? "";
+    const matrix = /^ {8}os: (.*)$/m.exec(jobText("node"))?.[1] ?? "";
+    assert.doesNotMatch(matrix, /github\.event\.repository/, "a schedule payload carries no repository");
+    const os = (visibility: string, event: string, inputs: object): unknown => {
+      const github = { event_name: event, event: {} };
+      const ran = evaluate(gate, { github, inputs }) === true;
+      return evaluate(matrix, { github, inputs, needs: { windows: { outputs: { visibility: ran ? visibility : "" } } } });
+    };
     const events = ["schedule", "merge_group", "workflow_dispatch", "pull_request", "push"];
     for (const visibility of ["public", "private", "internal"]) {
       for (const event of events) {
@@ -1375,6 +1434,30 @@ describe("ci-node.yml", () => {
         }
       }
     }
+  });
+
+  test("the Windows gate reads the visibility with one API call and fails when the call fails", () => {
+    const bin = join(root, "windows-gate-bin");
+    mkdirSync(bin, { recursive: true });
+    const log = join(root, "windows-gate-gh.log");
+    writeFileSync(join(bin, "gh"), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n[ -n "$FAKE_VISIBILITY" ] || exit 1\necho "$FAKE_VISIBILITY"\n');
+    chmodSync(join(bin, "gh"), 0o755);
+    const env = { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log, GITHUB_REPOSITORY: "AntelopeJS/x" };
+    for (const visibility of ["public", "private"]) {
+      writeFileSync(log, "");
+      const result = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: visibility });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.outputs, `visibility=${visibility}\n`);
+      assert.equal(readFileSync(log, "utf8"), "api repos/AntelopeJS/x --jq .visibility\n");
+    }
+    const failed = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: "" });
+    assert.notEqual(failed.status, 0);
+    assert.equal(failed.outputs, "");
+  });
+
+  test("a failed Windows gate fails the run instead of dropping the Windows legs", () => {
+    assert.match(jobText("node"), /^ {4}needs: windows\n {4}if: \$\{\{ !cancelled\(\) && needs\.windows\.result != 'failure' \}\}$/m);
+    assert.match(jobText("checks"), /^ {4}needs: \[windows, node, stress\]$/m);
   });
 });
 

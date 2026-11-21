@@ -77,12 +77,33 @@ on:
         required: false
 
 jobs:
+  windows:
+    name: Windows eligibility
+    if: inputs.windows && (github.event_name == 'schedule' || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      visibility: ${{ steps.visibility.outputs.visibility }}
+    steps:
+      - name: Read the repository visibility
+        id: visibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
+          echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
+
   node:
+    needs: windows
+    if: ${{ !cancelled() && needs.windows.result != 'failure' }}
     name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     # Linux legs on our runners when the CALLING repository's variable RUNNER_CI names a scale set (the
     # private repositories: antelope-ci), and on GitHub's runners when RUNNER_CI is empty or unset (every
-    # public repository). Windows legs run only for a public calling repository, on GitHub's runners: no
-    # private or internal repository gets one. Set RUNNER_CI per repository, never at organisation
+    # public repository). Windows legs run only for a calling repository the API reports public, on
+    # GitHub's runners: no private or internal repository gets one, and a schedule payload carries no
+    # repository to read it from. Set RUNNER_CI per repository, never at organisation
     # level: the runner group refuses public repositories, and their jobs would wait forever.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.RUNNER_CI || matrix.os }}
     permissions:
@@ -90,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.windows && github.event.repository.visibility == 'public' && (github.event_name == 'schedule' || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests))) && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.windows.outputs.visibility == 'public' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
         part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
     defaults:
@@ -586,7 +607,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [node, stress]
+    needs: [windows, node, stress]
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}

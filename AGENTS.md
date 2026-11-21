@@ -4,7 +4,7 @@ This repository holds the AntelopeJS organization defaults: the community health
 
 ## Callers
 
-Every repository calls the shared workflows at the `v2` tag, as in `AntelopeJS/.github/.github/workflows/ci-node.yml@v2`. A change on `main` reaches no caller until the tag moves, and `v2` moves only when Antony says so. The callers are frozen: a change keeps every existing input, default, secret and permission as they are, so each caller keeps working without an edit. `scripts/release-train/frozen-caller.yml` is the release caller that `antelopejs-sync` writes, and `caller.test.ts` checks the release workflows against it.
+Every repository calls the shared workflows at the `v2` tag, as in `AntelopeJS/.github/.github/workflows/ci-node.yml@v2`. A change on `main` reaches no caller until the tag moves, and `v2` moves only when Antony says so. The callers are frozen: a change keeps every existing input, default, secret and permission as they are, so each caller keeps working without an edit. Release and next-sync callers forward `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, as `antelopejs-sync` writes them. Until every caller is re-synced, a run without them falls back to `RELEASE_GITHUB_TOKEN`, so an older caller keeps working when `v2` moves. The fallback goes away once every caller is re-synced and the token is revoked. `scripts/release-train/frozen-caller.yml` is the release caller that `antelopejs-sync` writes, and `caller.test.ts` checks the release workflows against it.
 
 ## Checks
 

@@ -78,7 +78,13 @@ describe("the frozen caller", () => {
   for (const registry of ["public", "private"]) {
     const file = `release-npm-${registry}.yml`;
     const entry = read(`../../.github/workflows/${file}`);
-    const job = registry === "public" ? caller : caller.replace("release-npm-public.yml", file).replace("  id-token: write\n", "");
+    const job =
+      registry === "public"
+        ? caller
+        : caller
+            .replace("release-npm-public.yml", file)
+            .replace("  id-token: write\n", "")
+            .replace(/(\n {6}RELEASE_APP_PRIVATE_KEY: .*\n)/, "$1      NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}\n");
 
     test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
       assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
@@ -87,8 +93,11 @@ describe("the frozen caller", () => {
       assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
       const required = [...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name);
       assert.deepEqual(required.filter((name) => !passed.includes(name)), []);
-      const secrets = [...entries(entry, ["workflow_call", "secrets"])].filter(([, lines]) => lines.includes("required: true"));
-      assert.deepEqual(secrets, []);
+      const declaredSecrets = entries(entry, ["workflow_call", "secrets"]);
+      assert.deepEqual([...declaredSecrets].filter(([, lines]) => lines.includes("required: true")), []);
+      const passedSecrets = entries(job, ["jobs", "release", "secrets"]);
+      assert.deepEqual([...passedSecrets.keys()].sort(), [...declaredSecrets.keys()].sort(), `the caller forwards every secret ${file} declares`);
+      for (const [name, value] of passedSecrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
       const granted = entries(job, ["permissions"]);
       for (const [scope, [level = ""]] of entries(entry, ["jobs", "release", "permissions"])) {
         const grant = granted.get(scope)?.[0];
@@ -96,7 +105,7 @@ describe("the frozen caller", () => {
       }
     });
 
-    test(`${file} forwards every input but integration-branch and every secret but RELEASE_GITHUB_TOKEN to release-npm.yml, and names its registry`, () => {
+    test(`${file} forwards every input but integration-branch and every secret to release-npm.yml, and names its registry`, () => {
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
       assert.deepEqual(forwarded.get("registry"), [registry]);
@@ -108,7 +117,7 @@ describe("the frozen caller", () => {
       assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
       for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
       const secrets = entries(entry, ["jobs", "release", "secrets"]);
-      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()].filter((name) => name !== "RELEASE_GITHUB_TOKEN"));
+      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
     });
 
@@ -170,10 +179,29 @@ describe("the frozen caller", () => {
   }
 });
 
-test("no shared workflow reads RELEASE_GITHUB_TOKEN, and each one that writes to the repository mints a release app token", () => {
+test("RELEASE_GITHUB_TOKEN only stands in for the release app token, and each workflow that writes to the repository mints one", () => {
   const directory = new URL("../../.github/workflows/", import.meta.url);
   const workflows = readdirSync(directory).filter((name) => name.endsWith(".yml"));
-  assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN")), []);
+  const reading = workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN"));
+  assert.deepEqual(reading, ["next-sync.yml", "release-npm-private.yml", "release-npm-public.yml", "release-npm.yml"]);
+  for (const name of reading) {
+    const text = read(`../../.github/workflows/${name}`);
+    const uses = text.split("\n").filter((line) => line.includes("RELEASE_GITHUB_TOKEN }}") || line.includes("steps.token.outputs.token"));
+    for (const line of uses) assert.match(line.trim(), /^(RELEASE_GITHUB_TOKEN: \$\{\{ secrets\.RELEASE_GITHUB_TOKEN \}\}|\w+: \$\{\{ steps\.token\.outputs\.token \|\| secrets\.RELEASE_GITHUB_TOKEN \}\})$/, `${name}: ${line}`);
+  }
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
   assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml"]);
+});
+
+test("each release app token asks only the permissions its job uses", () => {
+  const asked = (name: string): string[] => {
+    const text = read(`../../.github/workflows/${name}`);
+    const steps = text.split(/\n {6}- /).filter((step) => /uses: actions\/create-github-app-token@/.test(step));
+    assert.equal(steps.length, 1, name);
+    return [...(steps[0] ?? "").matchAll(/^ {10}(permission-[\w-]+: \w+)$/gm)].map(([, line]) => line ?? "");
+  };
+  assert.deepEqual(asked("release-npm.yml"), ["permission-contents: write", "permission-pull-requests: read"]);
+  assert.deepEqual(asked("next-sync.yml"), ["permission-contents: write"]);
+  assert.deepEqual(asked("module-locks-renovate.yml"), ["permission-contents: write"]);
+  assert.deepEqual(asked("module-locks-refresh.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
 });

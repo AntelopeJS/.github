@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -20,6 +20,7 @@ const COPY = "Copy the recorded locks into the checkout";
 const COMMIT = "Commit the locks";
 const LOCK_COMMIT = "build(deps): record the module locks of the bumped modules";
 const BRANCH = "antelopejs/module-locks";
+const CHECK = "Check the refresh patch";
 
 const root = mkdtempSync(join(tmpdir(), "module-locks-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -217,6 +218,69 @@ describe("module-locks-refresh.yml", () => {
 
     assert.equal(runStep(refresh, UPDATE, dir, { PROJECTS: "a\nb\n" }).status, 0);
     assert.equal(readFileSync(log, "utf8"), "project modules update --fix -p a\nproject modules update --fix -p b\n");
+  });
+
+  describe("checks the refresh patch before it pushes", () => {
+    const checkPatch = (dir: string, patch: string): StepResult => {
+      runs += 1;
+      const temp = join(root, `patch-${runs}`);
+      mkdirSync(join(temp, "module-locks"), { recursive: true });
+      writeFileSync(join(temp, "module-locks", "refresh.patch"), patch);
+      return runStep(refresh, CHECK, dir, { RUNNER_TEMP: temp });
+    };
+    const staged = (dir: string, change: () => void): string => {
+      change();
+      git(dir, "add", "-A");
+      const patch = spawnSync("git", ["diff", "--cached", "--binary"], { cwd: dir, encoding: "utf8" }).stdout;
+      git(dir, "reset", "-q", "--hard");
+      return patch;
+    };
+    const base = (): string => repository({ ...lock("antelope-lock", "@antelopejs/api@1.0.0"), "package.json": '{"name":"app"}\n', "antelope.config.ts": "export default {};\n" });
+
+    test("passes a refresh that moves locks, ranges and other files, and leaves the checkout alone", () => {
+      const dir = base();
+      const patch = staged(dir, () => {
+        rmSync(join(dir, "antelope-lock"), { recursive: true });
+        write(dir, { ...lock("antelope-lock", "@antelopejs/api@1.1.0"), "package.json": '{"name":"app","version":"1"}\n', "antelope.config.ts": "export default { a: 1 };\n", "pnpm-lock.yaml": "x\n" });
+      });
+      const check = checkPatch(dir, patch);
+      assert.equal(check.status, 0, check.stdout + check.stderr);
+      assert.equal(git(dir, "status", "--porcelain"), "");
+    });
+
+    const refused: [string, (dir: string) => void, RegExp][] = [
+      ["a workflow", (dir) => write(dir, { ".github/workflows/x.yml": "on: push\n" }), /\.github\/workflows\/x\.yml, which is under \.github/],
+      ["a symlink", (dir) => symlinkSync("/etc/passwd", join(dir, "antelope-lock", "link")), /antelope-lock\/link, which is a symlink/],
+      [
+        "a submodule",
+        (dir) => {
+          mkdirSync(join(dir, "vendor", "x"), { recursive: true });
+          git(join(dir, "vendor", "x"), "init", "-q");
+          git(join(dir, "vendor", "x"), "commit", "-q", "--allow-empty", "-m", "x");
+        },
+        /vendor\/x, which is a submodule/,
+      ],
+      ["a .gitmodules", (dir) => write(dir, { ".gitmodules": "[submodule \"x\"]\n" }), /\.gitmodules, which is under \.github or declares submodules/],
+    ];
+    for (const [name, change, message] of refused) {
+      test(`refuses ${name}`, () => {
+        const dir = base();
+        const check = checkPatch(dir, staged(dir, () => change(dir)));
+        assert.notEqual(check.status, 0);
+        assert.match(check.stdout, message);
+        assert.match(check.stdout, /Nothing was pushed/);
+      });
+    }
+
+    for (const [name, path] of [["a path outside the checkout", "../outside"], ["a path under .git", ".git/hooks/post-checkout"]]) {
+      test(`refuses ${name}`, () => {
+        const dir = base();
+        const check = checkPatch(dir, `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+x\n`);
+        assert.notEqual(check.status, 0);
+        assert.match(check.stdout, /::error::The refresh patch does not apply/);
+        assert.equal(existsSync(join(dir, path)), false);
+      });
+    }
   });
 
   test("fails with the fix when no folder holds node_modules/.bin/ajs", () => {
