@@ -51,6 +51,10 @@ on:
         description: Run extra-commands in their own job, in parallel with the other checks
         default: false
         type: boolean
+      extra-commands-shards:
+        description: With extra-commands-job, split the extra-commands job into this many jobs, each with ANTELOPEJS_CI_SHARD set to its shard, such as 2/3, for the commands to pick their share of the work
+        default: 1
+        type: number
       windows:
         description: Also run the node jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows, since we have no Windows runner of our own and GitHub bills their hosted minutes. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
@@ -95,10 +99,41 @@ jobs:
           visibility=$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
           echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
 
+  shards:
+    name: Extra shards
+    if: inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards > 1
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      shards: ${{ steps.shards.outputs.shards }}
+      exclude: ${{ steps.shards.outputs.exclude }}
+    steps:
+      - name: List the extra-commands shards
+        id: shards
+        env:
+          SHARDS: ${{ inputs.extra-commands-shards }}
+        run: |
+          if [[ ! "$SHARDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::extra-commands-shards must be a whole number, not ${SHARDS}."
+            exit 1
+          fi
+          shards='""' exclude='{"part":"extra","shard":""}'
+          for ((i = 1; i <= SHARDS; i++)); do
+            shards+=",\"$i/$SHARDS\""
+            for part in all checks test; do
+              exclude+=",{\"part\":\"$part\",\"shard\":\"$i/$SHARDS\"}"
+            done
+          done
+          {
+            echo "shards=[$shards]"
+            echo "exclude=[$exclude]"
+          } >> "$GITHUB_OUTPUT"
+
   node:
-    needs: windows
-    if: ${{ !cancelled() && needs.windows.result != 'failure' }}
-    name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
+    needs: [windows, shards]
+    if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
+    name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
     # Linux legs on our runners when the CALLING repository's variable RUNNER_CI names a scale set (the
     # private repositories: antelope-ci), and on GitHub's runners when RUNNER_CI is empty or unset (every
     # public repository). Windows legs run only for a calling repository the API reports public, on
@@ -114,11 +149,13 @@ jobs:
         os: ${{ fromJSON(needs.windows.outputs.visibility == 'public' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
         part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
+        shard: ${{ fromJSON(needs.shards.outputs.shards || '[""]') }}
+        exclude: ${{ fromJSON(needs.shards.outputs.exclude || '[]') }}
     defaults:
       run:
         shell: bash
     concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}
+      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
@@ -343,7 +380,9 @@ jobs:
         if: steps.leg.outputs.work == 'true' && inputs.extra-commands != '' && (matrix.part == 'extra' || (!inputs.extra-commands-job && (matrix.part == 'all' || matrix.part == 'checks')))
         env:
           EXTRA_COMMANDS: ${{ inputs.extra-commands }}
+          ANTELOPEJS_CI_SHARD: ${{ matrix.shard }}
         run: |
+          [ -n "$ANTELOPEJS_CI_SHARD" ] || unset ANTELOPEJS_CI_SHARD
           if [ "$ANTELOPEJS_CI_TIER" != queue ]; then
             exec bash -euo pipefail -c "$EXTRA_COMMANDS"
           fi
@@ -607,7 +646,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [windows, node, stress]
+    needs: [windows, shards, node, stress]
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}

@@ -560,7 +560,8 @@ The `node` job runs one job per runner, Node.js version and part:
   runs the checks and `Test <version>` runs the tests, in parallel. A caller
   whose tests take minutes passes `single-job: false`.
 - With `extra-commands-job`, `Extra <version>` also runs `extra-commands` in
-  parallel.
+  parallel. With `extra-commands-shards` above 1, `Extra <version> <i>/<n>`
+  runs them once per shard, after an `Extra shards` job lists the shards.
 
 On Windows, the job name ends with ` on Windows`. The jobs run on Linux, also on
 Windows in the `nightly` tier when `windows` is set, and with
@@ -675,6 +676,7 @@ It accepts these optional inputs:
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
+| `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. `checks` needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
 | `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it: we have no Windows runner of our own, and GitHub bills their hosted minutes. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |

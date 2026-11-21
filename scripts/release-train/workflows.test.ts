@@ -50,6 +50,7 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
 }
 
 interface Scope {
+  matrix?: object;
   steps?: object;
   inputs?: object;
   github?: object;
@@ -62,12 +63,13 @@ function evaluate(expression: string, scope: Scope): unknown {
   const source = expression
     .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
     .replace(/\.labels\.\*\.name\b/g, ".labels")
-    .replace(/\binputs\.([\w-]+)/g, 'inputs["$1"]')
+    .replace(/\b(inputs|matrix)\.([\w-]+)/g, '$1["$2"]')
     .replace(/==/g, "===")
     .replace(/!=/g, "!==");
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
   const contains = (list: string[], item: string): boolean => list.includes(item);
-  return new Function("steps", "inputs", "github", "vars", "needs", "secrets", "contains", "fromJSON", `return (${source})`)(scope.steps, scope.inputs, scope.github, scope.vars, scope.needs, scope.secrets, contains, JSON.parse);
+  const format = (template: string, ...values: unknown[]): string => template.replace(/\{(\d+)\}/g, (_, index: string) => String(values[Number(index)]));
+  return new Function("matrix", "steps", "inputs", "github", "vars", "needs", "secrets", "contains", "fromJSON", "format", `return (${source})`)(scope.matrix, scope.steps, scope.inputs, scope.github, scope.vars, scope.needs, scope.secrets, contains, JSON.parse, format);
 }
 
 function interpolate(template: string, scope: Scope): string {
@@ -1456,8 +1458,42 @@ describe("ci-node.yml", () => {
   });
 
   test("a failed Windows gate fails the run instead of dropping the Windows legs", () => {
-    assert.match(jobText("node"), /^ {4}needs: windows\n {4}if: \$\{\{ !cancelled\(\) && needs\.windows\.result != 'failure' \}\}$/m);
-    assert.match(jobText("checks"), /^ {4}needs: \[windows, node, stress\]$/m);
+    assert.match(jobText("node"), /^ {4}needs: \[windows, shards\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.windows\.result != 'failure' && needs\.shards\.result != 'failure' \}\}$/m);
+    assert.match(jobText("checks"), /^ {4}needs: \[windows, shards, node, stress\]$/m);
+  });
+
+  test("extra-commands-shards splits the extra-commands job into one job per shard, and the default keeps one", () => {
+    const node = jobText("node");
+    const line = (key: string): string => new RegExp(`^ {4,8}${key}: (.*)$`, "m").exec(node)?.[1] ?? "";
+    const extra = stepOf(ciNode, "Run extra commands");
+    const extraIf = /^ {8}if: (.*)$/m.exec(extra)?.[1] ?? "";
+    const extraShard = /^ {10}ANTELOPEJS_CI_SHARD: (.*)$/m.exec(extra)?.[1] ?? "";
+    const legs = (overrides: object): string[] => {
+      const inputs = { "node-versions": "", "single-job": true, "services-compose-file": "", "extra-commands": "pnpm run e2e", "extra-commands-job": true, "extra-commands-shards": 1, ...overrides };
+      const ran = evaluate(/^ {4}if: (.*)$/m.exec(jobText("shards"))?.[1] ?? "", { inputs }) === true;
+      const listed = ran ? runStep(ciNode, "List the extra-commands shards", root, { SHARDS: String(inputs["extra-commands-shards"]) }) : undefined;
+      assert.equal(listed?.status ?? 0, 0, listed?.stderr);
+      const outputs = Object.fromEntries((listed?.outputs ?? "").split("\n").filter(Boolean).map((entry) => entry.split(/=(.*)/s).slice(0, 2)));
+      const scope = { inputs, needs: { windows: { outputs: { visibility: "" } }, shards: { outputs } } };
+      const exclude = evaluate(line("exclude"), scope) as Record<string, string>[];
+      const combinations = (["os", "node-version", "part", "shard"] as const)
+        .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => (evaluate(line(key), scope) as string[]).map((value) => ({ ...matrix, [key]: value }))), [{}])
+        .filter((matrix) => !exclude.some((rule) => Object.entries(rule).every(([key, value]) => matrix[key] === value)));
+      return combinations.map((matrix) => {
+        const name = interpolate(line("name"), { matrix });
+        if (evaluate(extraIf, { matrix, inputs, steps: { leg: { outputs: { work: "true" } } } }) !== true) return name;
+        const shard = interpolate(extraShard, { matrix });
+        const result = runStep(ciNode, "Run extra commands", root, { ANTELOPEJS_CI_TIER: "full", EXTRA_COMMANDS: 'echo "shard ${ANTELOPEJS_CI_SHARD-unset}"', ANTELOPEJS_CI_SHARD: shard });
+        assert.equal(result.status, 0, result.stderr);
+        return `${name}: ${result.stdout.trim()}`;
+      });
+    };
+
+    assert.deepEqual(legs({}), ["Node .nvmrc", "Extra .nvmrc: shard unset"]);
+    assert.deepEqual(legs({ "extra-commands-shards": 3 }), ["Node .nvmrc", "Extra .nvmrc 1/3: shard 1/3", "Extra .nvmrc 2/3: shard 2/3", "Extra .nvmrc 3/3: shard 3/3"]);
+    assert.deepEqual(legs({ "extra-commands-shards": 2, "single-job": false }), ["Node .nvmrc", "Test .nvmrc", "Extra .nvmrc 1/2: shard 1/2", "Extra .nvmrc 2/2: shard 2/2"]);
+    assert.deepEqual(legs({ "extra-commands-shards": 3, "extra-commands-job": false }), ["Node .nvmrc: shard unset"]);
+    assert.notEqual(runStep(ciNode, "List the extra-commands shards", root, { SHARDS: "2.5" }).status, 0);
   });
 });
 
