@@ -223,6 +223,33 @@ jobs:
           name: module-locks
           path: ${{ runner.temp }}/module-locks
 
+      - name: Check the refresh patch
+        if: env.STATE == 'changed'
+        run: |
+          out="$RUNNER_TEMP/module-locks"
+          export GIT_INDEX_FILE="$out/check.index"
+          git read-tree HEAD
+          git apply --cached "$out/refresh.patch" || {
+            echo "::error::The refresh patch does not apply to $(git rev-parse HEAD). Nothing was pushed."
+            exit 1
+          }
+          git diff --cached --no-renames --raw -z HEAD > "$out/check.raw"
+          refused=0
+          while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+            read -r _ mode _ <<< "$meta"
+            case "$path" in
+              .github/* | .gitmodules) reason="is under .github or declares submodules" ;;
+              *) case "$mode" in
+                   120000) reason="is a symlink" ;;
+                   160000) reason="is a submodule" ;;
+                   *) continue ;;
+                 esac ;;
+            esac
+            printf '::error::The refresh patch changes %q, which %s. Nothing was pushed.\n' "$path" "$reason"
+            refused=1
+          done < "$out/check.raw"
+          exit "$refused"
+
       - name: Push the refreshed locks
         if: env.STATE == 'changed'
         env:

@@ -797,8 +797,10 @@ command records the newest release each range accepts, resolves the
 dependencies of every locked module again and deletes the locks no environment
 uses. It runs a second time when the first run fails, until a core release
 carries AntelopeJS/antelopejs#535. The workflow then runs
-`pnpm install --no-frozen-lockfile` and the caller's `commands`. When a file
-changed, it pushes the result to `antelopejs/module-locks` with an installation
+`pnpm install --no-frozen-lockfile` and the caller's `commands`. It fails
+without pushing when the change touches `.github/` or `.gitmodules`, adds a
+symlink or a submodule, or holds a path `git apply` refuses, such as one under
+`.git` or outside the checkout. When a file changed, it pushes the result to `antelopejs/module-locks` with an installation
 token of the `antelopejs-release` GitHub App and opens a pull request into the
 default branch, or
 updates the one already open. The pull request body lists the module versions
