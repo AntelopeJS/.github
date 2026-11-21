@@ -104,7 +104,7 @@ jobs:
                 git rm -rq -- "$committed"
                 echo "Deleted ${committed}: the bump replaces ${version}."
               fi
-            done < <(git ls-tree -d --name-only HEAD -- "$(dirname "$lock")/")
+            done < <(git ls-tree -d --name-only HEAD -- "$(dirname -- "$lock")/")
           done < "$work/recorded"
 
       - name: Commit the locks

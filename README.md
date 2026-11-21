@@ -1041,7 +1041,7 @@ releasing a package below `packages/` needs no extra input. This is the job
 ```yaml
 jobs:
   release-packages-dms-automation:
-    if: github.event_name == 'push' || inputs.package-directory == 'packages/dms-automation'
+    if: github.event_name != 'workflow_dispatch' || inputs.package-directory == 'packages/dms-automation'
     uses: AntelopeJS/.github/.github/workflows/release-npm-public.yml@v2
     with:
       release-version: ${{ inputs.release-version }}
@@ -1050,6 +1050,8 @@ jobs:
       package-directory: packages/dms-automation
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 Both workflows install from the nearest directory at or above the package
