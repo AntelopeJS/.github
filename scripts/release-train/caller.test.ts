@@ -105,7 +105,7 @@ describe("the frozen caller", () => {
       }
     });
 
-    test(`${file} forwards every input but integration-branch and every secret but RELEASE_GITHUB_TOKEN to release-npm.yml, and names its registry`, () => {
+    test(`${file} forwards every input but integration-branch and every secret to release-npm.yml, and names its registry`, () => {
       const forwarded = entries(entry, ["jobs", "release", "with"]);
       assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
       assert.deepEqual(forwarded.get("registry"), [registry]);
@@ -117,7 +117,7 @@ describe("the frozen caller", () => {
       assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
       for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
       const secrets = entries(entry, ["jobs", "release", "secrets"]);
-      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()].filter((name) => name !== "RELEASE_GITHUB_TOKEN"));
+      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
     });
 
@@ -179,10 +179,16 @@ describe("the frozen caller", () => {
   }
 });
 
-test("no shared workflow reads RELEASE_GITHUB_TOKEN, and each one that writes to the repository mints a release app token", () => {
+test("RELEASE_GITHUB_TOKEN only stands in for the release app token, and each workflow that writes to the repository mints one", () => {
   const directory = new URL("../../.github/workflows/", import.meta.url);
   const workflows = readdirSync(directory).filter((name) => name.endsWith(".yml"));
-  assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN")), []);
+  const reading = workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("secrets.RELEASE_GITHUB_TOKEN"));
+  assert.deepEqual(reading, ["next-sync.yml", "release-npm-private.yml", "release-npm-public.yml", "release-npm.yml"]);
+  for (const name of reading) {
+    const text = read(`../../.github/workflows/${name}`);
+    const uses = text.split("\n").filter((line) => line.includes("RELEASE_GITHUB_TOKEN }}") || line.includes("steps.token.outputs.token"));
+    for (const line of uses) assert.match(line.trim(), /^(RELEASE_GITHUB_TOKEN: \$\{\{ secrets\.RELEASE_GITHUB_TOKEN \}\}|\w+: \$\{\{ steps\.token\.outputs\.token \|\| secrets\.RELEASE_GITHUB_TOKEN \}\})$/, `${name}: ${line}`);
+  }
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
   assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml"]);
 });
