@@ -428,16 +428,17 @@ stable release.
 
 ### What a caller declares
 
-`antelopejs-sync` of `@antelopejs/tooling-configs` 0.8.5 writes this caller,
-and the shared workflows at `@v2` work with it unchanged.
+`antelopejs-sync` of the first `@antelopejs/tooling-configs` release after
+0.9.2 writes this caller. A caller written by an older `antelopejs-sync`
+forwards only `RELEASE_GITHUB_TOKEN`, and its stable and repin runs fail once
+`v2` moves, so every caller forwards the two app secrets before it does.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
-- **Triggers.** `push` to the default branch for previews, and
-  `workflow_dispatch` for stable releases. A caller that adds `pull_request`
-  with the types `opened`, `synchronize`, `reopened` and `labeled` publishes a
-  [pull request preview](#pull-request-previews) for each pull request that
-  carries the `preview` label.
+- **Triggers.** `push` to the default branch for previews, `pull_request`
+  with the types `labeled`, `synchronize` and `reopened` for a
+  [pull request preview](#pull-request-previews) of each pull request that
+  carries the `preview` label, and `workflow_dispatch` for stable releases.
 - **Dispatch inputs.** `release-version`, `release-commit` and
   `dependency-ranges` (default `"{}"`), all optional strings that the release
   train sets. A repository whose package is not at its root adds
@@ -449,10 +450,11 @@ and the shared workflows at `@v2` work with it unchanged.
   the release app token.
 - **Optional inputs.** Every other input of the shared workflows has a default
   that fits this caller. A caller may set `install-core`.
-- **Secrets.** `RELEASE_GITHUB_TOKEN` for the public workflow, plus
-  `NPM_ANTELOPE_TOKEN` for the private one, each passed by name. The shared
-  workflows no longer read `RELEASE_GITHUB_TOKEN`: a stable or repin run needs
-  `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` passed the same way.
+- **Secrets.** `RELEASE_GITHUB_TOKEN`, `RELEASE_APP_ID` and
+  `RELEASE_APP_PRIVATE_KEY`, plus `NPM_ANTELOPE_TOKEN` for the private
+  workflow, each passed by name. A stable or repin run mints its token from the
+  two app secrets and fails without them. No step reads
+  `RELEASE_GITHUB_TOKEN`.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name. `release-npm.yml@v2`
   takes the same call with `registry: public` or `registry: private`.
@@ -461,8 +463,8 @@ and the shared workflows at `@v2` work with it unchanged.
 
 ### Caller workflow
 
-The caller is the `release.yml` of the repository. It needs both triggers and
-passes the inputs the release train sets:
+The caller is the `release.yml` of the repository. It declares the three
+triggers, passes the inputs the release train sets and forwards the secrets:
 
 ```yaml
 name: Release
@@ -470,6 +472,8 @@ name: Release
 on:
   push:
     branches: [main]
+  pull_request:
+    types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
       release-version:
@@ -499,6 +503,8 @@ jobs:
       dependency-ranges: ${{ inputs.dependency-ranges }}
     secrets:
       RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
 A private package calls `release-npm-private.yml` and also passes
