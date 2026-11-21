@@ -186,3 +186,16 @@ test("no shared workflow reads RELEASE_GITHUB_TOKEN, and each one that writes to
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
   assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml"]);
 });
+
+test("each release app token asks only the permissions its job uses", () => {
+  const asked = (name: string): string[] => {
+    const text = read(`../../.github/workflows/${name}`);
+    const steps = text.split(/\n {6}- /).filter((step) => /uses: actions\/create-github-app-token@/.test(step));
+    assert.equal(steps.length, 1, name);
+    return [...(steps[0] ?? "").matchAll(/^ {10}(permission-[\w-]+: \w+)$/gm)].map(([, line]) => line ?? "");
+  };
+  assert.deepEqual(asked("release-npm.yml"), ["permission-contents: write", "permission-pull-requests: read"]);
+  assert.deepEqual(asked("next-sync.yml"), ["permission-contents: write"]);
+  assert.deepEqual(asked("module-locks-renovate.yml"), ["permission-contents: write"]);
+  assert.deepEqual(asked("module-locks-refresh.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
+});
