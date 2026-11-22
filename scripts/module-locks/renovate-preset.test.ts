@@ -33,6 +33,11 @@ const { applyPackageRules }: { applyPackageRules(config: Config, stage: string):
 const preset = JSON5.parse(readFileSync(new URL("../../renovate.json5", import.meta.url), "utf8"));
 const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolveConfigPresets(preset)).config));
 
+async function lookup(upgrade: Upgrade & { datasource: string }): Promise<string | undefined> {
+  const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
+  return typeof result.packageName === "string" ? result.packageName : undefined;
+}
+
 async function rules(upgrade: Upgrade): Promise<{ enabled: boolean; groupName?: string; automerge: boolean; minimumReleaseAge?: string }> {
   const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
   return {
@@ -112,4 +117,12 @@ test("the custom managers read every shape a project or a test stack pins a modu
   assert.deepEqual(pins("packages/dms-media/src/test/stack-modules.json", '{\n  "@antelopejs/mongodb": "1.8.4",\n  "@antelopejs/api": "1.7.5"\n}'), ["@antelopejs/mongodb@1.8.4", "@antelopejs/api@1.7.5"]);
   assert.deepEqual(pins("package.json", '{ "@antelopejs/api": "1.7.5" }'), []);
   assert.deepEqual(pins("src/index.ts", 'package: "@antelopejs/api", version: "1.7.5"'), []);
+});
+
+test("an image behind the Harbor Docker Hub proxy is looked up on Docker Hub", async () => {
+  const image = { repository: "AntelopeJS/antelope-web", manager: "dockerfile", datasource: "docker", currentVersion: "24", updateType: "minor", packageFile: "Dockerfile.cloud" };
+  assert.equal(await lookup({ ...image, depName: "harbor.antelopejs.cloud/dockerhub-proxy/library/node" }), "library/node");
+  assert.equal(await lookup({ ...image, depName: "harbor.antelopejs.cloud/dockerhub-proxy/bitnami/redis" }), "bitnami/redis");
+  assert.equal(await lookup({ ...image, depName: "harbor.antelopejs.cloud/other/library/node" }), "harbor.antelopejs.cloud/other/library/node");
+  assert.equal(await lookup({ ...image, depName: "node" }), "node");
 });

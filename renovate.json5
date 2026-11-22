@@ -67,6 +67,12 @@
       minimumReleaseAge: '3 days',
     },
     {
+      description: "harbor.antelopejs.cloud answers 401 to anonymous registry calls and its dockerhub-proxy project only caches Docker Hub, so Renovate looks these images up on Docker Hub while the files keep the proxy path",
+      matchDatasources: ['docker'],
+      matchPackageNames: ['harbor.antelopejs.cloud/dockerhub-proxy/**'],
+      overridePackageName: '{{{replace "^harbor\\.antelopejs\\.cloud/dockerhub-proxy/" "" packageName}}}',
+    },
+    {
       description: 'ignorePaths leaves out **/test/** of config:recommended so the custom managers read the test stacks; every other manager still skips it',
       matchFileNames: ['**/test/**'],
       matchManagers: ['!custom.regex'],
