@@ -1190,12 +1190,12 @@ describe("release-npm.yml", () => {
         const steps = { token: { outputs: { token: minted ? "app-token" : "" } } };
         return { status: result.status, stdout: result.stdout, stderr: result.stderr, tokens: [...new Set(writers.map((expression) => interpolate(expression, { steps })))] };
       };
-      const app = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" });
+      const app = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" });
       assert.deepEqual([app.status, app.tokens, app.stdout], [0, ["app-token"], ""]);
-      const appOnly = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" });
-      assert.deepEqual([appOnly.status, appOnly.tokens], [0, ["app-token"]]);
-      const token = run({ RELEASE_APP_ID: "1", RELEASE_GITHUB_TOKEN: "pat" });
-      assert.deepEqual([token.status, token.stderr], [1, `${NO_CREDENTIALS}\n`]);
+      const idOnly = run({ RELEASE_APP_ID: "1" });
+      assert.deepEqual([idOnly.status, idOnly.stderr], [1, `${NO_CREDENTIALS}\n`]);
+      const keyOnly = run({ RELEASE_APP_PRIVATE_KEY: "key" });
+      assert.deepEqual([keyOnly.status, keyOnly.stderr], [1, `${NO_CREDENTIALS}\n`]);
       const neither = run({});
       assert.deepEqual([neither.status, neither.stderr], [1, `${NO_CREDENTIALS}\n`]);
     });
@@ -1391,16 +1391,15 @@ describe("next-sync.yml", () => {
   test("pushes with the app token when both app secrets are set, and fails otherwise", () => {
     const mint = /^ {8}if: (.*)$/m.exec(stepOf(sync, "Create the push token"))?.[1] ?? "";
     const pusher = /^ {10}TOKEN: (.*)$/m.exec(stepOf(sync, "Merge"))?.[1] ?? "";
-    assert.doesNotMatch(pusher, /RELEASE_GITHUB_TOKEN/);
     const run = (secrets: Record<string, string>) => {
       const result = runStep(sync, "Pick the push credentials", root, { RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", ...secrets });
       const app = /^app=(.*)$/m.exec(result.outputs)?.[1] ?? "";
       const minted = evaluate(mint, { steps: { credentials: { outputs: { app } } } }) === true;
       return [result.status, interpolate(pusher, { steps: { token: { outputs: { token: minted ? "app-token" : "" } } } }), result.stdout.split(" ")[0]];
     };
-    assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [0, "app-token", ""]);
     assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" }), [0, "app-token", ""]);
-    assert.deepEqual(run({ RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [1, "", "::error::RELEASE_APP_ID"]);
+    assert.deepEqual(run({ RELEASE_APP_ID: "1" }), [1, "", "::error::RELEASE_APP_ID"]);
+    assert.deepEqual(run({ RELEASE_APP_PRIVATE_KEY: "key" }), [1, "", "::error::RELEASE_APP_ID"]);
     assert.deepEqual(run({}), [1, "", "::error::RELEASE_APP_ID"]);
   });
 });

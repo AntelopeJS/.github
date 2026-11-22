@@ -8,9 +8,6 @@ on:
         default: next
         type: string
     secrets:
-      RELEASE_GITHUB_TOKEN:
-        description: Unused and ignored. Kept declared so that a caller that still passes it is accepted; the release app token is the only write token
-        required: false
       RELEASE_APP_ID:
         description: ID of the GitHub App whose installation token pushes the merge, which the branch's ruleset lets push
         required: false
