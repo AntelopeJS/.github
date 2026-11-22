@@ -187,23 +187,32 @@ describe("go", () => {
       .map((args) => (args[0] === "view" ? `view ${args[1]}` : `dispatch ${args[4]} ${args.find((arg) => arg.startsWith("dependency-ranges="))}`));
     assert.deepEqual(steps, [
       "dispatch AntelopeJS/interface-database dependency-ranges={}",
-      ...Array.from({ length: 4 }, () => "view @antelopejs/interface-database@0.5.0"),
+      ...Array.from({ length: 4 }, () => "view @antelopejs/interface-database"),
       'dispatch AntelopeJS/mongodb dependency-ranges={"@antelopejs/interface-database":">=0.5.0 <0.6.0"}',
+      "view @antelopejs/mongodb",
     ]);
   });
 
-  test("stops when npm does not serve a release within 20 minutes, before the release that depends on it", () => {
-    const { system, calls, errors } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 80 } });
+  test("waits for npm to show the release as latest even when nothing depends on it", () => {
+    const { system, calls, output } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 2 } });
+    assert.equal(main(["go", interfaceDatabase], system), 0);
+    assert.equal(calls.filter((args) => args[0] === "view" && args[2] === "dist-tags.latest").length, 3);
+    assert.match(output(), /\npublished @antelopejs\/interface-database 0\.5\.0 /);
+  });
+
+  test("stops when npm does not show a release as latest within 10 minutes, before it prints published", () => {
+    const { system, calls, errors, output } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 40 } });
     assert.equal(main(["go", interfaceDatabase, mongodb], system), 1);
-    assert.equal(calls.filter((args) => args[0] === "view").length, 80);
+    assert.equal(calls.filter((args) => args[0] === "view").length, 40);
+    assert.doesNotMatch(output(), /published @antelopejs/);
     assert.deepEqual(dispatches(calls).map(([repo]) => repo), ["AntelopeJS/interface-database"]);
     assert.equal(
       errors(),
       [
-        "npm did not serve @antelopejs/interface-database 0.5.0 within 20 minutes of its release, so @antelopejs/mongodb 1.8.7, which depends on it, was not dispatched.",
+        "npm does not show @antelopejs/interface-database 0.5.0 as @antelopejs/interface-database latest within 10 minutes of its release.",
         "Published: @antelopejs/interface-database 0.5.0.",
         "Not published: @antelopejs/mongodb 1.8.7.",
-        "Run go again once npm view @antelopejs/interface-database@0.5.0 version prints 0.5.0.",
+        "Run go again once npm view @antelopejs/interface-database dist-tags.latest prints 0.5.0.",
         "",
       ].join("\n"),
     );
