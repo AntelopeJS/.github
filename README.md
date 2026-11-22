@@ -304,9 +304,10 @@ unknown. That happens when no run appears after the dispatch, when
 `gh run view` fails more than 8 times in a row, 15 seconds apart, or when
 `npm view` fails. The stop message lists what was published, what was not,
 and the unknown package with its run. Check an unknown run before you run `go`
-again. `go` also stops when npm does not serve a release within 20 minutes:
-the release is published, and its dependents are not. Run `go` again once
-`npm view` prints the version. After a failure, fix it and run `go` again. The plan is read again from
+again. `go` prints `published` for a release only once npm shows its version as
+`dist-tags.latest`. It stops when npm does not within 10 minutes: the release is
+published, and the rest is not. Run `go` again once
+`npm view <package> dist-tags.latest` prints the version. After a failure, fix it and run `go` again. The plan is read again from
 the tags, so the train continues where it stopped.
 
 A stable or repin run commits to the default branch of its repository. So
