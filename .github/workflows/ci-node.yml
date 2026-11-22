@@ -80,6 +80,10 @@ on:
         description: Deprecated and ignored; kept only because callers still pass it and a reusable workflow rejects a secret it does not declare
         required: false
 
+concurrency:
+  group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   windows:
     name: Windows eligibility
@@ -154,9 +158,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    concurrency:
-      group: ci-node-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.part }}-${{ matrix.node-version }}-${{ matrix.os }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
     env:
@@ -645,7 +646,7 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   checks:
-    if: always()
+    if: ${{ github.event_name != 'pull_request' || !cancelled() }}
     needs: [windows, shards, node, stress]
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5

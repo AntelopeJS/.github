@@ -683,7 +683,10 @@ not declare.
 The `checks` job stays the single required result. It checks that the pull
 request title uses Conventional Commits. It fails when the `node` job did not
 succeed, when any job it waits for failed or was cancelled, and in the
-`nightly` tier when `Stress` did not succeed.
+`nightly` tier when `Stress` did not succeed. A newer run of the same pull
+request cancels the older one whole, and the older run's `checks` then ends
+cancelled instead of failing. On any other event, and in a pull request run
+that was not cancelled, a cancelled job still fails `checks`.
 
 The Linux jobs run on the runner named by the calling repository's `RUNNER_CI`
 variable when it is set, and on `ubuntu-latest` when it is empty or unset. A
