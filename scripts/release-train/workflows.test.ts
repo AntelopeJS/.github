@@ -8,7 +8,7 @@ import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
 
 const workflowText = (file: string): string => readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
 const text = workflowText("release-npm.yml");
-const NO_CREDENTIALS = "RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured, and no RELEASE_GITHUB_TOKEN stands in for them.";
+const NO_CREDENTIALS = "RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured.";
 const root = mkdtempSync(join(tmpdir(), "release-workflows-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -1180,23 +1180,22 @@ describe("release-npm.yml", () => {
   });
 
   for (const mode of ["stable", "repin"]) {
-    test(`a ${mode} run writes with the app token when both app secrets are set, else with RELEASE_GITHUB_TOKEN, and fails with neither`, () => {
+    test(`a ${mode} run writes with the app token when both app secrets are set, and fails otherwise`, () => {
       const mint = /^ {8}if: (.*)$/m.exec(stepOf(text, "Create the release token"))?.[1] ?? "";
       const writers = ["Push the stable ranges", "Write release notes", "Publish stable release"].map((name) => /^ {10}\w+: (\$\{\{ steps\.token\.outputs\.token.*\}\})$/m.exec(stepOf(text, name))?.[1] ?? "");
       const run = (secrets: Record<string, string>) => {
-        const result = runStep(text, "Validate release credentials", root, { MODE: mode, REGISTRY: "public", RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", RELEASE_GITHUB_TOKEN: "", NPM_ANTELOPE_TOKEN: "", ...secrets });
+        const result = runStep(text, "Validate release credentials", root, { MODE: mode, REGISTRY: "public", RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", NPM_ANTELOPE_TOKEN: "", ...secrets });
         const app = /^app=(.*)$/m.exec(result.outputs)?.[1] ?? "";
         const minted = evaluate(mint, { steps: { credentials: { outputs: { app } } } }) === true;
         const steps = { token: { outputs: { token: minted ? "app-token" : "" } } };
-        return { status: result.status, stdout: result.stdout, stderr: result.stderr, tokens: [...new Set(writers.map((expression) => interpolate(expression, { steps, secrets: { RELEASE_GITHUB_TOKEN: secrets.RELEASE_GITHUB_TOKEN ?? "" } })))] };
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr, tokens: [...new Set(writers.map((expression) => interpolate(expression, { steps })))] };
       };
       const app = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" });
       assert.deepEqual([app.status, app.tokens, app.stdout], [0, ["app-token"], ""]);
       const appOnly = run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" });
       assert.deepEqual([appOnly.status, appOnly.tokens], [0, ["app-token"]]);
       const token = run({ RELEASE_APP_ID: "1", RELEASE_GITHUB_TOKEN: "pat" });
-      assert.deepEqual([token.status, token.tokens], [0, ["pat"]]);
-      assert.match(token.stdout, /^::warning::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not forwarded/);
+      assert.deepEqual([token.status, token.stderr], [1, `${NO_CREDENTIALS}\n`]);
       const neither = run({});
       assert.deepEqual([neither.status, neither.stderr], [1, `${NO_CREDENTIALS}\n`]);
     });
@@ -1389,18 +1388,19 @@ describe("release-npm.yml", () => {
 describe("next-sync.yml", () => {
   const sync = workflowText("next-sync.yml");
 
-  test("pushes with the app token when both app secrets are set, else with RELEASE_GITHUB_TOKEN, and fails with neither", () => {
+  test("pushes with the app token when both app secrets are set, and fails otherwise", () => {
     const mint = /^ {8}if: (.*)$/m.exec(stepOf(sync, "Create the push token"))?.[1] ?? "";
     const pusher = /^ {10}TOKEN: (.*)$/m.exec(stepOf(sync, "Merge"))?.[1] ?? "";
+    assert.doesNotMatch(pusher, /RELEASE_GITHUB_TOKEN/);
     const run = (secrets: Record<string, string>) => {
-      const result = runStep(sync, "Pick the push credentials", root, { RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", RELEASE_GITHUB_TOKEN: "", ...secrets });
+      const result = runStep(sync, "Pick the push credentials", root, { RELEASE_APP_ID: "", RELEASE_APP_PRIVATE_KEY: "", ...secrets });
       const app = /^app=(.*)$/m.exec(result.outputs)?.[1] ?? "";
       const minted = evaluate(mint, { steps: { credentials: { outputs: { app } } } }) === true;
-      return [result.status, interpolate(pusher, { steps: { token: { outputs: { token: minted ? "app-token" : "" } } }, secrets: { RELEASE_GITHUB_TOKEN: secrets.RELEASE_GITHUB_TOKEN ?? "" } }), result.stdout.split(" ")[0]];
+      return [result.status, interpolate(pusher, { steps: { token: { outputs: { token: minted ? "app-token" : "" } } } }), result.stdout.split(" ")[0]];
     };
     assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [0, "app-token", ""]);
     assert.deepEqual(run({ RELEASE_APP_ID: "1", RELEASE_APP_PRIVATE_KEY: "key" }), [0, "app-token", ""]);
-    assert.deepEqual(run({ RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [0, "pat", "::warning::RELEASE_APP_ID"]);
+    assert.deepEqual(run({ RELEASE_APP_PRIVATE_KEY: "key", RELEASE_GITHUB_TOKEN: "pat" }), [1, "", "::error::RELEASE_APP_ID"]);
     assert.deepEqual(run({}), [1, "", "::error::RELEASE_APP_ID"]);
   });
 });

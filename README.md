@@ -403,9 +403,7 @@ App, which `actions/create-github-app-token` mints from the `RELEASE_APP_ID`
 and `RELEASE_APP_PRIVATE_KEY` secrets, scoped to the calling repository and to
 `contents: write` and `pull_requests: read` (the release notes read merged pull
 requests). It pushes the release commit and tag and creates the GitHub release.
-While a caller does not forward both app secrets, the run falls back to
-`RELEASE_GITHUB_TOKEN` with a warning, and it fails when neither is set. The
-fallback goes away once every caller is re-synced and the token is revoked. The `public` registry publishes to npmjs with public access and
+The run fails when either app secret is unset. The `public` registry publishes to npmjs with public access and
 provenance. The `private` registry publishes to `https://npm.antelopejs.cloud/`
 and also needs `NPM_ANTELOPE_TOKEN` for every run. Each validates that the
 package directory resolves inside the repository and holds a `package.json`,
@@ -430,10 +428,7 @@ stable release.
 ### What a caller declares
 
 `antelopejs-sync` of the first `@antelopejs/tooling-configs` release after
-0.9.2 writes this caller. A caller written by an older `antelopejs-sync`
-forwards only `RELEASE_GITHUB_TOKEN`, and keeps releasing with it through the
-fallback. Every caller forwards the two app secrets before the token is
-revoked, and the fallback is then removed.
+0.9.2 writes this caller. Every caller forwards the two app secrets.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
@@ -452,11 +447,9 @@ revoked, and the fallback is then removed.
   the release app token.
 - **Optional inputs.** Every other input of the shared workflows has a default
   that fits this caller. A caller may set `install-core`.
-- **Secrets.** `RELEASE_GITHUB_TOKEN`, `RELEASE_APP_ID` and
-  `RELEASE_APP_PRIVATE_KEY`, plus `NPM_ANTELOPE_TOKEN` for the private
-  workflow, each passed by name. A stable or repin run mints its token from the
-  two app secrets, and falls back to `RELEASE_GITHUB_TOKEN` until the token is
-  revoked.
+- **Secrets.** `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, plus
+  `NPM_ANTELOPE_TOKEN` for the private workflow, each passed by name. A stable
+  or repin run mints its token from the two app secrets.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
   each dispatch input passed through under the same name. `release-npm.yml@v2`
   takes the same call with `registry: public` or `registry: private`.
@@ -504,7 +497,6 @@ jobs:
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
     secrets:
-      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
@@ -974,7 +966,6 @@ the same conflict would come back.
 | `branch` | `next` | Branch that receives the default branch. |
 | `RELEASE_APP_ID` (secret) | | ID of the GitHub App whose token pushes the merge. The branch ruleset must list the app as a bypass actor. |
 | `RELEASE_APP_PRIVATE_KEY` (secret) | | Private key of that GitHub App. |
-| `RELEASE_GITHUB_TOKEN` (secret) | | Pushes the merge, with a warning, while `RELEASE_APP_ID` or `RELEASE_APP_PRIVATE_KEY` is unset. The sync fails when neither is set. Removed once every caller forwards the app secrets and the token is revoked. |
 | `NOTION_TOKEN` (secret) | | Optional and unused: no workflow writes to Notion. Kept so that callers which still pass it are accepted. |
 
 The calling job must grant `issues: write`: a
@@ -1051,7 +1042,6 @@ jobs:
       dependency-ranges: ${{ inputs.dependency-ranges }}
       package-directory: packages/dms-automation
     secrets:
-      RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
