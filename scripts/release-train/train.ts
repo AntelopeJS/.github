@@ -179,24 +179,21 @@ function go(plan: Plan, replan: () => Plan, system: System): number {
       system.err(stopLines(outcome, entry, done, rest).join("\n"));
       return 1;
     }
-    system.out(`${entry.status === "release" ? "published" : "repinned"} ${label(entry)}  ${outcome.url}\n`);
-    done.push(entry);
-    pending = rest;
     const { name } = entry.source.manifest;
-    const dependent = rest.find(
-      (other) => Object.hasOwn(other.ranges, name) || (other.status === "release" && other.siblings.some((sibling) => sibling.name === name)),
-    );
-    if (entry.status === "release" && dependent !== undefined && !awaitRegistry(system, name, entry.to)) {
+    if (entry.status === "release" && !awaitRegistry(system, name, entry.to)) {
       system.err(
         [
-          `npm did not serve ${label(entry)} within 20 minutes of its release, so ${label(dependent)}, which depends on it, was not dispatched.`,
-          published(done),
+          `npm does not show ${label(entry)} as ${name} latest within 10 minutes of its release.`,
+          published(done, [entry]),
           `Not published: ${list(rest)}.`,
-          `Run go again once npm view ${name}@${entry.to} version prints ${entry.to}.`,
+          `Run go again once npm view ${name} dist-tags.latest prints ${entry.to}.`,
         ].join("\n"),
       );
       return 1;
     }
+    system.out(`${entry.status === "release" ? "published" : "repinned"} ${label(entry)}  ${outcome.url}\n`);
+    done.push(entry);
+    pending = rest;
     const { slug, head } = entry.source;
     if (!rest.some((other) => other.source.slug === slug)) continue;
     let next: Run[];

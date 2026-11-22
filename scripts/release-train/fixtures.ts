@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { after } from "node:test";
 import type { RunResult, System } from "./system.ts";
 
@@ -92,6 +92,7 @@ interface Run {
   branch: string;
   version: string;
   views: number;
+  name: string;
 }
 
 function compare(range: string): RunResult {
@@ -111,6 +112,8 @@ interface Fakes {
   compareDown?: boolean;
   views?: Record<string, View[]>;
   npm?: Record<string, string>;
+  /** The dist-tags.latest npm serves for a name no run of the train released. */
+  latest?: Record<string, string>;
   /** How many polls npm answers E404 for a name@version after its run succeeded. */
   lag?: Record<string, number>;
   dispatched?: (repo: string, fields: Record<string, string>) => void;
@@ -121,6 +124,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   const sleeps: number[] = [];
   const runs: Run[] = [];
   const released = new Set<string>();
+  const latest = new Map<string, string>();
   const lags = { ...gh.lag };
   let out = "";
   let err = "";
@@ -133,6 +137,15 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
         return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
       }
       calls.push([...args]);
+      if (command === "npm" && args[2] === "dist-tags.latest") {
+        const name = args[1] ?? "";
+        const version = latest.get(name) ?? gh.latest?.[name];
+        const spec = `${name}@${version}`;
+        const lag = lags[spec] ?? 0;
+        if (lag > 0) lags[spec] = lag - 1;
+        if (version === undefined || lag > 0) return answer("previous\n");
+        return answer(`${version}\n`);
+      }
       if (command === "npm") {
         const spec = args[1] ?? "";
         const version = spec.slice(spec.lastIndexOf("@") + 1);
@@ -148,10 +161,15 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
         if (conclusions[repo] === "rejected") return answer("", 1);
-        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0 });
+        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0, name: "" });
         const fields = Object.fromEntries(
           args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
         );
+        const dispatched = runs.at(-1);
+        if (dispatched !== undefined && conclusions[repo] !== "lost") {
+          const shown = git(join(root, repo.slice(repo.indexOf("/") + 1)), "show", `${fields["release-commit"]}:${posix.join(fields["package-directory"] ?? ".", "package.json")}`);
+          dispatched.name = JSON.parse(shown).name;
+        }
         gh.dispatched?.(repo, fields);
         return answer("");
       }
@@ -166,7 +184,10 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       if (view === "fail") return answer("", 1);
       const status = view === "running" ? "in_progress" : "completed";
       const conclusion = status === "completed" ? (conclusions[repo] ?? "success") : "";
-      if (conclusion === "success") released.add(run.version);
+      if (conclusion === "success") {
+        released.add(run.version);
+        latest.set(run.name, run.version);
+      }
       return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
     },
     sleep: (milliseconds) => {

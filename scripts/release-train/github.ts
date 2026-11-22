@@ -7,8 +7,8 @@ const runViewRetries = 8;
 const dispatchPollMilliseconds = 5_000;
 const dispatchPollAttempts = 24;
 const registryPollMilliseconds = 15_000;
-/** How many times the train asks npm for a version it released: 80 polls 15 seconds apart, 20 minutes. */
-const registryPollAttempts = 80;
+/** How many times the train asks npm for the latest version of a package it released: 40 polls 15 seconds apart, 10 minutes. */
+const registryPollAttempts = 40;
 
 /**
  * How a dispatched release ended. `failed` means nothing was published. `incomplete` means the run failed
@@ -61,12 +61,14 @@ function npmHolds(system: System, name: string, version: string): boolean | null
 }
 
 /**
- * Polls npm until it serves a version, for up to {@link registryPollAttempts} polls. npm can serve a version
- * minutes after `npm publish` returned, and a dependent's install fails until it does. Answers whether it served it.
+ * Polls npm until its `latest` dist-tag is a version, for up to {@link registryPollAttempts} polls. npm can keep
+ * serving the previous version for minutes after `npm publish` returned, and what runs next fails until it does.
+ * Answers whether the tag showed the version.
  */
 export function awaitRegistry(system: System, name: string, version: string): boolean {
   for (let attempt = 0; attempt < registryPollAttempts; attempt += 1) {
-    if (npmHolds(system, name, version) === true) return true;
+    const result = system.run("npm", ["view", name, "dist-tags.latest"]);
+    if (result.status === 0 && result.stdout.trim() === version) return true;
     system.sleep(registryPollMilliseconds);
   }
   return false;
