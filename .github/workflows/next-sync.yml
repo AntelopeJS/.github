@@ -9,7 +9,7 @@ on:
         type: string
     secrets:
       RELEASE_GITHUB_TOKEN:
-        description: Token the sync pushes with while RELEASE_APP_ID or RELEASE_APP_PRIVATE_KEY is unset. Removed once every caller forwards the app secrets
+        description: Unused and ignored. Kept declared so that a caller that still passes it is accepted; the release app token is the only write token
         required: false
       RELEASE_APP_ID:
         description: ID of the GitHub App whose installation token pushes the merge, which the branch's ruleset lets push
@@ -51,14 +51,11 @@ jobs:
         env:
           RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
           RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
         run: |
           if [ -n "$RELEASE_APP_ID" ] && [ -n "$RELEASE_APP_PRIVATE_KEY" ]; then
             echo "app=true" >> "$GITHUB_OUTPUT"
-          elif [ -n "$RELEASE_GITHUB_TOKEN" ]; then
-            echo "::warning::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not forwarded, so this sync pushes with RELEASE_GITHUB_TOKEN. Run antelopejs-sync to forward them before the token is revoked."
           else
-            echo "::error::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured, and no RELEASE_GITHUB_TOKEN stands in for them."
+            echo "::error::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured."
             exit 1
           fi
 
@@ -75,7 +72,7 @@ jobs:
       - name: Merge
         id: merge
         env:
-          TOKEN: ${{ steps.token.outputs.token || secrets.RELEASE_GITHUB_TOKEN }}
+          TOKEN: ${{ steps.token.outputs.token }}
         run: |
           git init -q
           git remote add origin "https://github.com/${GH_REPO}.git"
@@ -105,7 +102,7 @@ jobs:
             fi
             [ "$attempt" = 3 ] || sleep 5
           done
-          echo "::error::The merge was not pushed to ${BRANCH} after 3 attempts. Either ${BRANCH} moved each time, or the release GitHub App, or the owner of RELEASE_GITHUB_TOKEN when the app secrets are unset, is not a bypass actor of its ruleset."
+          echo "::error::The merge was not pushed to ${BRANCH} after 3 attempts. Either ${BRANCH} moved each time, or the release GitHub App is not a bypass actor of its ruleset."
           exit 1
 
       - name: Open or update the conflict issue
