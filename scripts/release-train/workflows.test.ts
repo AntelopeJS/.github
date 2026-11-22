@@ -1461,6 +1461,36 @@ describe("ci-node.yml", () => {
     assert.match(jobText("checks"), /^ {4}needs: \[windows, shards, node, stress\]$/m);
   });
 
+  test("a newer run of the same pull request cancels the older run whole, whose checks end cancelled instead of failing", () => {
+    const [, group = "", cancel = ""] = /^concurrency:\n {2}group: (.*)\n {2}cancel-in-progress: (.*)$/m.exec(ciNode) ?? [];
+    assert.doesNotMatch(jobText("node"), /concurrency:/, "a leg holds no group of its own, so a newer run cancels the older run whole");
+    const github = (event_name: string, run_id: number, number?: number) => ({ event_name, run_id, workflow: "ci", event: { pull_request: { number } } });
+    const concurrency = (scope: object) => ({ group: interpolate(group, { github: scope }), cancel: evaluate(cancel, { github: scope }) });
+    assert.deepEqual(concurrency(github("pull_request", 2, 45)), { group: concurrency(github("pull_request", 1, 45)).group, cancel: true });
+    for (const event of ["push", "merge_group", "schedule", "workflow_dispatch"]) {
+      assert.deepEqual(concurrency(github(event, 1)), { group: "ci-node-ci-1", cancel: false }, event);
+      assert.notEqual(concurrency(github(event, 2)).group, concurrency(github(event, 1)).group, event);
+    }
+
+    const gate = /^ {4}if: (.*)$/m.exec(jobText("checks"))?.[1] ?? "";
+    const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
+    const checks = (event: string, runCancelled: boolean, node: string): string => {
+      const results = { windows: "skipped", shards: "skipped", node, stress: "skipped" };
+      const status = (expression: string): string => expression.replace(/\bcancelled\(\)/g, String(runCancelled)).replaceAll("needs.*.result", JSON.stringify(Object.values(results)));
+      const needs = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: { tier: "fast" } }]));
+      if (evaluate(status(gate), { github: { event_name: event } }) !== true) return "cancelled";
+      return evaluate(status(fail), { needs }) === true ? "failure" : "success";
+    };
+    assert.equal(checks("pull_request", true, "cancelled"), "cancelled", "a newer run superseded this one");
+    assert.equal(checks("pull_request", false, "success"), "success");
+    assert.equal(checks("pull_request", false, "failure"), "failure");
+    assert.equal(checks("pull_request", false, "cancelled"), "failure", "a leg that timed out is cancelled in a run that was not");
+    for (const event of ["push", "merge_group", "schedule", "workflow_dispatch"]) {
+      assert.equal(checks(event, true, "cancelled"), "failure", event);
+      assert.equal(checks(event, false, "failure"), "failure", event);
+    }
+  });
+
   test("extra-commands-shards splits the extra-commands job into one job per shard, and the default keeps one", () => {
     const node = jobText("node");
     const line = (key: string): string => new RegExp(`^ {4,8}${key}: (.*)$`, "m").exec(node)?.[1] ?? "";
