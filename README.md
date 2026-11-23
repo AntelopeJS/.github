@@ -806,8 +806,14 @@ default branch, or
 updates the one already open. The pull request body lists the module versions
 that moved, the locks resolved again at the same version, the ranges that moved
 in `antelope.config.ts` and `package.json`, and the other files that changed.
-When nothing changed, it closes that pull request. On a `pull_request` event it
-only refreshes and writes the summary, as a dry run.
+When the default branch has a merge queue, it turns on squash auto-merge on
+that pull request, unless auto-merge is already on or the pull request is
+already in the queue, so the queue merges it once its checks pass. It never
+does so in `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
+`antelope-compliance`, the repositories the Renovate preset leaves to a person.
+A pull request whose checks fail stays open. When nothing changed, it closes
+that pull request. On a `pull_request` event it only refreshes and writes the
+summary, as a dry run.
 
 `ajs` is the `node_modules/.bin/ajs` of the project folder or of the closest
 folder above it.
