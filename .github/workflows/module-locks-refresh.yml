@@ -283,6 +283,7 @@ jobs:
           case "$GITHUB_REPOSITORY" in
             AntelopeJS/cloud | AntelopeJS/antelope-web | AntelopeJS/k8s-gitops-infra | AntelopeJS/antelope-hardening | AntelopeJS/antelope-compliance) exit 0 ;;
           esac
+          # shellcheck disable=SC2016
           enable=$(gh api graphql \
             -f query='query($owner: String!, $name: String!, $branch: String!, $number: Int!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) { id } pullRequest(number: $number) { autoMergeRequest { enabledAt } isInMergeQueue } } }' \
             -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f branch="$BASE" -F number="$number" \
