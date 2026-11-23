@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { readText } from "./helpers/read.ts";
 
 const modules = process.env.RENOVATE_MODULES ?? "";
 assert.ok(existsSync(join(modules, "renovate", "package.json")), "RENOVATE_MODULES names the node_modules folder that holds renovate 44 and json5");
@@ -23,14 +24,22 @@ interface Upgrade {
 }
 
 const url = (path: string): string => pathToFileURL(join(modules, path)).href;
-const { default: JSON5 }: { default: { parse(text: string): Preset } } = await import(url("json5/lib/index.js"));
-const { resolveConfigPresets }: { resolveConfigPresets(config: Config): Promise<{ config: Config }> } = await import(url("renovate/dist/config/presets/index.js"));
-const { massageConfig }: { massageConfig(config: Config): Config } = await import(url("renovate/dist/config/massage.js"));
-const { mergeChildConfig }: { mergeChildConfig(parent: Config, child: Config): Config } = await import(url("renovate/dist/config/utils.js"));
-const { getConfig }: { getConfig(): Config } = await import(url("renovate/dist/config/defaults.js"));
-const { applyPackageRules }: { applyPackageRules(config: Config, stage: string): Promise<Config> } = await import(url("renovate/dist/util/package-rules/index.js"));
 
-const preset = JSON5.parse(readFileSync(new URL("../../renovate.json5", import.meta.url), "utf8"));
+/** Imports a module of the renovate checkout under the exports type `T` declares. */
+async function load<T>(path: string): Promise<T> {
+  const imported: unknown = await import(url(path));
+  // SAFETY: each call site names the exports of the renovate 44 or json5 module at that path.
+  return imported as T;
+}
+
+const { default: JSON5 } = await load<{ default: { parse: (text: string) => Preset } }>("json5/lib/index.js");
+const { resolveConfigPresets } = await load<{ resolveConfigPresets: (config: Config) => Promise<{ config: Config }> }>("renovate/dist/config/presets/index.js");
+const { massageConfig } = await load<{ massageConfig: (config: Config) => Config }>("renovate/dist/config/massage.js");
+const { mergeChildConfig } = await load<{ mergeChildConfig: (parent: Config, child: Config) => Config }>("renovate/dist/config/utils.js");
+const { getConfig } = await load<{ getConfig: () => Config }>("renovate/dist/config/defaults.js");
+const { applyPackageRules } = await load<{ applyPackageRules: (config: Config, stage: string) => Promise<Config> }>("renovate/dist/util/package-rules/index.js");
+
+const preset = JSON5.parse(readText(new URL("../../renovate.json5", import.meta.url)));
 const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolveConfigPresets(preset)).config));
 
 async function lookup(upgrade: Upgrade & { datasource: string }): Promise<string | undefined> {

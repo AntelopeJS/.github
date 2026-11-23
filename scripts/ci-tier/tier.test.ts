@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
+import { readText } from "./helpers/read.ts";
 
-const repoFile = (path: string): string => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+const repoFile = (path: string): string => readText(new URL(`../../${path}`, import.meta.url));
 const action = repoFile(".github/actions/ci-tier/action.yml").split("\n");
 const ciNode = repoFile(".github/workflows/ci-node.yml").split("\n");
 const root = mkdtempSync(join(tmpdir(), "ci-tier-"));
@@ -53,7 +54,7 @@ interface Context {
 
 function lookup(path: string, context: Context): Value {
   let value: Value = context;
-  for (const key of path.split(".")) value = typeof value === "object" && !Array.isArray(value) ? value[key] : undefined;
+  for (const key of path.split(".")) value = typeof value === "object" && !Array.isArray(value) ? (Object.hasOwn(value, key) ? value[key] : undefined) : undefined;
   return value;
 }
 
@@ -67,8 +68,9 @@ function evaluate(expression: string, context: Context): string {
   }
   assert.match(expression, /^[\w.-]+$/, `not an expression this test evaluates: ${expression}`);
   const value = lookup(expression, context);
-  assert.notEqual(typeof value, "object", `${expression} is not a value`);
-  return value === undefined ? "" : String(value);
+  if (value === undefined) return "";
+  assert.ok(typeof value === "string" || typeof value === "boolean", `${expression} is not a value`);
+  return String(value);
 }
 
 const interpolate = (value: string, context: Context): string =>
@@ -105,7 +107,7 @@ function stepId({ id }: Step): string {
 
 const keyValues = (path: string): Record<string, string> =>
   Object.fromEntries(
-    readFileSync(path, "utf8")
+    readText(path)
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
@@ -132,7 +134,7 @@ function runStep({ run }: Step, cwd: string, env: Record<string, string>): Run {
     encoding: "utf8",
     env: { PATH: process.env.PATH, GIT_CEILING_DIRECTORIES: root, ...files, ...env },
   });
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV), summary: readFileSync(files.GITHUB_STEP_SUMMARY, "utf8") };
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV), summary: readText(files.GITHUB_STEP_SUMMARY) };
 }
 
 function succeeded(run: Run): Run {
@@ -388,7 +390,7 @@ describe("the test step", () => {
       const dir = mkdtempSync(join(root, "tests-"));
       const run = runStep(runTests, dir, { ...interpolateAll(runTests.env, {}), ...fakeEnv(dir, { ANTELOPEJS_CI_TIER: tier, FAKE_CODES: codes }) });
       assert.equal(run.status, status, run.stderr);
-      assert.equal(readFileSync(join(dir, "calls"), "utf8").trim(), String(calls));
+      assert.equal(readText(join(dir, "calls")).trim(), String(calls));
       assert.equal(run.outputs.flaky, flaky);
     });
   }
@@ -409,7 +411,7 @@ describe("the extra commands step", () => {
       const env = interpolateAll(runExtra.env, { inputs: { "extra-commands": "pnpm run integration" } });
       const run = runStep(runExtra, dir, { ...env, ...fakeEnv(dir, { ANTELOPEJS_CI_TIER: tier, FAKE_CODES: codes }) });
       assert.equal(run.status, status, run.stderr);
-      assert.equal(readFileSync(join(dir, "calls"), "utf8").trim(), String(calls));
+      assert.equal(readText(join(dir, "calls")).trim(), String(calls));
       assert.equal(run.outputs.flaky, flaky);
     });
   }
@@ -418,7 +420,7 @@ describe("the extra commands step", () => {
     const dir = mkdtempSync(join(root, "extra-"));
     const env = interpolateAll(runExtra.env, { inputs: { "extra-commands": "pnpm run integration >&2" } });
     succeeded(runStep(runExtra, dir, { ...env, ...fakeEnv(dir, { ANTELOPEJS_CI_TIER: "queue", FAKE_CODES: "1 0" }) }));
-    const log = readFileSync(join(dir, "extra-attempt-1.log"), "utf8");
+    const log = readText(join(dir, "extra-attempt-1.log"));
     assert.match(log, /FAIL src\/flaky\.test\.ts attempt 1/);
     assert.doesNotMatch(log, /attempt 2/);
   });
@@ -471,7 +473,7 @@ describe("the affected tests", () => {
     };
     const run = runStep(runTests, project.cwd, env);
     assert.equal(run.status, 0, run.stderr + run.stdout);
-    return { run, calls: (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n").map((line) => line.trim()).filter((line) => line !== "").sort(), base: project.base };
+    return { run, calls: (existsSync(log) ? readText(log) : "").split("\n").map((line) => line.trim()).filter((line) => line !== "").sort(), base: project.base };
   }
 
   const pull = pullRequest("main", "feat/x");
@@ -523,7 +525,7 @@ describe("the affected tests", () => {
 describe("the flaky test annotations", () => {
   const annotate = step(nodeJob, "Annotate the flaky tests");
   const github = event("merge_group", "gh-readonly-queue/main/pr-1-abc");
-  const fixture = (name: string): string => readFileSync(new URL(`./fixtures/${name}.log`, import.meta.url), "utf8");
+  const fixture = (name: string): string => readText(new URL(`./fixtures/${name}.log`, import.meta.url));
 
   interface Annotated {
     run: Run;

@@ -155,12 +155,13 @@ test("the collector reads only repositories with a merge queue and the facts the
     "/repos/AntelopeJS/dms/check-runs/20/annotations?per_page=50": [{ annotation_level: "failure", title: "route", message: "expected 200" }],
     "/repos/AntelopeJS/dms/check-runs/30/annotations?per_page=50": [],
   };
+  const routeTable = new Map(Object.entries(routes));
   const seen: string[] = [];
   const fetcher = async (input: string | URL | Request): Promise<Response> => {
     const path = String(input).replace("https://api.github.com", "");
     seen.push(path);
     const event = /[?&]event=(\w+)/.exec(path)?.[1];
-    const body = event === undefined ? routes[path] : path.endsWith("&page=1") ? routes[event] : { workflow_runs: [] };
+    const body = event === undefined ? routeTable.get(path) : path.endsWith("&page=1") ? routeTable.get(event) : { workflow_runs: [] };
     return body === undefined ? new Response("{}", { status: 404 }) : Response.json(body);
   };
   const collected = await collectNightlies({ org: "AntelopeJS", days: 30, to: new Date(day(20)), concurrency: 2 }, fetcher);

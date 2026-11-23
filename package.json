@@ -1,0 +1,15 @@
+{
+  "name": "antelopejs-github",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "scripts": {
+    "checks": "oxlint"
+  },
+  "devDependencies": {
+    "@antelopejs/tooling-configs": "0.10.0",
+    "@types/node": "24.10.1",
+    "oxlint": "1.94.0",
+    "oxlint-tsgolint": "7.0.2008"
+  }
+}

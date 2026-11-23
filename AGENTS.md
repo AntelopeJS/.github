@@ -8,9 +8,11 @@ Every repository calls the shared workflows at the `v2` tag, as in `AntelopeJS/.
 
 ## Checks
 
-The `Release train checks` workflow runs these on a pull request that touches `scripts/` or the release workflows. Run them locally with Node.js 24:
+The `Release train checks` workflow runs these on a pull request that touches `scripts/` or the release workflows. Run them locally with Node.js 24 and pnpm 10. `pnpm run checks` runs oxlint with the `@antelopejs/tooling-configs` preset over `scripts/**/*.ts`, with `antiSlop` and `complexity` off and the `SAFETY:` rule on:
 
 ```sh
+pnpm install --frozen-lockfile
+pnpm run checks
 tools=$(mktemp -d)
 npm install --no-save --no-audit --no-fund --silent --prefix "$tools" typescript@5.9.3 @types/node@24.10.1 release-it@19.2.4
 "$tools/node_modules/.bin/tsc" -p scripts/release-train/tsconfig.json --typeRoots "$tools/node_modules/@types"
