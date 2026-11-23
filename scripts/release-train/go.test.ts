@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { commit, commits, dispatches, dms, dmsDatabase, expectedPlan, fakeSystem, git, interfaceDatabase, manifest, mongodb, repository, short, tip } from "./fixtures.ts";
+import { parseObject } from "./json.ts";
 import { main } from "./train.ts";
+import { readText } from "./helpers/read.ts";
 
 describe("go", () => {
   test("dispatches each release in dependency order and waits for each run", () => {
@@ -248,7 +249,7 @@ describe("go", () => {
         const directory = fields["package-directory"] ?? ".";
         const prefix = directory === "." ? "" : `${directory}/`;
         commit(workspace, "fix(deps): depend on the stable @antelopejs/x", { "pnpm-lock.yaml": `${fields["release-version"]}\n` });
-        const bumped = { ...JSON.parse(readFileSync(join(workspace, `${prefix}package.json`), "utf8")), version: fields["release-version"] };
+        const bumped = { ...parseObject(readText(join(workspace, `${prefix}package.json`))), version: fields["release-version"] };
         commit(workspace, `chore(release): v${fields["release-version"]}`, { [`${prefix}CHANGELOG.md`]: `${fields["release-version"]}\n`, [`${prefix}package.json`]: bumped });
         git(workspace, "tag", `${directory === "." ? "v" : "inner-v"}${fields["release-version"]}`);
         git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");
@@ -318,7 +319,7 @@ describe("go", () => {
         const directory = fields["package-directory"] ?? "";
         const name = directory === "packages/a" ? "a" : "b";
         const file = `${directory}/package.json`;
-        const bumped = { ...JSON.parse(readFileSync(join(workspace, file), "utf8")), version: fields["release-version"] };
+        const bumped = { ...parseObject(readText(join(workspace, file))), version: fields["release-version"] };
         commit(workspace, `chore(release): ${name} v${fields["release-version"]}`, { [file]: bumped });
         git(workspace, "tag", `${name}-v${fields["release-version"]}`);
         git(workspace, "update-ref", "refs/remotes/origin/main", "HEAD");

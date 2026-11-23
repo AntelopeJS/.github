@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { after } from "node:test";
+import { parseObject } from "./json.ts";
 import type { RunResult, System } from "./system.ts";
 
 const root = mkdtempSync(join(tmpdir(), "release-train-"));
@@ -126,6 +127,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   const released = new Set<string>();
   const latest = new Map<string, string>();
   const lags = { ...gh.lag };
+  const conclusionOf = new Map(Object.entries(conclusions));
   let out = "";
   let err = "";
   const answer = (stdout: string, status = 0): RunResult => ({ status, stdout, stderr: status === 0 ? "" : "failed" });
@@ -156,19 +158,21 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
         return held === "error" ? answer("", 1) : answer(`${held}\n`);
       }
       if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
-      if (args[0] === "pr") return answer(JSON.stringify(flag(args, "--base") === "main" ? (pulls[flag(args, "--repo")] ?? []) : []));
+      if (args[0] === "pr") return answer(JSON.stringify(flag(args, "--base") === "main" ? (new Map(Object.entries(pulls)).get(flag(args, "--repo")) ?? []) : []));
       if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
       const repo = flag(args, "--repo");
       if (args[0] === "workflow") {
-        if (conclusions[repo] === "rejected") return answer("", 1);
-        if (conclusions[repo] !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0, name: "" });
+        if (conclusionOf.get(repo) === "rejected") return answer("", 1);
+        if (conclusionOf.get(repo) !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0, name: "" });
         const fields = Object.fromEntries(
           args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
         );
         const dispatched = runs.at(-1);
-        if (dispatched !== undefined && conclusions[repo] !== "lost") {
+        if (dispatched !== undefined && conclusionOf.get(repo) !== "lost") {
           const shown = git(join(root, repo.slice(repo.indexOf("/") + 1)), "show", `${fields["release-commit"]}:${posix.join(fields["package-directory"] ?? ".", "package.json")}`);
-          dispatched.name = JSON.parse(shown).name;
+          const { name } = parseObject(shown);
+          assert.ok(typeof name === "string");
+          dispatched.name = name;
         }
         gh.dispatched?.(repo, fields);
         return answer("");
@@ -183,7 +187,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
       run.views += 1;
       if (view === "fail") return answer("", 1);
       const status = view === "running" ? "in_progress" : "completed";
-      const conclusion = status === "completed" ? (conclusions[repo] ?? "success") : "";
+      const conclusion = status === "completed" ? (conclusionOf.get(repo) ?? "success") : "";
       if (conclusion === "success") {
         released.add(run.version);
         latest.set(run.name, run.version);

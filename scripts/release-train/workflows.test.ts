@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
+import { runInNewContext } from "node:vm";
+import { parseObject } from "./json.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
+import { readText } from "./helpers/read.ts";
 
-const workflowText = (file: string): string => readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8");
+const workflowText = (file: string): string => readText(new URL(`../../.github/workflows/${file}`, import.meta.url));
 const text = workflowText("release-npm.yml");
 const NO_CREDENTIALS = "RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are not configured.";
 const root = mkdtempSync(join(tmpdir(), "release-workflows-"));
@@ -46,7 +49,7 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
     encoding: "utf8",
     env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output, ...env },
   });
-  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readFileSync(output, "utf8") };
+  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readText(output) };
 }
 
 interface Scope {
@@ -69,7 +72,22 @@ function evaluate(expression: string, scope: Scope): unknown {
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
   const contains = (list: string[], item: string): boolean => list.includes(item);
   const format = (template: string, ...values: unknown[]): string => template.replace(/\{(\d+)\}/g, (_, index: string) => String(values[Number(index)]));
-  return new Function("matrix", "steps", "inputs", "github", "vars", "needs", "secrets", "contains", "fromJSON", "format", `return (${source})`)(scope.matrix, scope.steps, scope.inputs, scope.github, scope.vars, scope.needs, scope.secrets, contains, JSON.parse, format);
+  return runInNewContext(`(${source})`, { matrix: scope.matrix, steps: scope.steps, inputs: scope.inputs, github: scope.github, vars: scope.vars, needs: scope.needs, secrets: scope.secrets, contains, fromJSON: JSON.parse, format });
+}
+
+function evaluateStrings(expression: string, scope: Scope): string[] {
+  const value = evaluate(expression, scope);
+  assert.ok(Array.isArray(value), `${expression} is not a list`);
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function evaluateRules(expression: string, scope: Scope): Record<string, string>[] {
+  const value = evaluate(expression, scope);
+  assert.ok(Array.isArray(value), `${expression} is not a list`);
+  return value.map((rule: unknown) => {
+    assert.ok(typeof rule === "object" && rule !== null, `${expression} holds a non-object`);
+    return Object.fromEntries(Object.entries(rule).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  });
 }
 
 function interpolate(template: string, scope: Scope): string {
@@ -189,9 +207,9 @@ function publishPreview(text: string, cwd: string, version: string, env: Record<
   assert.equal(runStep(text, "Write the publish script", cwd).status, 0);
   const result = runStep(text, "Publish preview", cwd, { PATH: `${recordingNpm}:${process.env.PATH ?? ""}`, VERSION: version, TAG: "next", NPM_PUBLISH_LOG: log, ...hermeticGit, ...env });
   if (!existsSync(log)) return { ...result, publication: null };
-  const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
+  const [directory = "", ...args] = readText(log).trimEnd().split("\n");
   const tarball = args.find((arg) => arg.endsWith(".tgz"));
-  const manifest = tarball === undefined ? readFileSync(join(directory, "package.json"), "utf8") : spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout;
+  const manifest = tarball === undefined ? readText(join(directory, "package.json")) : spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout;
   return { ...result, publication: { manifest: JSON.parse(manifest), args: args.filter((arg) => arg !== tarball) } };
 }
 
@@ -313,7 +331,7 @@ describe("release-npm.yml", () => {
     const applied = runStep(text, "Apply dependency ranges", directory, { DEPENDENCY_RANGES: ranges });
     assert.equal(applied.status, 0, applied.stderr);
     assert.equal(applied.outputs, "message=fix(deps): depend on the stable @antelopejs/core and @antelopejs/db\n");
-    assert.deepEqual(JSON.parse(readFileSync(join(directory, "package.json"), "utf8")), {
+    assert.deepEqual(JSON.parse(readText(join(directory, "package.json"))), {
       name: "@antelopejs/x",
       dependencies: { "@antelopejs/core": ">=0.6.0 <0.7.0" },
       peerDependencies: { "@antelopejs/core": ">=0.5.1 <0.6.0" },
@@ -410,8 +428,8 @@ describe("release-npm.yml", () => {
         ...hermeticGit,
       });
       assert.equal(result.status, 0, result.stderr);
-      const read = (path: string): string => readFileSync(join(directory, path), "utf8");
-      const config: unknown = JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
+      const read = (path: string): string => readText(join(directory, path));
+      const config: unknown = JSON.parse(readText(join(root, "release-it.json")));
       const notes = [
         "[compare changes](https://github.com/AntelopeJS/x/compare/v0.4.2...v0.5.0)",
         "### 🩹 Fixes",
@@ -430,7 +448,7 @@ describe("release-npm.yml", () => {
       }),
     });
     assert.equal(existing.read("CHANGELOG.md"), `# Changelog\n\n${existing.section}## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n`);
-    assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), existing.notes);
+    assert.equal(readText(join(root, "release-notes.md")), existing.notes);
     assert.deepEqual(existing.config, {
       git: { tagName: "v${version}", requireCommits: true, requireCleanWorkingDir: false },
       github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
@@ -479,7 +497,7 @@ describe("release-npm.yml", () => {
       ...hermeticGit,
     });
     assert.equal(result.status, 0, result.stderr);
-    const notes = readFileSync(join(root, "release-notes.md"), "utf8").split("\n\n");
+    const notes = readText(join(root, "release-notes.md")).split("\n\n");
     assert.equal(notes[0], "[compare changes](https://github.com/AntelopeJS/x/compare/v1.24.1...v1.24.2)");
     assert.ok(notes.includes(`- Close the feed ([${fix.slice(0, 7)}](https://github.com/AntelopeJS/x/commit/${fix}))`), notes.join("\n\n"));
     assert.ok(notes.some((line) => line.startsWith("- Accidental major")), notes.join("\n\n"));
@@ -540,7 +558,7 @@ describe("release-npm.yml", () => {
     const commitLink = (sha: string): string => `[${sha.slice(0, 7)}](https://github.com/AntelopeJS/interface-database/commit/${sha})`;
     const closeOnError = `- **cursor:** Close on error (${commitLink(close)})`;
     assert.equal(
-      readFileSync(join(root, "release-notes.md"), "utf8"),
+      readText(join(root, "release-notes.md")),
       [
         "[compare changes](https://github.com/AntelopeJS/interface-database/compare/v0.4.1...v0.5.0)",
         "",
@@ -586,7 +604,7 @@ describe("release-npm.yml", () => {
     const result = runStep(text, "Write release notes", repo, env);
     assert.equal(result.status, 0, result.stderr);
     const link = (sha: string): string => `[${sha.slice(0, 7)}](https://github.com/AntelopeJS/interface-database/commit/${sha})`;
-    const notes = readFileSync(join(root, "release-notes.md"), "utf8");
+    const notes = readText(join(root, "release-notes.md"));
     const sections = ["### 🩹 Fixes", "", `- Close the feed (${link(fix)})`, "", "### 📦 Build", "", `- Move to @antelopejs/tooling-configs 0.8 (${link(build)})`].join("\n");
     assert.ok(notes.includes(sections), notes);
   });
@@ -638,8 +656,8 @@ describe("release-npm.yml", () => {
       "",
       "- Test",
     ].join("\n");
-    assert.equal(readFileSync(join(root, "release-notes.md"), "utf8"), notes);
-    assert.equal(readFileSync(join(repo, "CHANGELOG.md"), "utf8"), `# Changelog\n\n## v1.24.3\n\n${notes}\n\n`);
+    assert.equal(readText(join(root, "release-notes.md")), notes);
+    assert.equal(readText(join(repo, "CHANGELOG.md")), `# Changelog\n\n## v1.24.3\n\n${notes}\n\n`);
   });
 
   test("Publish stable release runs release-it with the written config", () => {
@@ -718,11 +736,11 @@ describe("release-npm.yml", () => {
       const result = runStep(text, step, cwd, { ...env, ...extra });
       assert.equal(result.status, 0, `${step}\n${result.stdout}${result.stderr}`);
     }
-    const [directory = "", ...args] = readFileSync(log, "utf8").trimEnd().split("\n");
+    const [directory = "", ...args] = readText(log).trimEnd().split("\n");
     const tarball = args.find((arg) => arg.endsWith(".tgz")) ?? join(directory, "package.json");
-    const published = tarball.endsWith(".tgz") ? spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout : readFileSync(tarball, "utf8");
+    const published = tarball.endsWith(".tgz") ? spawnSync("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" }).stdout : readText(tarball);
     assert.deepEqual(
-      { manifest: JSON.parse(published), args: args.filter((arg) => arg !== tarball) },
+      { manifest: parseObject(published), args: args.filter((arg) => arg !== tarball) },
       {
         manifest: {
           ...manifest,
@@ -988,7 +1006,7 @@ describe("release-npm.yml", () => {
     chmodSync(join(installer, "npm"), 0o755);
     const install = runStep(text, "Install pkg.pr.new", root, { PATH: `${installer}:${process.env.PATH ?? ""}` });
     assert.equal(install.status, 0, install.stderr);
-    assert.deepEqual(readFileSync(installed, "utf8").trimEnd().split("\n"), ["install", "--no-save", "--no-audit", "--no-fund", "--prefix", join(root, "pkg-pr-new"), "pkg-pr-new@0.0.94"]);
+    assert.deepEqual(readText(installed).trimEnd().split("\n"), ["install", "--no-save", "--no-audit", "--no-fund", "--prefix", join(root, "pkg-pr-new"), "pkg-pr-new@0.0.94"]);
 
     const bin = join(root, "pkg-pr-new", "node_modules", ".bin");
     mkdirSync(bin, { recursive: true });
@@ -1000,7 +1018,7 @@ describe("release-npm.yml", () => {
     const version = "0.0.0-pr.12.3.gabc1234";
     const published = runStep(text, "Publish to pkg.pr.new", directory, { VERSION: version, PKG_PR_NEW_LOG: log });
     assert.equal(published.status, 0, published.stderr);
-    const [cwd = "", ...rest] = readFileSync(log, "utf8").split("\n");
+    const [cwd = "", ...rest] = readText(log).split("\n");
     const args = rest.slice(0, 4);
     assert.equal(realpathSync(cwd), realpathSync(directory));
     assert.deepEqual(args, ["publish", "--pnpm", "--comment=update", "."]);
@@ -1097,7 +1115,7 @@ describe("release-npm.yml", () => {
       const env = { PATH: `${fakeNpm}:${process.env.PATH ?? ""}`, FAKE_PULLS: "[]", GITHUB_REPOSITORY: "AntelopeJS/x", DEFAULT_BRANCH: "main", RELEASE_VERSION: "0.4.3", RESUME: resume, ...hermeticGit };
       const result = runStep(text, "Write release notes", directory, env);
       assert.equal(result.status, 0, result.stderr);
-      return JSON.parse(readFileSync(join(root, "release-it.json"), "utf8"));
+      return JSON.parse(readText(join(root, "release-it.json")));
     };
     const notes = `cat '${join(root, "release-notes.md")}'`;
     assert.deepEqual(config("resumed", { hooks: { "before:npm:release": "echo before" } }, "true"), {
@@ -1449,7 +1467,7 @@ describe("ci-node.yml", () => {
       const result = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: visibility });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.outputs, `visibility=${visibility}\n`);
-      assert.equal(readFileSync(log, "utf8"), "api repos/AntelopeJS/x --jq .visibility\n");
+      assert.equal(readText(log), "api repos/AntelopeJS/x --jq .visibility\n");
     }
     const failed = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: "" });
     assert.notEqual(failed.status, 0);
@@ -1502,11 +1520,15 @@ describe("ci-node.yml", () => {
       const ran = evaluate(/^ {4}if: (.*)$/m.exec(jobText("shards"))?.[1] ?? "", { inputs }) === true;
       const listed = ran ? runStep(ciNode, "List the extra-commands shards", root, { SHARDS: String(inputs["extra-commands-shards"]) }) : undefined;
       assert.equal(listed?.status ?? 0, 0, listed?.stderr);
-      const outputs = Object.fromEntries((listed?.outputs ?? "").split("\n").filter(Boolean).map((entry) => entry.split(/=(.*)/s).slice(0, 2)));
+      const outputs: Record<string, string> = {};
+      for (const entry of (listed?.outputs ?? "").split("\n").filter(Boolean)) {
+        const [key = "", value = ""] = entry.split(/=(.*)/s);
+        outputs[key] = value;
+      }
       const scope = { inputs, needs: { windows: { outputs: { visibility: "" } }, shards: { outputs } } };
-      const exclude = evaluate(line("exclude"), scope) as Record<string, string>[];
+      const exclude = evaluateRules(line("exclude"), scope);
       const combinations = (["os", "node-version", "part", "shard"] as const)
-        .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => (evaluate(line(key), scope) as string[]).map((value) => ({ ...matrix, [key]: value }))), [{}])
+        .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => evaluateStrings(line(key), scope).map((value) => ({ ...matrix, [key]: value }))), [{}])
         .filter((matrix) => !exclude.some((rule) => Object.entries(rule).every(([key, value]) => matrix[key] === value)));
       return combinations.map((matrix) => {
         const name = interpolate(line("name"), { matrix });
@@ -1527,13 +1549,13 @@ describe("ci-node.yml", () => {
 });
 
 test("the starter workflow is the frozen caller that antelopejs-sync writes", () => {
-  const template = readFileSync(new URL("../../workflow-templates/npm-release.yml", import.meta.url), "utf8");
-  assert.equal(template, readFileSync(new URL("./frozen-caller.yml", import.meta.url), "utf8"));
+  const template = readText(new URL("../../workflow-templates/npm-release.yml", import.meta.url));
+  assert.equal(template, readText(new URL("./frozen-caller.yml", import.meta.url)));
 });
 
 test("the README caller example is the starter workflow", () => {
-  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const readme = readText(new URL("../../README.md", import.meta.url));
   const section = readme.slice(readme.indexOf("### Caller workflow"));
   const example = /```yaml\n([\s\S]*?)```/.exec(section)?.[1];
-  assert.equal(example, readFileSync(new URL("../../workflow-templates/npm-release.yml", import.meta.url), "utf8"));
+  assert.equal(example, readText(new URL("../../workflow-templates/npm-release.yml", import.meta.url)));
 });

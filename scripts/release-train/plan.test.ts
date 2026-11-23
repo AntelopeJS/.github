@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
   commitLevel,
@@ -16,6 +15,7 @@ import {
   type Reverted,
 } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
+import { readText } from "./helpers/read.ts";
 
 function commit(subject: string, body = "", reverts: readonly Reverted[] = []): Commit {
   return { sha: createHash("sha1").update(subject).digest("hex"), subject, level: commitLevel(subject, body), reverts };
@@ -84,7 +84,7 @@ describe("commitLevel", () => {
   });
 
   test("the pull request title check accepts a revert, which releases a patch", () => {
-    const workflow = readFileSync(new URL("../../.github/workflows/ci-node.yml", import.meta.url), "utf8");
+    const workflow = readText(new URL("../../.github/workflows/ci-node.yml", import.meta.url));
     const pattern = /pattern='([^']+)'/.exec(workflow)?.[1];
     assert.ok(pattern, "ci-node.yml has a title pattern");
     assert.match("revert(builder): restore the sample rows", new RegExp(pattern));

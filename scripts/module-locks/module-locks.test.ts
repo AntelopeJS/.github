@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
+import { readText } from "./helpers/read.ts";
 
-const repoFile = (path: string): string => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+const repoFile = (path: string): string => readText(new URL(`../../${path}`, import.meta.url));
 const refresh = repoFile(".github/workflows/module-locks-refresh.yml");
 const renovate = repoFile(".github/workflows/module-locks-renovate.yml");
 const committed = repoFile(".github/actions/module-locks-committed/action.yml");
@@ -85,7 +86,7 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
     },
   });
   const outputs = Object.fromEntries(
-    readFileSync(output, "utf8")
+    readText(output)
       .split("\n")
       .filter((line) => line.includes("="))
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
@@ -137,7 +138,7 @@ function refreshRun(dir: string, projects: string): { update: StepResult; descri
   const update = runStep(refresh, UPDATE, dir, { PROJECTS: projects });
   const describe = runStep(refresh, DESCRIBE, dir, { GH_TOKEN: "unused", BRANCH });
   const body = join(root, `runner-${runs}`, "module-locks", "body.md");
-  return { update, describe, body: existsSync(body) ? readFileSync(body, "utf8") : "" };
+  return { update, describe, body: existsSync(body) ? readText(body) : "" };
 }
 
 describe("module-locks-refresh.yml", () => {
@@ -148,12 +149,12 @@ describe("module-locks-refresh.yml", () => {
     const { update, describe, body } = refreshRun(dir, ".");
 
     assert.equal(update.status, 0, update.stderr);
-    assert.equal(readFileSync(log, "utf8"), "project modules update --fix -p .\n");
+    assert.equal(readText(log), "project modules update --fix -p .\n");
     assert.equal(describe.status, 0, describe.stderr);
     assert.equal(describe.outputs.state, "changed");
     assert.match(body, /^\| `antelope-lock` \| `@antelopejs\/api` \| `1\.0\.0` \| `1\.1\.0` \|$/m);
     assert.doesNotMatch(body, /mongodb/);
-    assert.ok(readFileSync(join(root, `runner-${runs}`, "module-locks", "refresh.patch"), "utf8").includes("api@1.1.0/pnpm-lock.yaml"));
+    assert.ok(readText(join(root, `runner-${runs}`, "module-locks", "refresh.patch")).includes("api@1.1.0/pnpm-lock.yaml"));
   });
 
   test("runs the update a second time when the first run fails, and fails when both do", () => {
@@ -161,7 +162,7 @@ describe("module-locks-refresh.yml", () => {
     const log = installAjs(dir, `if [ ! -e "${join(dir, "node_modules", "failed")}" ]; then touch "${join(dir, "node_modules", "failed")}"; exit 1; fi`);
 
     assert.equal(runStep(refresh, UPDATE, dir, { PROJECTS: "." }).status, 0);
-    assert.equal(readFileSync(log, "utf8").split("\n").filter(Boolean).length, 2);
+    assert.equal(readText(log).split("\n").filter(Boolean).length, 2);
 
     installAjs(dir, "exit 1");
     assert.notEqual(runStep(refresh, UPDATE, dir, { PROJECTS: "." }).status, 0);
@@ -174,7 +175,7 @@ describe("module-locks-refresh.yml", () => {
     const { update, describe, body } = refreshRun(dir, "packages/app\n");
 
     assert.equal(update.status, 0, update.stderr);
-    assert.equal(readFileSync(log, "utf8"), "project modules update --fix -p packages/app\n");
+    assert.equal(readText(log), "project modules update --fix -p packages/app\n");
     assert.equal(describe.outputs.state, "changed");
     assert.match(body, /^- `packages\/app\/antelope-lock\/@antelopejs\/auth-jwt@1\.1\.0`$/m);
     assert.doesNotMatch(body, /\| Lock folder \|/);
@@ -217,7 +218,7 @@ describe("module-locks-refresh.yml", () => {
     const log = installAjs(dir, "cat > /dev/null");
 
     assert.equal(runStep(refresh, UPDATE, dir, { PROJECTS: "a\nb\n" }).status, 0);
-    assert.equal(readFileSync(log, "utf8"), "project modules update --fix -p a\nproject modules update --fix -p b\n");
+    assert.equal(readText(log), "project modules update --fix -p a\nproject modules update --fix -p b\n");
   });
 
   describe("checks the refresh patch before it pushes", () => {
@@ -313,7 +314,7 @@ describe("module-locks-committed action", () => {
 
     assert.equal(find.status, 0, find.stderr);
     assert.equal(find.outputs.recorded, "true");
-    assert.equal(readFileSync(join(find.outputs.copy, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"), "utf8"), "recorded\n");
+    assert.equal(readText(join(find.outputs.copy, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml")), "recorded\n");
     assert.match(find.outputs.name, /^module-locks-/);
     assert.equal(fail.status, 1);
     assert.match(fail.stdout, /packages\/m\/antelope-lock\/@antelopejs\/api@1\.1\.0\//);
@@ -379,7 +380,7 @@ describe("module-locks-renovate.yml", () => {
 
     const copied = runStep(renovate, COPY, dir, artifacts(lock("packages/m/antelope-lock", "@antelopejs/api@1.1.0", "recorded\n")));
     assert.equal(copied.status, 0, copied.stderr);
-    assert.equal(readFileSync(join(dir, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"), "utf8"), "recorded\n");
+    assert.equal(readText(join(dir, "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml")), "recorded\n");
 
     for (const path of [".git/hooks/post-commit", "antelope-lock/.git/hooks/x@1/post-commit", "src/index.ts", "antelope-lock/@antelopejs/api@1.1.0/nested/pnpm-lock.yaml", "antelope-lock/@antelopejs/api@1.1.0/.gitattributes"]) {
       const refused = runStep(renovate, COPY, dir, artifacts({ [path]: "#!/bin/sh\n" }));

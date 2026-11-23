@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { dispatches, dms, fakeSystem, interfaceDatabase } from "./fixtures.ts";
 import { main } from "./train.ts";
+import { readText, listDirectory } from "./helpers/read.ts";
 
-const read = (path: string): string => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string): string => readText(new URL(path, import.meta.url));
 const caller = read("./frozen-caller.yml");
 const release = read("../../.github/workflows/release-npm.yml");
 const scratch = mkdtempSync(join(tmpdir(), "release-caller-"));
@@ -141,7 +142,7 @@ describe("the frozen caller", () => {
       const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
         const input = (name: string): string => {
           const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
-          if (passed !== undefined) return dispatched[passed] ?? "";
+          if (passed !== undefined) return new Map(Object.entries(dispatched)).get(passed) ?? "";
           const fallback = accepted.get(name)?.find((line) => line.startsWith("default: "))?.slice(9) ?? "";
           return fallback.replace(/^"(.*)"$/, "$1");
         };
@@ -167,7 +168,7 @@ describe("the frozen caller", () => {
             ...env,
           },
         });
-        return [result.status, readFileSync(output, "utf8"), result.stderr];
+        return [result.status, readText(output), result.stderr];
       };
       const pushed = /^ {4}branches: \[(\w+)\]$/m.exec(caller)?.[1];
       assert.equal(pushed, "main", "the frozen caller previews on a push to the default branch");
@@ -181,7 +182,7 @@ describe("the frozen caller", () => {
 
 test("no workflow declares or reads RELEASE_GITHUB_TOKEN, and each workflow that writes to the repository mints an app token", () => {
   const directory = new URL("../../.github/workflows/", import.meta.url);
-  const workflows = readdirSync(directory).filter((name) => name.endsWith(".yml"));
+  const workflows = listDirectory(directory).filter((name) => name.endsWith(".yml"));
   assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("RELEASE_GITHUB_TOKEN")), []);
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
   assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml"]);

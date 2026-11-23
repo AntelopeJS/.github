@@ -134,7 +134,7 @@ export function client(fetcher: typeof fetch): (path: string) => Promise<Respons
 
 /** `work` over `items`, `size` at a time, results in the order of `items`. */
 export async function pool<T, R>(items: readonly T[], size: number, work: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results: R[] = [];
   let next = 0;
   const worker = async (): Promise<void> => {
     while (next < items.length) {
