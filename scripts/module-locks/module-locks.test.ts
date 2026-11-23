@@ -22,6 +22,7 @@ const COMMIT = "Commit the locks";
 const LOCK_COMMIT = "build(deps): record the module locks of the bumped modules";
 const BRANCH = "antelopejs/module-locks";
 const CHECK = "Check the refresh patch";
+const PUBLISH = "Open, update or close the pull request, and turn on its auto-merge";
 
 const root = mkdtempSync(join(tmpdir(), "module-locks-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -39,6 +40,21 @@ const stubs = join(root, "bin");
 mkdirSync(stubs);
 writeFileSync(join(stubs, "pnpm"), '#!/usr/bin/env bash\necho "pnpm $*" >> "${PNPM_LOG:-/dev/null}"\n');
 chmodSync(join(stubs, "pnpm"), 0o755);
+writeFileSync(
+  join(stubs, "gh"),
+  `#!/usr/bin/env bash
+echo "gh $*" >> "\${GH_LOG:-/dev/null}"
+case "$1 $2" in
+  "pr list") response=$GH_OPEN ;;
+  "pr create") echo "https://github.com/$GITHUB_REPOSITORY/pull/7"; exit 0 ;;
+  "api graphql") response=$GH_GRAPHQL ;;
+  *) exit 0 ;;
+esac
+while [ "$#" -gt 0 ] && [ "$1" != --jq ]; do shift; done
+jq -r "$2" <<< "$response"
+`,
+);
+chmodSync(join(stubs, "gh"), 0o755);
 
 const indent = (line: string): number => line.length - line.trimStart().length;
 
@@ -282,6 +298,65 @@ describe("module-locks-refresh.yml", () => {
         assert.equal(existsSync(join(dir, path)), false);
       });
     }
+  });
+
+  describe("opens the pull request and turns on its auto-merge", () => {
+    const QUEUED = { mergeQueue: { id: "MQ_1" }, pullRequest: { autoMergeRequest: null, isInMergeQueue: false } };
+    const OPEN = JSON.stringify([{ number: 5, isCrossRepository: false }]);
+
+    function publish(env: { repository?: string; state?: string; open?: string; repo?: object }): string[] {
+      const temp = mkdtempSync(join(root, "publish-"));
+      write(join(temp, "module-locks"), { "body.md": "body\n" });
+      const log = join(temp, "gh.log");
+      const step = runStep(refresh, PUBLISH, root, {
+        RUNNER_TEMP: temp,
+        GH_LOG: log,
+        GITHUB_REPOSITORY: env.repository ?? "AntelopeJS/api",
+        BASE: "main",
+        BRANCH,
+        TITLE: "build(deps): update the AntelopeJS module locks",
+        RUN_URL: "https://example.com/run",
+        STATE: env.state ?? "changed",
+        GH_OPEN: env.open ?? "[]",
+        GH_GRAPHQL: JSON.stringify({ data: { repository: env.repo ?? QUEUED } }),
+      });
+      assert.equal(step.status, 0, step.stderr);
+      return existsSync(log) ? readText(log).trimEnd().split("\n") : [];
+    }
+    const merges = (calls: string[]): string[] => calls.filter((call) => call.startsWith("gh pr merge"));
+
+    test("turns on squash auto-merge on a new pull request when the default branch has a merge queue", () => {
+      const calls = publish({});
+      assert.ok(calls.some((call) => call.startsWith("gh pr create")));
+      assert.deepEqual(merges(calls), ["gh pr merge -R AntelopeJS/api 7 --squash --auto"]);
+    });
+
+    test("turns on auto-merge on the open pull request it updates", () => {
+      assert.deepEqual(merges(publish({ open: OPEN, state: "proposed" })), ["gh pr merge -R AntelopeJS/api 5 --squash --auto"]);
+    });
+
+    test("leaves a pull request alone that already has auto-merge or sits in the queue", () => {
+      assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: { enabledAt: "now" }, isInMergeQueue: false } } })), []);
+      assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: null, isInMergeQueue: true } } })), []);
+    });
+
+    test("never turns on auto-merge when the default branch has no merge queue", () => {
+      assert.deepEqual(merges(publish({ repo: { ...QUEUED, mergeQueue: null } })), []);
+    });
+
+    test("never turns on auto-merge in the repositories the Renovate preset leaves to a person, even with a merge queue", () => {
+      const manual = [...repoFile("renovate.json5").matchAll(/'!(AntelopeJS\/[\w.-]+)'/g)].map((match) => match[1]);
+      assert.equal(manual.length, 5);
+      for (const repository of manual) {
+        assert.deepEqual(merges(publish({ repository })), [], repository);
+      }
+    });
+
+    test("closes the pull request when nothing changed, and turns on no auto-merge", () => {
+      const calls = publish({ open: OPEN, state: "current" });
+      assert.ok(calls.some((call) => call.startsWith("gh pr close -R AntelopeJS/api 5 --delete-branch")));
+      assert.deepEqual(merges(calls), []);
+    });
   });
 
   test("fails with the fix when no folder holds node_modules/.bin/ajs", () => {

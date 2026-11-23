@@ -262,7 +262,7 @@ jobs:
           git commit --no-verify -q -m "$TITLE"
           git push --no-verify -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"
 
-      - name: Open, update or close the pull request
+      - name: Open, update or close the pull request, and turn on its auto-merge
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
@@ -277,5 +277,16 @@ jobs:
           if [ -n "$number" ]; then
             gh pr edit -R "$GITHUB_REPOSITORY" "$number" --body-file "$RUNNER_TEMP/module-locks/body.md" > /dev/null
           else
-            gh pr create -R "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/module-locks/body.md" > /dev/null
+            url=$(gh pr create -R "$GITHUB_REPOSITORY" --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/module-locks/body.md")
+            number=${url##*/}
+          fi
+          case "$GITHUB_REPOSITORY" in
+            AntelopeJS/cloud | AntelopeJS/antelope-web | AntelopeJS/k8s-gitops-infra | AntelopeJS/antelope-hardening | AntelopeJS/antelope-compliance) exit 0 ;;
+          esac
+          enable=$(gh api graphql \
+            -f query='query($owner: String!, $name: String!, $branch: String!, $number: Int!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) { id } pullRequest(number: $number) { autoMergeRequest { enabledAt } isInMergeQueue } } }' \
+            -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f branch="$BASE" -F number="$number" \
+            --jq '.data.repository | .mergeQueue != null and .pullRequest.autoMergeRequest == null and (.pullRequest.isInMergeQueue | not)')
+          if [ "$enable" = true ]; then
+            gh pr merge -R "$GITHUB_REPOSITORY" "$number" --squash --auto > /dev/null
           fi
