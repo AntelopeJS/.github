@@ -599,9 +599,11 @@ In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
 tests that pass alone but time out under load. On Linux, with the first
 `node-versions` entry or `.nvmrc`, it installs, runs `setup-commands`,
 `checks:prepare` and `typecheck`, starts the services, then runs `pnpm run test`
-three times beside four busy loops per CPU. The loops take CPU time from the
-test runner's workers, as a loaded machine does, while the workers keep the
-count the runner picks from the CPUs it sees. It fails when any run fails, and
+three times beside four busy loops per CPU the job may use: its cgroup CPU
+quota, rounded up, when that is below `nproc`, else `nproc`. On a runner pod,
+the loop count follows the pod's CPU limit, not the node's CPUs. The loops take
+CPU time from the test runner's workers, as a loaded machine does, while the
+workers keep the count the runner picks from the CPUs it sees. It fails when any run fails, and
 its summary counts the failed runs. A pull request never runs it, and a caller
 sets nothing for it. It runs no `pnpm run checks`, so `typecheck` gives the
 tests the build, such as a `dist/` folder, that `checks` gives them in the

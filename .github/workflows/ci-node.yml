@@ -622,7 +622,20 @@ jobs:
         env:
           CI: "1"
         run: |
-          loops=$((STRESS_LOOPS_PER_CPU * $(nproc)))
+          cpus=$(nproc)
+          quota=max
+          if [ -r /sys/fs/cgroup/cpu.max ]; then
+            read -r quota period < /sys/fs/cgroup/cpu.max
+          elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+            quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
+            period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+          fi
+          if [[ "$quota" =~ ^[0-9]+$ && "$quota" -gt 0 ]]; then
+            quota_cpus=$(((quota + period - 1) / period))
+            if [ "$quota_cpus" -lt "$cpus" ]; then cpus=$quota_cpus; fi
+          fi
+          loops=$((STRESS_LOOPS_PER_CPU * cpus))
+          echo "Stress: ${loops} busy loops on ${cpus} CPUs (nproc $(nproc), CPU quota ${quota} per ${period:-none})"
           for _ in $(seq "$loops"); do
             (while :; do :; done) &
           done
@@ -636,7 +649,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on $(nproc) CPUs" >> "$GITHUB_STEP_SUMMARY"
+          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on ${cpus} CPUs" >>"$GITHUB_STEP_SUMMARY"
           [ "$failed" -eq 0 ]
 
       - name: Stop services
