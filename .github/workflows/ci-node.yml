@@ -181,7 +181,7 @@ jobs:
 
       - name: Pick the tier
         id: tier
-        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+        uses: AntelopeJS/.github/.github/actions/ci-tier@8c79f96b4f7f374ebb9346cfd0b8a182ee92fb9b # v2
         with:
           selection: ${{ vars.CI_SELECTION }}
 
@@ -251,7 +251,7 @@ jobs:
           nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
             "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         if: steps.leg.outputs.work == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -397,7 +397,7 @@ jobs:
 
       - name: Check that the module locks are committed
         if: ${{ !cancelled() && steps.leg.outputs.work == 'true' && inputs.module-locks }}
-        uses: AntelopeJS/.github/.github/actions/module-locks-committed@v2
+        uses: AntelopeJS/.github/.github/actions/module-locks-committed@8c79f96b4f7f374ebb9346cfd0b8a182ee92fb9b # v2
 
       - name: Annotate the flaky tests
         if: ${{ !cancelled() && (steps.tests.outputs.flaky == 'true' || steps.extra.outputs.flaky == 'true') }}
@@ -571,7 +571,7 @@ jobs:
           nohup bash -c 'docker compose -f "$1" up -d --wait > "$2" 2>&1; echo "$?" > "$3"' _ \
             "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
