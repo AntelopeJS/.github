@@ -27,6 +27,10 @@ on:
         description: Relative path to the package directory to release
         default: .
         type: string
+      preview:
+        description: Publish a preview under the npm dist-tag next from a workflow_dispatch of the default branch or of a work/* branch
+        default: false
+        type: boolean
     secrets:
       RELEASE_APP_ID:
         description: ID of the GitHub App whose installation token creates the release commit, tag, and GitHub release
@@ -40,11 +44,11 @@ on:
 
 jobs:
   release:
-    if: (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch) && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview')))
+    if: github.event_name != 'push' && (github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'preview') && (github.event.action != 'labeled' || github.event.label.name == 'preview')))
     runs-on: ${{ github.event.repository.visibility != 'public' && vars.RUNNER_CI || 'ubuntu-latest' }}
     environment: ${{ github.event_name != 'pull_request' && 'npm-publish' || '' }}
     concurrency:
-      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}
+      group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}-${{ inputs.preview }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Resolve release mode
@@ -54,11 +58,12 @@ jobs:
           RELEASE_COMMIT: ${{ inputs.release-commit }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
+          PREVIEW: ${{ inputs.preview }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$PREVIEW" = true ] && { [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ] || [[ "$GITHUB_REF" == refs/heads/work/* ]]; }; then
             echo "mode=preview" >> "$GITHUB_OUTPUT"
             echo "tag=next" >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$PREVIEW" != true ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             [ -z "$RELEASE_VERSION" ] || [[ "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
               echo "A stable release needs release-version as M.m.p, got '$RELEASE_VERSION'." >&2
               exit 1
@@ -76,7 +81,7 @@ jobs:
             echo "mode=pull-request" >> "$GITHUB_OUTPUT"
             echo "tag=pr-$PULL_REQUEST" >> "$GITHUB_OUTPUT"
           else
-            echo "A push to $DEFAULT_BRANCH publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of $DEFAULT_BRANCH publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
+            echo "A workflow_dispatch with preview of $DEFAULT_BRANCH or a work/* branch publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of $DEFAULT_BRANCH without preview publishes a stable release. A $GITHUB_EVENT_NAME of $GITHUB_REF publishes nothing." >&2
             exit 1
           fi
 

@@ -122,7 +122,7 @@ describe("the frozen caller", () => {
       for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
     });
 
-    test(`${file} resolves the caller's push and dispatch without any other input`, () => {
+    test(`${file} resolves the caller's preview and stable dispatches without any other input`, () => {
       const step = (() => {
         const lines = release.split("\n");
         const start = lines.indexOf("      - name: Resolve release mode");
@@ -141,8 +141,9 @@ describe("the frozen caller", () => {
       const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
       const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
         const input = (name: string): string => {
-          const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(wired.get(name)?.[0] ?? "")?.[1];
-          if (passed !== undefined) return new Map(Object.entries(dispatched)).get(passed) ?? "";
+          const [, passed, isTrue] = /^\$\{\{ inputs\.([\w-]+)( == true)? \}\}$/.exec(wired.get(name)?.[0] ?? "") ?? [];
+          const value = passed === undefined ? undefined : (new Map(Object.entries(dispatched)).get(passed) ?? "");
+          if (value !== undefined) return isTrue === undefined ? value : String(value === "true");
           const fallback = accepted.get(name)?.find((line) => line.startsWith("default: "))?.slice(9) ?? "";
           return fallback.replace(/^"(.*)"$/, "$1");
         };
@@ -170,12 +171,13 @@ describe("the frozen caller", () => {
         });
         return [result.status, readText(output), result.stderr];
       };
-      const pushed = /^ {4}branches: \[(\w+)\]$/m.exec(caller)?.[1];
-      assert.equal(pushed, "main", "the frozen caller previews on a push to the default branch");
-      assert.deepEqual(resolve("push", `refs/heads/${pushed}`, {}), [0, "mode=preview\ntag=next\n", ""]);
-      const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}" };
+      assert.doesNotMatch(caller, /^ {2}push:$/m, "the frozen caller publishes nothing on a push");
+      const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}", preview: "false" };
       assert.deepEqual(Object.keys(dispatched), declared);
       assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);
+      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
+      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/work/ant-12-cache", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
+      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", {}), [1, "", "A dispatch of main needs release-commit as the 40-character SHA of the planned commit, got ''.\n"]);
     });
   }
 });
