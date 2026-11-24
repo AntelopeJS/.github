@@ -47,9 +47,17 @@ function runStep(text: string, step: string, cwd: string, env: Record<string, st
   const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", script], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output, ...env },
+    env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output, WORKSPACE_DIRECTORY: ".", ...env },
   });
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs: readText(output) };
+}
+
+function afterBump(workspace: string): string[] {
+  return [
+    `pnpm --dir '${realpathSync(workspace)}' run --if-present sync`,
+    "test ! -f scripts/check-docs-module-version.mts || node scripts/check-docs-module-version.mts --write",
+    "git add --update -- :/",
+  ];
 }
 
 interface Scope {
@@ -437,7 +445,7 @@ describe("release-npm.yml", () => {
         "### ❤️ Contributors",
         "- Test",
       ].join("\n\n");
-      return { read, staged: git(directory, "diff", "--cached", "--name-only"), config, notes, section: `## v0.5.0\n\n${notes}\n\n` };
+      return { directory, read, staged: git(directory, "diff", "--cached", "--name-only"), config, notes, section: `## v0.5.0\n\n${notes}\n\n` };
     };
     const existing = write("existing", {
       "CHANGELOG.md": "# Changelog\n\n## v0.4.2\n\n### 🩹 Fixes\n\n- Old\n",
@@ -454,7 +462,7 @@ describe("release-npm.yml", () => {
       github: { release: true, releaseNotes: `cat '${join(root, "release-notes.md")}'` },
       plugins: { "@release-it/bumper": {} },
       npm: { publish: false },
-      hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
+      hooks: { "after:bump": afterBump(existing.directory), "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
     });
 
     const fresh = write("fresh", {});
@@ -464,7 +472,7 @@ describe("release-npm.yml", () => {
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
       npm: { publish: false },
-      hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
+      hooks: { "after:bump": afterBump(fresh.directory), "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
     });
 
     const custom = write("custom", {
@@ -478,7 +486,7 @@ describe("release-npm.yml", () => {
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: `cat '${join(root, "release-notes.md")}'` },
       npm: { publish: false },
-      hooks: { "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
+      hooks: { "after:bump": afterBump(custom.directory), "before:npm:release": [`bash '${join(root, "publish.sh")}' latest`] },
     });
   });
 
@@ -693,7 +701,7 @@ describe("release-npm.yml", () => {
     assert.ok(log.includes("ELIFECYCLE Command failed with exit code 1."), log);
   });
 
-  test("a stable run of a workspace package publishes it packed after release-it's bump, with each sibling's released range", () => {
+  test("a stable run of a workspace package publishes it packed after release-it's bump, with each sibling's released range, and commits what sync and the docs-version write change", () => {
     const bare = join(root, `release-workspace.git`);
     git(root, "init", "--quiet", "--bare", "--initial-branch=main", bare);
     const seed = join(root, `release-workspace-seed`);
@@ -707,10 +715,14 @@ describe("release-npm.yml", () => {
     };
     commitFiles(seed, "feat: first", {
       ".gitignore": "node_modules\npnpm-lock.yaml\n",
-      "package.json": JSON.stringify({ name: "workspace", private: true }),
+      "package.json": JSON.stringify({ name: "workspace", private: true, scripts: { sync: "node sync.mjs" } }),
+      "sync.mjs": 'import { readFileSync, writeFileSync } from "node:fs";\nwriteFileSync("synced.txt", JSON.parse(readFileSync("packages/x/package.json", "utf8")).version);\n',
+      "synced.txt": "0.12.1",
+      "docs/x.md": "^0.12.1",
       "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
       "packages/interface-x/package.json": JSON.stringify({ name: "@antelopejs/interface-x", version: "0.11.0" }),
       "packages/x/package.json": `${JSON.stringify(manifest, null, 2)}\n`,
+      "packages/x/scripts/check-docs-module-version.mts": 'import { readFileSync, writeFileSync } from "node:fs";\nif (process.argv.includes("--write")) writeFileSync("../../docs/x.md", `^${JSON.parse(readFileSync("package.json", "utf8")).version}`);\n',
       "packages/x/.release-it.json": JSON.stringify({ git: { tagName: "v${version}" }, github: { release: false } }),
     });
     git(seed, "tag", "v0.12.1");
@@ -753,7 +765,36 @@ describe("release-npm.yml", () => {
       },
     );
     assert.deepEqual(JSON.parse(git(bare, "show", "v0.13.0:packages/x/package.json")), { ...manifest, version: "0.13.0" });
+    assert.deepEqual([git(bare, "show", "v0.13.0:synced.txt"), git(bare, "show", "v0.13.0:docs/x.md")], ["0.13.0", "^0.13.0"]);
     assert.equal(git(runner, "status", "--porcelain"), "");
+  });
+
+  test("the after:bump hooks change and stage nothing in a package without sync or a docs-version script", () => {
+    const { directory } = repository("release-bare-hooks", { "package.json": JSON.stringify({ name: "@antelopejs/x", version: "0.4.3" }) });
+    for (const hook of afterBump(directory)) {
+      const result = spawnSync("bash", ["-c", hook], { cwd: directory, encoding: "utf8", env: { ...process.env, ...hermeticGit } });
+      assert.equal(result.status, 0, `${hook}\n${result.stdout}${result.stderr}`);
+    }
+    assert.equal(git(directory, "status", "--porcelain"), "");
+  });
+
+  test("Build the interface packages builds each workspace interface package that has a build script, and only in a stable run", () => {
+    const { directory } = repository("release-interface-build", {
+      "package.json": JSON.stringify({ name: "workspace", private: true }),
+      "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+      "packages/interface-x/package.json": JSON.stringify({ name: "@antelopejs/interface-x", version: "0.11.0", scripts: { build: "node -e \"require('fs').writeFileSync('built', '')\"" } }),
+      "packages/interface-y/package.json": JSON.stringify({ name: "@antelopejs/interface-y", version: "0.2.0" }),
+      "packages/x/package.json": JSON.stringify({ name: "@antelopejs/x", version: "0.12.1", scripts: { build: "exit 1" } }),
+    });
+    const built = runStep(text, "Build the interface packages", directory);
+    assert.equal(built.status, 0, built.stdout + built.stderr);
+    assert.ok(existsSync(join(directory, "packages", "interface-x", "built")));
+    const single = packageDirectory("release-interface-build-single", { name: "@antelopejs/x", version: "0.12.1", scripts: { build: "exit 1" } });
+    const none = runStep(text, "Build the interface packages", single);
+    assert.equal(none.status, 0, none.stdout + none.stderr);
+    const condition = /^ {8}if: (.*)$/m.exec(stepOf(text, "Build the interface packages"))?.[1] ?? "";
+    const runs = (mode: string): unknown => evaluate(condition, { steps: { mode: { outputs: { mode } } } });
+    assert.deepEqual(["stable", "repin", "preview", "pull-request"].map(runs), [true, false, false, false]);
   });
 
   test("Publish preview publishes the packed package, with each workspace: spec resolved and the commit as gitHead", () => {
@@ -1119,24 +1160,25 @@ describe("release-npm.yml", () => {
     };
     const notes = `cat '${join(root, "release-notes.md")}'`;
     assert.deepEqual(config("resumed", { hooks: { "before:npm:release": "echo before" } }, "true"), {
-      hooks: { "before:npm:release": "echo before" },
+      hooks: { "before:npm:release": "echo before", "after:bump": afterBump(join(root, "release-resumed")) },
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: notes },
       npm: { publish: false },
     });
     assert.deepEqual(config("self-published", { npm: { publish: false, skipChecks: true }, hooks: { "after:bump": ["node scripts/publish.mjs"] } }, ""), {
       npm: { publish: false, skipChecks: true },
-      hooks: { "after:bump": ["node scripts/publish.mjs"] },
+      hooks: { "after:bump": ["node scripts/publish.mjs", ...afterBump(join(root, "release-self-published"))] },
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: notes },
     });
     assert.deepEqual(config("no-npm", { npm: false }, ""), {
       npm: false,
+      hooks: { "after:bump": afterBump(join(root, "release-no-npm")) },
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: notes },
     });
     assert.deepEqual(config("own-hook",{ hooks: { "before:npm:release": "echo before" } }, ""), {
-      hooks: { "before:npm:release": ["echo before", `bash '${join(root, "publish.sh")}' latest`] },
+      hooks: { "after:bump": afterBump(join(root, "release-own-hook")), "before:npm:release": ["echo before", `bash '${join(root, "publish.sh")}' latest`] },
       git: { requireCleanWorkingDir: false },
       github: { releaseNotes: notes },
       npm: { publish: false },

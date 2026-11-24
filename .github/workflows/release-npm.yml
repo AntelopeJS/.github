@@ -542,6 +542,12 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
+      - name: Build the interface packages
+        if: steps.mode.outputs.mode == 'stable'
+        working-directory: ${{ steps.workspace.outputs.install-directory }}
+        run: |
+          pnpm -r --filter './packages/interface-*' --if-present build
+
       - name: Install AntelopeJS CLI
         if: inputs.install-core && steps.version.outputs.version != ''
         run: pnpm add --global @antelopejs/core
@@ -582,9 +588,11 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           RESUME: ${{ steps.version.outputs.resume }}
+          WORKSPACE_DIRECTORY: ${{ steps.workspace.outputs.install-directory }}
         run: |
           node <<'NODE'
           const fs = require('node:fs')
+          const path = require('node:path')
           const { execFileSync } = require('node:child_process')
           const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', maxBuffer: 1 << 26 })
           const git = (...args) => run('git', args)
@@ -597,7 +605,7 @@ jobs:
             }
           }
           const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {})
-          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RESUME, RUNNER_TEMP } = process.env
+          const { GITHUB_REPOSITORY: slug, DEFAULT_BRANCH, RELEASE_VERSION, RESUME, RUNNER_TEMP, WORKSPACE_DIRECTORY } = process.env
           const config = readJson('.release-it.json')
           const [prefix = 'v', suffix = ''] = (config.git?.tagName || 'v${version}').split('${version}')
           const tag = (version) => `${prefix}${version}${suffix}`
@@ -698,6 +706,15 @@ jobs:
           if (config.plugins && Object.keys(config.plugins).length === 0) delete config.plugins
           config.github = { ...config.github, releaseNotes: `cat '${notes}'` }
           config.git = { ...config.git, requireCleanWorkingDir: false }
+          const workspace = path.join(git('rev-parse', '--show-toplevel').trim(), WORKSPACE_DIRECTORY)
+          config.hooks = {
+            ...config.hooks,
+            'after:bump': [config.hooks?.['after:bump'] ?? []].flat().concat(
+              `pnpm --dir '${workspace}' run --if-present sync`,
+              'test ! -f scripts/check-docs-module-version.mts || node scripts/check-docs-module-version.mts --write',
+              'git add --update -- :/',
+            ),
+          }
           if (config.npm !== false) {
             if (config.npm?.publish !== false && RESUME !== 'true') {
               const hooks = config.hooks ?? {}
