@@ -182,12 +182,13 @@ locks](README.md#module-locks) for the caller jobs.
 
 ## Release channels
 
-Work reaches the npm `next` dist-tag when it merges into `main`, and the
-`latest` dist-tag when the release train releases it:
+Work reaches the npm `next` dist-tag when a maintainer dispatches a preview,
+and the `latest` dist-tag when the release train releases it. A push publishes
+nothing:
 
 | Source | npm dist-tag | Versions | Published by |
 | ------ | ------------ | -------- | ------------ |
-| `main` | `next` | `0.4.3-next.161.g3f9a2c1` | every push that changes the package |
+| `main` or a `work/*` branch | `next` | `0.4.3-next.161.g3f9a2c1` | a `release.yml` dispatch with `preview: true`, when the package changed since the current `next` |
 | `main` | `latest` | `0.5.0` | the release train |
 
 Anything merged into `main` must be releasable as stable at any time.
@@ -208,9 +209,12 @@ have not synced yet, and is deleted once the rollout is done.
 1. Open the pull request against `main`. To try it from another repository
    before it merges, add the `preview` label, as described in
    [pull request previews](README.md#pull-request-previews).
-2. After the merge, the push publishes a preview of each package it changed.
-3. A repository that needs the change pins the exact preview on its own `main`,
-   as described in [preview versions](README.md#preview-versions).
+2. When another repository needs the change before a stable release, dispatch
+   a preview from `main` after the merge, or from the `work/*` branch before
+   it: `gh workflow run release.yml --ref main -f preview=true`. The merge
+   itself publishes nothing.
+3. The repository that needs the change pins the exact preview on its own
+   `main`, as described in [preview versions](README.md#preview-versions).
 
 A preview writes nothing to git, so `main` keeps the version of the last stable
 release in its `package.json`. Cross-repository work never waits for a stable

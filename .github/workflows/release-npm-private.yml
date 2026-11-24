@@ -23,6 +23,10 @@ on:
         description: Relative path to the package directory to release
         default: .
         type: string
+      preview:
+        description: Publish a preview under the npm dist-tag next from a workflow_dispatch of the default branch or of a work/* branch
+        default: false
+        type: boolean
       integration-branch:
         description: Unused. Kept so that a caller that passes it keeps working
         type: string
@@ -52,6 +56,7 @@ jobs:
       dependency-ranges: ${{ inputs.dependency-ranges }}
       install-core: ${{ inputs.install-core }}
       package-directory: ${{ inputs.package-directory }}
+      preview: ${{ inputs.preview }}
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

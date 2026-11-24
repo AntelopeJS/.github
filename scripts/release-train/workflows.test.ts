@@ -366,8 +366,8 @@ describe("release-npm.yml", () => {
     );
   });
 
-  test("Resolve release mode previews a push to the default branch, previews a pull request, releases a dispatch on the default branch, and refuses any other event", () => {
-    const mode = (event: string, ref: string, version = "", commit = head, pullRequest = "") =>
+  test("Resolve release mode previews a dispatch with preview of the default branch or a work/* branch, previews a pull request, releases a dispatch on the default branch, and refuses any other event", () => {
+    const mode = (event: string, ref: string, version = "", commit = head, pullRequest = "", preview = "false") =>
       runStep(text, "Resolve release mode", root, {
         GITHUB_EVENT_NAME: event,
         GITHUB_REF: ref,
@@ -375,9 +375,14 @@ describe("release-npm.yml", () => {
         RELEASE_VERSION: version,
         RELEASE_COMMIT: commit,
         PULL_REQUEST: pullRequest,
+        PREVIEW: preview,
       });
-    assert.equal(mode("push", "refs/heads/main").outputs, "mode=preview\ntag=next\n");
-    assert.equal(mode("push", "refs/heads/main", "", "").outputs, "mode=preview\ntag=next\n");
+    assert.equal(mode("workflow_dispatch", "refs/heads/main", "", "", "", "true").outputs, "mode=preview\ntag=next\n");
+    assert.equal(mode("workflow_dispatch", "refs/heads/work/ant-12-cache", "", "", "", "true").outputs, "mode=preview\ntag=next\n");
+    assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head, "", "true").outputs, "mode=preview\ntag=next\n");
+    assert.equal(mode("workflow_dispatch", "refs/heads/next", "", "", "", "true").status, 1);
+    assert.equal(mode("workflow_dispatch", "refs/heads/feat/work/x", "", "", "", "true").status, 1);
+    assert.equal(mode("workflow_dispatch", "refs/tags/v1.0.0", "", "", "", "true").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0").outputs, "mode=stable\n");
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", "").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0", head.slice(0, 7)).status, 1);
@@ -385,18 +390,18 @@ describe("release-npm.yml", () => {
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "", "").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/main", "0.5.0-next.1").status, 1);
     assert.equal(mode("workflow_dispatch", "refs/heads/next", "0.5.0").status, 1);
+    assert.equal(mode("workflow_dispatch", "refs/heads/work/x", "0.5.0").status, 1);
     assert.deepEqual(mode("pull_request", "refs/pull/12/merge", "", "", "12").outputs, "mode=pull-request\ntag=pr-12\n");
     assert.equal(mode("pull_request_target", "refs/heads/main", "", "", "12").status, 1);
-    const next = mode("push", "refs/heads/next");
+    const pushed = mode("push", "refs/heads/main", "", "", "", "");
     assert.deepEqual(
-      [next.status, next.outputs, next.stderr],
+      [pushed.status, pushed.outputs, pushed.stderr],
       [
         1,
         "",
-        "A push to main publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of main publishes a stable release. A push of refs/heads/next publishes nothing.\n",
+        "A workflow_dispatch with preview of main or a work/* branch publishes a preview, a pull_request with the preview label publishes a pull request preview, and a workflow_dispatch of main without preview publishes a stable release. A push of refs/heads/main publishes nothing.\n",
       ],
     );
-    assert.equal(mode("push", "refs/tags/v1.0.0").status, 1);
   });
 
   test("Check the planned commit refuses a branch that moved since the plan", () => {
@@ -1328,13 +1333,14 @@ describe("release-npm.yml", () => {
     assert.equal(runner("public", {}), "ubuntu-latest");
   });
 
-  test("the job runs a push only of the default branch, and a pull request only when it carries the preview label, a labeled event only for that label", () => {
+  test("the job skips every push, so a caller that still triggers on one publishes nothing, runs every dispatch, and a pull request only when it carries the preview label, a labeled event only for that label", () => {
     const job = /^ {4}if: (.*)$/m.exec(text)?.[1] ?? "";
     const gate = (event: string, action: string, labels: string[], label = "", branch = "main") =>
       evaluate(job, { github: { event_name: event, ref_name: branch, event: { action, label: { name: label }, pull_request: { labels }, repository: { default_branch: "main" } } } });
-    assert.equal(gate("push", "", []), true);
+    assert.equal(gate("push", "", []), false);
     assert.equal(gate("push", "", [], "", "next"), false);
     assert.equal(gate("workflow_dispatch", "", []), true);
+    assert.equal(gate("workflow_dispatch", "", [], "", "work/x"), true);
     assert.equal(gate("pull_request", "opened", []), false);
     assert.equal(gate("pull_request", "opened", ["ci:full"]), false);
     assert.equal(gate("pull_request", "opened", ["preview"]), true);
@@ -1351,16 +1357,17 @@ describe("release-npm.yml", () => {
       assert.notEqual(line, undefined, name);
       return line?.slice(prefix.length) ?? "";
     };
-    const scope = (event: string, number?: number) => ({ github: { repository: "AntelopeJS/x", event_name: event, event: { pull_request: number === undefined ? {} : { number } } }, inputs: { "package-directory": "." } });
+    const scope = (event: string, number?: number, preview = false) => ({ github: { repository: "AntelopeJS/x", event_name: event, event: { pull_request: number === undefined ? {} : { number } } }, inputs: { "package-directory": ".", preview } });
     const environment = attribute(4, "environment");
     assert.equal(evaluate(environment, scope("push")), "npm-publish");
     assert.equal(evaluate(environment, scope("workflow_dispatch")), "npm-publish");
     assert.equal(evaluate(environment, scope("pull_request", 12)), "");
-    const group = (event: string, number?: number): string => interpolate(attribute(6, "group"), scope(event, number));
+    const group = (event: string, number?: number, preview = false): string => interpolate(attribute(6, "group"), scope(event, number, preview));
     assert.notEqual(group("pull_request", 12), group("pull_request", 13));
     assert.equal(group("pull_request", 12), group("pull_request", 12));
     assert.notEqual(group("pull_request", 12), group("push"));
     assert.notEqual(group("push"), group("workflow_dispatch"));
+    assert.notEqual(group("workflow_dispatch", undefined, true), group("workflow_dispatch"));
     const cancel = attribute(6, "cancel-in-progress");
     assert.deepEqual([evaluate(cancel, scope("pull_request", 12)), evaluate(cancel, scope("push")), evaluate(cancel, scope("workflow_dispatch"))], [true, false, false]);
   });

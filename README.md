@@ -20,39 +20,40 @@ starts the run decides what it publishes. A caller only declares the triggers.
 
 | Event | Branch | Publishes |
 | ----- | ------ | --------- |
-| `push` | the default branch | a preview under the npm dist-tag `next` |
+| `workflow_dispatch` with `preview: true` | the default branch or a `work/*` branch | a preview under the npm dist-tag `next` |
 | `pull_request` | a pull request with the `preview` label | a pull request preview: a [pkg.pr.new](https://pkg.pr.new) package for a public package, the dist-tag `pr-<number>` on `https://npm.antelopejs.cloud/` for a private one |
 | `workflow_dispatch` | the default branch | a stable release under the npm dist-tag `latest`, or nothing without `release-version` |
 
-A push to another branch, `next` included, skips the job, so a caller that
-still triggers on `next` stays green and publishes nothing. Any other event
-fails the run with the reason. Anyone allowed to run
+A push publishes nothing and skips the job, so a caller that still triggers on
+`push` stays green. A preview dispatch of any other branch, and any other
+event, fails the run with the reason. Anyone allowed to run
 the workflow can dispatch a stable release with any `release-version` above
 `latest` in the same major. The release train is the way to start one, not a
 guard against starting one by hand. A release runs no tests. The checks of the pull request that brought each commit are the gate.
 
-A push to the default branch and a stable run use the `npm-publish` environment
-of the repository. Its deployment branches need only the default branch. A pull
+A preview run and a stable run use the `npm-publish` environment of the
+repository. Its deployment branches need the default branch, and `work/*` for a
+preview of a work branch. A pull
 request preview run uses no environment, because the branch policy of the
-environment allows only the default branch. A private pull request preview reads
+environment allows no pull request ref. A private pull request preview reads
 `NPM_ANTELOPE_TOKEN` as an organization secret.
 
 ### Preview versions
 
-Every push to the default branch publishes a preview of the package when its
+A dispatch with `preview: true` publishes a preview of the package when its
 directory changed since the commit of the current `next` preview, read from npm
 as its `gitHead`. A change to the changelog, or to the `version` field of
 `package.json`, does not count. The changelog is the `output` of
-`changelogen.config.json`, or `CHANGELOG.md`. So the release commit of a
-release that changed only the version and the changelog publishes no preview.
+`changelogen.config.json`, or `CHANGELOG.md`. So a preview of the release
+commit of a release that changed only the version and the changelog publishes
+nothing.
 Neither does a change to
 `pnpm-lock.yaml`, which no package ships, or a change inside a nested directory
 that holds its own `.release-it.json`, which is another released package. A
-release that wrote stable ranges changes `dependencies` too, so its release
-commit publishes one preview that holds the stable ranges. A package that
+release that wrote stable ranges changes `dependencies` too, so a preview of
+its release commit holds the stable ranges. A package that
 changed nothing it ships publishes nothing and says so in a
-notice. A push whose run GitHub dropped from the queue is still covered
-by the next run. The preview version is
+notice. The preview version is
 `<base>-next.<commit count>.g<short sha>`, such as `0.4.3-next.161.g3f9a2c1`.
 The base is the patch after the current `latest` version on npm. A package that
 was never published uses the version of its `package.json` without its
@@ -77,9 +78,11 @@ dependents only once the sibling is released. A sibling that ships no
 declaration files always counts as unchanged. A stable release keeps its
 ranges as before.
 
-A dependent pins the exact preview it needs:
+Publish a preview of the default branch, or of a `work/*` branch, then pin the
+exact preview in the dependent:
 
 ```sh
+gh workflow run release.yml --repo AntelopeJS/interface-database --ref work/ant-12-cursor -f preview=true
 npm view @antelopejs/interface-database dist-tags.next
 pnpm add @antelopejs/interface-database@0.4.3-next.161.g3f9a2c1 --save-exact
 ```
@@ -211,8 +214,8 @@ dependency order.
   `only build commits since 0.4.2`. Those commits stay in the cycle, so the
   release notes of the next release list them.
 - The default branch may pin a preview of another listed package, the
-  `<base>-next.<commit count>.g<short sha>` version that a push to the
-  default branch of that package published, such as
+  `<base>-next.<commit count>.g<short sha>` version that a preview dispatch
+  of that package published, such as
   `0.4.3-next.161.g3f9a2c1`. Each preview pin moves to the stable range of
   the version its dependency gets, such as `>=0.5.0 <0.6.0`. That is the
   version the plan releases, or the last stable release of a dependency the
@@ -397,6 +400,7 @@ keeps working unchanged.
 | `dependency-ranges` | `"{}"` | JSON object mapping a dependency name to the stable range that replaces its preview pin. The release train sets it. |
 | `install-core` | `false`, and `true` for `release-npm-private.yml` | Install the AntelopeJS CLI before releasing. |
 | `package-directory` | `.` | Directory of the package, relative to the repository root. |
+| `preview` | `false` | `true` makes a `workflow_dispatch` of the default branch or of a `work/*` branch publish a [preview](#preview-versions) under `next`. It ignores `release-version` and `release-commit`. |
 | `integration-branch` | none | Unused. Only the two wrappers declare it, so that a caller that passes it keeps working. |
 
 A stable or repin run writes with a token of the `antelopejs-release` GitHub
@@ -433,14 +437,16 @@ stable release.
 
 - **File.** `.github/workflows/release.yml`. npm trusted publishing names this
   file, and the release train dispatches it.
-- **Triggers.** `push` to the default branch for previews, `pull_request`
-  with the types `labeled`, `synchronize` and `reopened` for a
-  [pull request preview](#pull-request-previews) of each pull request that
-  carries the `preview` label, and `workflow_dispatch` for stable releases.
+- **Triggers.** `pull_request` with the types `labeled`, `synchronize` and
+  `reopened` for a [pull request preview](#pull-request-previews) of each pull
+  request that carries the `preview` label, and `workflow_dispatch` for
+  previews and stable releases. A `push` trigger left from an older caller
+  publishes nothing.
 - **Dispatch inputs.** `release-version`, `release-commit` and
   `dependency-ranges` (default `"{}"`), all optional strings that the release
-  train sets. A repository whose package is not at its root adds
-  `package-directory`. A repository with several packages has one job per
+  train sets, and the optional boolean `preview` (default `false`) that a
+  maintainer sets to publish a preview. A repository whose package is not at
+  its root adds `package-directory`. A repository with several packages has one job per
   package, and a dispatch runs only the job whose `package-directory` it names.
   The release train sends nothing else.
 - **Permissions.** `contents: write`, and `id-token: write` when a package is
@@ -452,22 +458,21 @@ stable release.
   `NPM_ANTELOPE_TOKEN` for the private workflow, each passed by name. A stable
   or repin run mints its token from the two app secrets.
 - **Call.** `release-npm-public.yml@v2` or `release-npm-private.yml@v2`, with
-  each dispatch input passed through under the same name. `release-npm.yml@v2`
-  takes the same call with `registry: public` or `registry: private`.
+  each dispatch input passed through under the same name, `preview` as
+  `${{ inputs.preview == true }}` so that a pull request run passes `false`.
+  `release-npm.yml@v2` takes the same call with `registry: public` or `registry: private`.
 - **Repository setting.** The `npm-publish` environment allows the default
-  branch.
+  branch, and `work/*` for previews of work branches.
 
 ### Caller workflow
 
-The caller is the `release.yml` of the repository. It declares the three
-triggers, passes the inputs the release train sets and forwards the secrets:
+The caller is the `release.yml` of the repository. It declares the two
+triggers, passes the dispatch inputs and forwards the secrets:
 
 ```yaml
 name: Release
 
 on:
-  push:
-    branches: [main]
   pull_request:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:
@@ -485,6 +490,11 @@ on:
         required: false
         default: "{}"
         type: string
+      preview:
+        description: Publish a preview under the npm dist-tag next from the default branch or a work/* branch
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -497,6 +507,7 @@ jobs:
       release-version: ${{ inputs.release-version }}
       release-commit: ${{ inputs.release-commit }}
       dependency-ranges: ${{ inputs.dependency-ranges }}
+      preview: ${{ inputs.preview == true }}
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
