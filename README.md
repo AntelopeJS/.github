@@ -342,7 +342,9 @@ A stable run then does the following.
    `pnpm install --no-frozen-lockfile` and stages `package.json` and the
    lockfile, so the release commit holds them and npm records `release-commit`
    as the `gitHead` of the version. Otherwise it installs with
-   `pnpm install --frozen-lockfile`.
+   `pnpm install --frozen-lockfile`. It then builds each workspace package
+   under `packages/interface-*` that has a `build` script, so a
+   `before:init` lint that reads their types finds them.
 6. It writes the release notes of the cycle in changelogen's format: the
    compare link, one line per task with one block per commit type and the
    oldest first, the breaking changes and the contributors. It reads the tasks
@@ -360,7 +362,12 @@ A stable run then does the following.
 7. It runs `pnpm exec release-it --ci --verbose --increment=<release-version>`
    with that config. `--verbose` prints the stdout and stderr of every hook,
    so the log of a failed hook shows why it failed. release-it bumps
-   `package.json`. In place of release-it's own
+   `package.json`. After the repository's own `after:bump` hooks, the config
+   runs the workspace root's `sync` script, then
+   `node scripts/check-docs-module-version.mts --write` in the package, each
+   when it exists, and stages every changed tracked file of the repository.
+   In place of
+   release-it's own
    `npm publish`, a `before:npm:release` hook packs the package with
    `pnpm pack`, which resolves each `workspace:` and `catalog:` spec, and
    publishes the tarball under `latest`, as a preview does under `next`. The
