@@ -649,7 +649,7 @@ jobs:
             fi
             echo "::endgroup::"
           done
-          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on ${cpus} CPUs" >>"$GITHUB_STEP_SUMMARY"
+          echo "Stress: ${failed} of ${STRESS_RUNS} runs of \`pnpm run test\` failed beside ${loops} busy loops on ${cpus} CPUs" >> "$GITHUB_STEP_SUMMARY"
           [ "$failed" -eq 0 ]
 
       - name: Stop services
