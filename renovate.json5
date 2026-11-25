@@ -32,6 +32,12 @@
   ],
   packageRules: [
     {
+      description: 'Callers keep AntelopeJS/.github at the moving v2 tag, so Renovate never pins it to a digest',
+      matchPackageNames: ['AntelopeJS/.github'],
+      pinDigests: false,
+      enabled: false,
+    },
+    {
       matchManagers: ['github-actions'],
       matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
       groupName: 'GitHub Actions',

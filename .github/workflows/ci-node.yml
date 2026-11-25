@@ -181,7 +181,7 @@ jobs:
 
       - name: Pick the tier
         id: tier
-        uses: AntelopeJS/.github/.github/actions/ci-tier@8c79f96b4f7f374ebb9346cfd0b8a182ee92fb9b # v2
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
         with:
           selection: ${{ vars.CI_SELECTION }}
 
@@ -397,7 +397,7 @@ jobs:
 
       - name: Check that the module locks are committed
         if: ${{ !cancelled() && steps.leg.outputs.work == 'true' && inputs.module-locks }}
-        uses: AntelopeJS/.github/.github/actions/module-locks-committed@8c79f96b4f7f374ebb9346cfd0b8a182ee92fb9b # v2
+        uses: AntelopeJS/.github/.github/actions/module-locks-committed@v2
 
       - name: Annotate the flaky tests
         if: ${{ !cancelled() && (steps.tests.outputs.flaky == 'true' || steps.extra.outputs.flaky == 'true') }}

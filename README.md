@@ -961,8 +961,9 @@ A repository's own `renovate.json` keeps only what is specific to it.
 A repository develops on trunk: every pull request targets `main`, and GitHub's
 merge queue squashes it onto `main` once the required check (`ci / checks`,
 plus `ubuntu` in the DMS repositories) passes on the queued result. The
-`merge_group` event runs the `queue` tier of `ci-node.yml`, and a push to
-`main` publishes the preview described in [npm releases](#npm-releases). There
+`merge_group` event runs the `queue` tier of `ci-node.yml`. A push to `main`
+publishes nothing; a dispatch with `preview: true` publishes the preview
+described in [npm releases](#npm-releases). There
 is no integration branch: nothing needs promoting, and `main` stays releasable
 as stable at any time.
 
