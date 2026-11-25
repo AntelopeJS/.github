@@ -8,12 +8,24 @@ import { readText } from "./helpers/read.ts";
 const modules = process.env.RENOVATE_MODULES ?? "";
 assert.ok(existsSync(join(modules, "renovate", "package.json")), "RENOVATE_MODULES names the node_modules folder that holds renovate 44 and json5");
 
-type Config = Record<string, unknown>;
+/** The options of a renovate 44 config these tests read. Renovate defaults `groupName` and `minimumReleaseAge` to `null`. */
+interface Config {
+  schedule?: string[];
+  timezone?: string;
+  rebaseWhen?: string;
+  enabled?: boolean;
+  automerge?: boolean;
+  groupName?: string | null;
+  minimumReleaseAge?: string | null;
+  packageName?: string;
+}
 interface CustomManager {
   managerFilePatterns: string[];
   matchStrings: string[];
 }
-type Preset = Config & { customManagers: CustomManager[] };
+interface Preset extends Config {
+  customManagers: CustomManager[];
+}
 interface Upgrade {
   repository: string;
   manager: string;
@@ -44,16 +56,16 @@ const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolv
 
 async function lookup(upgrade: Upgrade & { datasource: string }): Promise<string | undefined> {
   const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
-  return typeof result.packageName === "string" ? result.packageName : undefined;
+  return result.packageName;
 }
 
 async function rules(upgrade: Upgrade): Promise<{ enabled: boolean; groupName?: string; automerge: boolean; minimumReleaseAge?: string }> {
   const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
   return {
     enabled: result.enabled !== false,
-    groupName: typeof result.groupName === "string" ? result.groupName : undefined,
+    groupName: result.groupName ?? undefined,
     automerge: result.automerge === true,
-    minimumReleaseAge: typeof result.minimumReleaseAge === "string" ? result.minimumReleaseAge : undefined,
+    minimumReleaseAge: result.minimumReleaseAge ?? undefined,
   };
 }
 

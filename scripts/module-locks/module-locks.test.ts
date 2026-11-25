@@ -139,7 +139,7 @@ function repository(files: Record<string, string>): string {
   return dir;
 }
 
-const lock = (folder: string, module: string, content = "lockfileVersion: '9.0'\n"): Record<string, string> => ({
+const lock = (folder: string, module: string, content = "lockfileVersion: '9.0'\n") => ({
   [`${folder}/${module}/pnpm-lock.yaml`]: content,
 });
 
@@ -150,11 +150,133 @@ function installAjs(dir: string, script: string): string {
   return log;
 }
 
-function refreshRun(dir: string, projects: string): { update: StepResult; describe: StepResult; body: string } {
+function refreshRun(dir: string, projects: string) {
   const update = runStep(refresh, UPDATE, dir, { PROJECTS: projects });
   const describe = runStep(refresh, DESCRIBE, dir, { GH_TOKEN: "unused", BRANCH });
   const body = join(root, `runner-${runs}`, "module-locks", "body.md");
   return { update, describe, body: existsSync(body) ? readText(body) : "" };
+}
+
+function refreshPatchChecks(): void {
+  const checkPatch = (dir: string, patch: string): StepResult => {
+    runs += 1;
+    const temp = join(root, `patch-${runs}`);
+    mkdirSync(join(temp, "module-locks"), { recursive: true });
+    writeFileSync(join(temp, "module-locks", "refresh.patch"), patch);
+    return runStep(refresh, CHECK, dir, { RUNNER_TEMP: temp });
+  };
+  const staged = (dir: string, change: () => void): string => {
+    change();
+    git(dir, "add", "-A");
+    const patch = spawnSync("git", ["diff", "--cached", "--binary"], { cwd: dir, encoding: "utf8" }).stdout;
+    git(dir, "reset", "-q", "--hard");
+    return patch;
+  };
+  const base = (): string => repository({ ...lock("antelope-lock", "@antelopejs/api@1.0.0"), "package.json": '{"name":"app"}\n', "antelope.config.ts": "export default {};\n" });
+
+  test("passes a refresh that moves locks, ranges and other files, and leaves the checkout alone", () => {
+    const dir = base();
+    const patch = staged(dir, () => {
+      rmSync(join(dir, "antelope-lock"), { recursive: true });
+      write(dir, { ...lock("antelope-lock", "@antelopejs/api@1.1.0"), "package.json": '{"name":"app","version":"1"}\n', "antelope.config.ts": "export default { a: 1 };\n", "pnpm-lock.yaml": "x\n" });
+    });
+    const check = checkPatch(dir, patch);
+    assert.equal(check.status, 0, check.stdout + check.stderr);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  });
+
+  const refused: [string, (dir: string) => void, RegExp][] = [
+    ["a workflow", (dir) => write(dir, { ".github/workflows/x.yml": "on: push\n" }), /\.github\/workflows\/x\.yml, which is under \.github/],
+    ["a symlink", (dir) => symlinkSync("/etc/passwd", join(dir, "antelope-lock", "link")), /antelope-lock\/link, which is a symlink/],
+    [
+      "a submodule",
+      (dir) => {
+        mkdirSync(join(dir, "vendor", "x"), { recursive: true });
+        git(join(dir, "vendor", "x"), "init", "-q");
+        git(join(dir, "vendor", "x"), "commit", "-q", "--allow-empty", "-m", "x");
+      },
+      /vendor\/x, which is a submodule/,
+    ],
+    ["a .gitmodules", (dir) => write(dir, { ".gitmodules": "[submodule \"x\"]\n" }), /\.gitmodules, which is under \.github or declares submodules/],
+  ];
+  for (const [name, change, message] of refused) {
+    test(`refuses ${name}`, () => {
+      const dir = base();
+      const check = checkPatch(dir, staged(dir, () => change(dir)));
+      assert.notEqual(check.status, 0);
+      assert.match(check.stdout, message);
+      assert.match(check.stdout, /Nothing was pushed/);
+    });
+  }
+
+  for (const [name, path] of [["a path outside the checkout", "../outside"], ["a path under .git", ".git/hooks/post-checkout"]]) {
+    test(`refuses ${name}`, () => {
+      const dir = base();
+      const check = checkPatch(dir, `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+x\n`);
+      assert.notEqual(check.status, 0);
+      assert.match(check.stdout, /::error::The refresh patch does not apply/);
+      assert.equal(existsSync(join(dir, path)), false);
+    });
+  }
+}
+
+function pullRequestPublishing(): void {
+  const QUEUED = { mergeQueue: { id: "MQ_1" }, pullRequest: { autoMergeRequest: null, isInMergeQueue: false } };
+  const OPEN = JSON.stringify([{ number: 5, isCrossRepository: false }]);
+
+  function publish(env: { repository?: string; state?: string; open?: string; repo?: object }): string[] {
+    const temp = mkdtempSync(join(root, "publish-"));
+    write(join(temp, "module-locks"), { "body.md": "body\n" });
+    const log = join(temp, "gh.log");
+    const step = runStep(refresh, PUBLISH, root, {
+      RUNNER_TEMP: temp,
+      GH_LOG: log,
+      GITHUB_REPOSITORY: env.repository ?? "AntelopeJS/api",
+      BASE: "main",
+      BRANCH,
+      TITLE: "build(deps): update the AntelopeJS module locks",
+      RUN_URL: "https://example.com/run",
+      STATE: env.state ?? "changed",
+      GH_OPEN: env.open ?? "[]",
+      GH_GRAPHQL: JSON.stringify({ data: { repository: env.repo ?? QUEUED } }),
+    });
+    assert.equal(step.status, 0, step.stderr);
+    return existsSync(log) ? readText(log).trimEnd().split("\n") : [];
+  }
+  const merges = (calls: string[]): string[] => calls.filter((call) => call.startsWith("gh pr merge"));
+
+  test("turns on squash auto-merge on a new pull request when the default branch has a merge queue", () => {
+    const calls = publish({});
+    assert.ok(calls.some((call) => call.startsWith("gh pr create")));
+    assert.deepEqual(merges(calls), ["gh pr merge -R AntelopeJS/api 7 --squash --auto"]);
+  });
+
+  test("turns on auto-merge on the open pull request it updates", () => {
+    assert.deepEqual(merges(publish({ open: OPEN, state: "proposed" })), ["gh pr merge -R AntelopeJS/api 5 --squash --auto"]);
+  });
+
+  test("leaves a pull request alone that already has auto-merge or sits in the queue", () => {
+    assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: { enabledAt: "now" }, isInMergeQueue: false } } })), []);
+    assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: null, isInMergeQueue: true } } })), []);
+  });
+
+  test("never turns on auto-merge when the default branch has no merge queue", () => {
+    assert.deepEqual(merges(publish({ repo: { ...QUEUED, mergeQueue: null } })), []);
+  });
+
+  test("never turns on auto-merge in the repositories the Renovate preset leaves to a person, even with a merge queue", () => {
+    const manual = [...repoFile("renovate.json5").matchAll(/'!(AntelopeJS\/[\w.-]+)'/g)].map((match) => match[1]);
+    assert.equal(manual.length, 5);
+    for (const repository of manual) {
+      assert.deepEqual(merges(publish({ repository })), [], repository);
+    }
+  });
+
+  test("closes the pull request when nothing changed, and turns on no auto-merge", () => {
+    const calls = publish({ open: OPEN, state: "current" });
+    assert.ok(calls.some((call) => call.startsWith("gh pr close -R AntelopeJS/api 5 --delete-branch")));
+    assert.deepEqual(merges(calls), []);
+  });
 }
 
 describe("module-locks-refresh.yml", () => {
@@ -237,127 +359,8 @@ describe("module-locks-refresh.yml", () => {
     assert.equal(readText(log), "project modules update --fix -p a\nproject modules update --fix -p b\n");
   });
 
-  describe("checks the refresh patch before it pushes", () => {
-    const checkPatch = (dir: string, patch: string): StepResult => {
-      runs += 1;
-      const temp = join(root, `patch-${runs}`);
-      mkdirSync(join(temp, "module-locks"), { recursive: true });
-      writeFileSync(join(temp, "module-locks", "refresh.patch"), patch);
-      return runStep(refresh, CHECK, dir, { RUNNER_TEMP: temp });
-    };
-    const staged = (dir: string, change: () => void): string => {
-      change();
-      git(dir, "add", "-A");
-      const patch = spawnSync("git", ["diff", "--cached", "--binary"], { cwd: dir, encoding: "utf8" }).stdout;
-      git(dir, "reset", "-q", "--hard");
-      return patch;
-    };
-    const base = (): string => repository({ ...lock("antelope-lock", "@antelopejs/api@1.0.0"), "package.json": '{"name":"app"}\n', "antelope.config.ts": "export default {};\n" });
-
-    test("passes a refresh that moves locks, ranges and other files, and leaves the checkout alone", () => {
-      const dir = base();
-      const patch = staged(dir, () => {
-        rmSync(join(dir, "antelope-lock"), { recursive: true });
-        write(dir, { ...lock("antelope-lock", "@antelopejs/api@1.1.0"), "package.json": '{"name":"app","version":"1"}\n', "antelope.config.ts": "export default { a: 1 };\n", "pnpm-lock.yaml": "x\n" });
-      });
-      const check = checkPatch(dir, patch);
-      assert.equal(check.status, 0, check.stdout + check.stderr);
-      assert.equal(git(dir, "status", "--porcelain"), "");
-    });
-
-    const refused: [string, (dir: string) => void, RegExp][] = [
-      ["a workflow", (dir) => write(dir, { ".github/workflows/x.yml": "on: push\n" }), /\.github\/workflows\/x\.yml, which is under \.github/],
-      ["a symlink", (dir) => symlinkSync("/etc/passwd", join(dir, "antelope-lock", "link")), /antelope-lock\/link, which is a symlink/],
-      [
-        "a submodule",
-        (dir) => {
-          mkdirSync(join(dir, "vendor", "x"), { recursive: true });
-          git(join(dir, "vendor", "x"), "init", "-q");
-          git(join(dir, "vendor", "x"), "commit", "-q", "--allow-empty", "-m", "x");
-        },
-        /vendor\/x, which is a submodule/,
-      ],
-      ["a .gitmodules", (dir) => write(dir, { ".gitmodules": "[submodule \"x\"]\n" }), /\.gitmodules, which is under \.github or declares submodules/],
-    ];
-    for (const [name, change, message] of refused) {
-      test(`refuses ${name}`, () => {
-        const dir = base();
-        const check = checkPatch(dir, staged(dir, () => change(dir)));
-        assert.notEqual(check.status, 0);
-        assert.match(check.stdout, message);
-        assert.match(check.stdout, /Nothing was pushed/);
-      });
-    }
-
-    for (const [name, path] of [["a path outside the checkout", "../outside"], ["a path under .git", ".git/hooks/post-checkout"]]) {
-      test(`refuses ${name}`, () => {
-        const dir = base();
-        const check = checkPatch(dir, `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+x\n`);
-        assert.notEqual(check.status, 0);
-        assert.match(check.stdout, /::error::The refresh patch does not apply/);
-        assert.equal(existsSync(join(dir, path)), false);
-      });
-    }
-  });
-
-  describe("opens the pull request and turns on its auto-merge", () => {
-    const QUEUED = { mergeQueue: { id: "MQ_1" }, pullRequest: { autoMergeRequest: null, isInMergeQueue: false } };
-    const OPEN = JSON.stringify([{ number: 5, isCrossRepository: false }]);
-
-    function publish(env: { repository?: string; state?: string; open?: string; repo?: object }): string[] {
-      const temp = mkdtempSync(join(root, "publish-"));
-      write(join(temp, "module-locks"), { "body.md": "body\n" });
-      const log = join(temp, "gh.log");
-      const step = runStep(refresh, PUBLISH, root, {
-        RUNNER_TEMP: temp,
-        GH_LOG: log,
-        GITHUB_REPOSITORY: env.repository ?? "AntelopeJS/api",
-        BASE: "main",
-        BRANCH,
-        TITLE: "build(deps): update the AntelopeJS module locks",
-        RUN_URL: "https://example.com/run",
-        STATE: env.state ?? "changed",
-        GH_OPEN: env.open ?? "[]",
-        GH_GRAPHQL: JSON.stringify({ data: { repository: env.repo ?? QUEUED } }),
-      });
-      assert.equal(step.status, 0, step.stderr);
-      return existsSync(log) ? readText(log).trimEnd().split("\n") : [];
-    }
-    const merges = (calls: string[]): string[] => calls.filter((call) => call.startsWith("gh pr merge"));
-
-    test("turns on squash auto-merge on a new pull request when the default branch has a merge queue", () => {
-      const calls = publish({});
-      assert.ok(calls.some((call) => call.startsWith("gh pr create")));
-      assert.deepEqual(merges(calls), ["gh pr merge -R AntelopeJS/api 7 --squash --auto"]);
-    });
-
-    test("turns on auto-merge on the open pull request it updates", () => {
-      assert.deepEqual(merges(publish({ open: OPEN, state: "proposed" })), ["gh pr merge -R AntelopeJS/api 5 --squash --auto"]);
-    });
-
-    test("leaves a pull request alone that already has auto-merge or sits in the queue", () => {
-      assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: { enabledAt: "now" }, isInMergeQueue: false } } })), []);
-      assert.deepEqual(merges(publish({ open: OPEN, repo: { ...QUEUED, pullRequest: { autoMergeRequest: null, isInMergeQueue: true } } })), []);
-    });
-
-    test("never turns on auto-merge when the default branch has no merge queue", () => {
-      assert.deepEqual(merges(publish({ repo: { ...QUEUED, mergeQueue: null } })), []);
-    });
-
-    test("never turns on auto-merge in the repositories the Renovate preset leaves to a person, even with a merge queue", () => {
-      const manual = [...repoFile("renovate.json5").matchAll(/'!(AntelopeJS\/[\w.-]+)'/g)].map((match) => match[1]);
-      assert.equal(manual.length, 5);
-      for (const repository of manual) {
-        assert.deepEqual(merges(publish({ repository })), [], repository);
-      }
-    });
-
-    test("closes the pull request when nothing changed, and turns on no auto-merge", () => {
-      const calls = publish({ open: OPEN, state: "current" });
-      assert.ok(calls.some((call) => call.startsWith("gh pr close -R AntelopeJS/api 5 --delete-branch")));
-      assert.deepEqual(merges(calls), []);
-    });
-  });
+  describe("checks the refresh patch before it pushes", refreshPatchChecks);
+  describe("opens the pull request and turns on its auto-merge", pullRequestPublishing);
 
   test("fails with the fix when no folder holds node_modules/.bin/ajs", () => {
     const dir = repository({ "playground/antelope.config.ts": "export default {};\n" });
@@ -404,7 +407,7 @@ describe("module-locks-committed action", () => {
 });
 
 describe("module-locks-renovate.yml", () => {
-  function bump(files: Record<string, string>, bumped: Record<string, string>, recorded: Record<string, string>): { dir: string; prune: StepResult } {
+  function bump(files: Record<string, string>, bumped: Record<string, string>, recorded: Record<string, string>) {
     const dir = repository(files);
     git(dir, "checkout", "-qb", "renovate/antelopejs-modules");
     write(dir, bumped);
@@ -447,7 +450,7 @@ describe("module-locks-renovate.yml", () => {
 
   test("copies only module lock files from the artifacts, and refuses anything else", () => {
     const dir = repository(lock("antelope-lock", "@antelopejs/api@1.0.0"));
-    const artifacts = (files: Record<string, string>): Record<string, string> => {
+    const artifacts = (files: Record<string, string>) => {
       const temp = mkdtempSync(join(root, "artifacts-"));
       write(join(temp, "module-locks-artifacts"), files);
       return { RUNNER_TEMP: temp };
