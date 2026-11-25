@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadBaseline } from "./baseline.ts";
 import { collect } from "./github.ts";
+import { parseJson } from "./json.ts";
 import { formatTable, parseDataset, report, type Dataset, type Inputs } from "./metrics.ts";
 
 const usage = `usage: node scripts/ci-metrics/main.ts [options]
@@ -50,7 +51,7 @@ function count(name: string, value: string): number {
 }
 
 function load(file: string): Dataset {
-  const dataset = parseDataset(JSON.parse(readFileSync(file, "utf8")));
+  const dataset = parseDataset(parseJson(readFileSync(file, "utf8")));
   if (dataset === null) {
     process.stderr.write(`${file} is not a dataset that --save wrote\n`);
     process.exit(2);

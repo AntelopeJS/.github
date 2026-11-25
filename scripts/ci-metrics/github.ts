@@ -1,34 +1,31 @@
 import { execFileSync } from "node:child_process";
+import { isList, isNumber, isObject, isText, parseJson, textOf, type Json } from "./json.ts";
 import { isCi, isTierJob, parseTier, pickSample, type Dataset, type Job, type Run } from "./metrics.ts";
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
-
 /** A job of the REST API's `jobs` list, or `null` when the value is not one. */
-export function parseJob(raw: unknown): Job | null {
-  if (!isRecord(raw) || typeof raw.name !== "string") return null;
+export function parseJob(raw: Json): Job | null {
+  if (!isObject(raw) || !isText(raw.name)) return null;
   return {
     name: raw.name,
-    conclusion: text(raw.conclusion),
-    createdAt: text(raw.created_at),
-    startedAt: text(raw.started_at),
-    completedAt: text(raw.completed_at),
+    conclusion: textOf(raw.conclusion),
+    createdAt: textOf(raw.created_at),
+    startedAt: textOf(raw.started_at),
+    completedAt: textOf(raw.completed_at),
   };
 }
 
 /** The jobs of a `jobs` page of the REST API. */
-export function parseJobs(raw: unknown): Job[] {
-  if (!isRecord(raw) || !Array.isArray(raw.jobs)) return [];
-  return raw.jobs.flatMap((job: unknown) => parseJob(job) ?? []);
+export function parseJobs(raw: Json): Job[] {
+  if (!isObject(raw) || !isList(raw.jobs)) return [];
+  return raw.jobs.flatMap((job) => parseJob(job) ?? []);
 }
 
 /** The id of the `Tier` job on a `jobs` page of the REST API, if the page lists one that ran. */
-export function tierJobId(raw: unknown): number | undefined {
-  if (!isRecord(raw) || !Array.isArray(raw.jobs)) return undefined;
+export function tierJobId(raw: Json): number | undefined {
+  if (!isObject(raw) || !isList(raw.jobs)) return undefined;
   for (const job of raw.jobs) {
     const parsed = parseJob(job);
-    if (parsed !== null && isTierJob(parsed) && parsed.conclusion !== "skipped" && isRecord(job) && typeof job.id === "number") {
+    if (parsed !== null && isTierJob(parsed) && parsed.conclusion !== "skipped" && isObject(job) && isNumber(job.id)) {
       return job.id;
     }
   }
@@ -39,15 +36,15 @@ export function tierJobId(raw: unknown): number | undefined {
  * A workflow run of the REST API, or `null` when the value is not one. `fallback` names the repository and
  * workflow of a record that lacks them.
  */
-export function parseRun(raw: unknown, fallback: { repo?: string; workflow?: string; path?: string } = {}): Run | null {
-  if (!isRecord(raw) || typeof raw.id !== "number") return null;
-  const repository = isRecord(raw.repository) ? text(raw.repository.name) : null;
-  const repo = text(raw.repo) ?? repository ?? fallback.repo;
-  const workflow = text(raw.name) ?? fallback.workflow;
-  const startedAt = text(raw.run_started_at) ?? text(raw.created_at);
-  const updatedAt = text(raw.updated_at);
-  const event = text(raw.event);
-  const status = text(raw.status);
+export function parseRun(raw: Json, fallback: { repo?: string; workflow?: string; path?: string } = {}): Run | null {
+  if (!isObject(raw) || !isNumber(raw.id)) return null;
+  const repository = isObject(raw.repository) ? textOf(raw.repository.name) : null;
+  const repo = textOf(raw.repo) ?? repository ?? fallback.repo;
+  const workflow = textOf(raw.name) ?? fallback.workflow;
+  const startedAt = textOf(raw.run_started_at) ?? textOf(raw.created_at);
+  const updatedAt = textOf(raw.updated_at);
+  const event = textOf(raw.event);
+  const status = textOf(raw.status);
   if (repo === undefined || workflow === undefined || startedAt === null || updatedAt === null || event === null || status === null) {
     return null;
   }
@@ -55,10 +52,10 @@ export function parseRun(raw: unknown, fallback: { repo?: string; workflow?: str
     repo,
     id: raw.id,
     workflow,
-    path: text(raw.path) ?? fallback.path ?? workflow,
+    path: textOf(raw.path) ?? fallback.path ?? workflow,
     event,
     status,
-    conclusion: text(raw.conclusion),
+    conclusion: textOf(raw.conclusion),
     startedAt,
     updatedAt,
   };
@@ -148,16 +145,16 @@ export async function pool<T, R>(items: readonly T[], size: number, work: (item:
 
 /** The organization's unarchived repositories, with their default branch. */
 export async function listRepos(
-  json: (path: string) => Promise<unknown>,
+  json: (path: string) => Promise<Json>,
   org: string,
 ): Promise<{ name: string; defaultBranch: string }[]> {
   const repos: { name: string; defaultBranch: string }[] = [];
   for (let page = 1; ; page++) {
     const listed = await json(`/orgs/${org}/repos?type=all&per_page=100&page=${page}`);
-    if (!Array.isArray(listed) || listed.length === 0) return repos;
+    if (!isList(listed) || listed.length === 0) return repos;
     for (const repo of listed) {
-      if (isRecord(repo) && repo.archived !== true && typeof repo.name === "string") {
-        repos.push({ name: repo.name, defaultBranch: text(repo.default_branch) ?? "main" });
+      if (isObject(repo) && repo.archived !== true && isText(repo.name)) {
+        repos.push({ name: repo.name, defaultBranch: textOf(repo.default_branch) ?? "main" });
       }
     }
   }
@@ -169,9 +166,9 @@ export async function listRepos(
  */
 export async function collect(options: CollectOptions, fetcher: typeof fetch = fetch): Promise<Dataset> {
   const request = client(fetcher);
-  const json = async (path: string): Promise<unknown> => {
+  const json = async (path: string): Promise<Json> => {
     const response = await request(path);
-    return response.ok ? response.json() : null;
+    return response.ok ? parseJson(await response.text()) : null;
   };
 
   const repos = (await listRepos(json, options.org)).map((repo) => repo.name);
@@ -183,8 +180,8 @@ export async function collect(options: CollectOptions, fetcher: typeof fetch = f
     const runs: Run[] = [];
     for (let page = 1; ; page++) {
       const listed = await json(`/repos/${options.org}/${repo}/actions/runs?per_page=100&page=${page}&created=${range}`);
-      if (!isRecord(listed) || !Array.isArray(listed.workflow_runs)) return runs;
-      if (page === 1 && typeof listed.total_count === "number" && listed.total_count > maxListed && end - start > 60_000) {
+      if (!isObject(listed) || !isList(listed.workflow_runs)) return runs;
+      if (page === 1 && isNumber(listed.total_count) && listed.total_count > maxListed && end - start > 60_000) {
         const middle = start + Math.floor((end - start) / 2000) * 1000;
         return [...(await listRuns(repo, start, middle)), ...(await listRuns(repo, middle, end))];
       }
