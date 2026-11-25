@@ -1,18 +1,7 @@
 name: CI metrics checks
 
 on:
-  pull_request:
-    paths:
-      - scripts/ci-metrics/**
-      - .github/workflows/ci-metrics-checks.yml
-      - .github/workflows/ci-metrics-nightly.yml
-  push:
-    branches:
-      - main
-    paths:
-      - scripts/ci-metrics/**
-      - .github/workflows/ci-metrics-checks.yml
-      - .github/workflows/ci-metrics-nightly.yml
+  workflow_call:
 
 permissions:
   contents: read
