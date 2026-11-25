@@ -9,7 +9,7 @@
   timezone: 'Europe/Brussels',
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   rebaseWhen: 'conflicted',
-  ignorePaths: ['**/node_modules/**', '**/bower_components/**', '**/vendor/**', '**/examples/**', '**/__tests__/**', '**/tests/**', '**/__fixtures__/**'],
+  ignorePaths: ['**/node_modules/**', '**/bower_components/**', '**/vendor/**', '**/examples/**', '**/__tests__/**', '**/tests/**', '**/__fixtures__/**', 'workflow-templates/**'],
   customManagers: [
     {
       customType: 'regex',
