@@ -1,0 +1,36 @@
+name: Checks
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  ci-metrics:
+    uses: ./.github/workflows/ci-metrics-checks.yml
+
+  ci-tier:
+    uses: ./.github/workflows/ci-tier-checks.yml
+
+  module-locks:
+    uses: ./.github/workflows/module-locks-checks.yml
+
+  release-train:
+    uses: ./.github/workflows/release-train-checks.yml
+
+  checks:
+    needs: [ci-metrics, ci-tier, module-locks, release-train]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e 'all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null && exit 0
+          jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          exit 1

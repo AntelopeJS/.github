@@ -967,6 +967,12 @@ described in [npm releases](#npm-releases). There
 is no integration branch: nothing needs promoting, and `main` stays releasable
 as stable at any time.
 
+This repository's own merge queue requires `checks`, the verdict job of
+`checks.yml`. It runs on every pull request and merge group, with no path
+filter, and calls the reusable `ci-metrics-checks.yml`, `ci-tier-checks.yml`,
+`module-locks-checks.yml` and `release-train-checks.yml`. It fails and names
+each one whose result is not `success`.
+
 `scripts/next-branch-setup.sh <owner>/<repo>` sets up a rolling branch for a
 repository that still keeps one, `cloud` with its `develop`, and defaults to
 `--branch develop`. It prints the
