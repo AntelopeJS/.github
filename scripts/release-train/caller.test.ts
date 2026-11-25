@@ -42,6 +42,111 @@ function entries(text: string, path: readonly string[]): Map<string, string[]> {
 
 const declared = [...entries(caller, ["workflow_dispatch", "inputs"]).keys()];
 
+function registerWrapperTests(registry: string): void {
+  const file = `release-npm-${registry}.yml`;
+  const entry = read(`../../.github/workflows/${file}`);
+  const job =
+    registry === "public"
+      ? caller
+      : caller
+          .replace("release-npm-public.yml", file)
+          .replace("  id-token: write\n", "")
+          .replace(/(\n {6}RELEASE_APP_PRIVATE_KEY: .*\n)/, "$1      NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}\n");
+
+  test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
+    assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
+    const accepted = entries(entry, ["workflow_call", "inputs"]);
+    const passed = [...entries(job, ["jobs", "release", "with"]).keys()];
+    assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
+    const required = [...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name);
+    assert.deepEqual(required.filter((name) => !passed.includes(name)), []);
+    const declaredSecrets = entries(entry, ["workflow_call", "secrets"]);
+    assert.deepEqual([...declaredSecrets].filter(([, lines]) => lines.includes("required: true")), []);
+    const passedSecrets = entries(job, ["jobs", "release", "secrets"]);
+    assert.deepEqual([...passedSecrets.keys()].sort(), [...declaredSecrets.keys()].sort(), `the caller forwards every secret ${file} declares`);
+    for (const [name, value] of passedSecrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
+    const granted = entries(job, ["permissions"]);
+    for (const [scope, [level = ""]] of entries(entry, ["jobs", "release", "permissions"])) {
+      const grant = granted.get(scope)?.[0];
+      assert.ok(level === "read" ? grant === "read" || grant === "write" : grant === level, `${file} asks ${scope}: ${level}, the caller grants ${grant}`);
+    }
+  });
+
+  test(`${file} forwards every input but integration-branch and every secret to release-npm.yml, and names its registry`, () => {
+    const forwarded = entries(entry, ["jobs", "release", "with"]);
+    assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
+    assert.deepEqual(forwarded.get("registry"), [registry]);
+    const declaredInputs = entries(entry, ["workflow_call", "inputs"]);
+    assert.deepEqual(
+      [...declaredInputs.keys()].filter((name) => !forwarded.has(name)),
+      ["integration-branch"],
+    );
+    assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
+    for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
+    const secrets = entries(entry, ["jobs", "release", "secrets"]);
+    assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
+    for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
+  });
+
+  test(`${file} resolves the caller's preview and stable dispatches without any other input`, () => {
+    const step = (() => {
+      const lines = release.split("\n");
+      const start = lines.indexOf("      - name: Resolve release mode");
+      const run = lines.indexOf("        run: |", start);
+      const body: string[] = [];
+      for (const line of lines.slice(run + 1)) {
+        if (line !== "" && !line.startsWith("          ")) break;
+        body.push(line.slice(10));
+      }
+      return body.join("\n");
+    })();
+    writeFileSync(join(scratch, "mode.sh"), step);
+    const accepted = entries(entry, ["workflow_call", "inputs"]);
+    const wired = entries(job, ["jobs", "release", "with"]);
+    const forwarded = entries(entry, ["jobs", "release", "with"]);
+    const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
+    const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
+      const input = (name: string): string => {
+        const [, passed, isTrue] = /^\$\{\{ inputs\.([\w-]+)( == true)? \}\}$/.exec(wired.get(name)?.[0] ?? "") ?? [];
+        const value = passed === undefined ? undefined : (new Map(Object.entries(dispatched)).get(passed) ?? "");
+        if (value !== undefined) return isTrue === undefined ? value : String(value === "true");
+        const fallback = accepted.get(name)?.find((line) => line.startsWith("default: "))?.slice(9) ?? "";
+        return fallback.replace(/^"(.*)"$/, "$1");
+      };
+      const expression = (value: string): string => {
+        if (value === "${{ github.event.repository.default_branch }}") return "main";
+        if (value === "${{ github.event.pull_request.number }}") return pullRequest;
+        const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
+        assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
+        const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(forwarded.get(name)?.[0] ?? "")?.[1];
+        assert.ok(passed !== undefined, `${file} does not forward ${name}`);
+        return input(passed);
+      };
+      const env = Object.fromEntries([...stepEnv].map(([name, [value = ""]]) => [name, expression(value)]));
+      const output = join(scratch, `output-${event}`);
+      writeFileSync(output, "");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", join(scratch, "mode.sh")], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: output,
+          GITHUB_EVENT_NAME: event,
+          GITHUB_REF: ref,
+          ...env,
+        },
+      });
+      return [result.status, readText(output), result.stderr];
+    };
+    assert.doesNotMatch(caller, /^ {2}push:$/m, "the frozen caller publishes nothing on a push");
+    const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}", preview: "false" };
+    assert.deepEqual(Object.keys(dispatched), declared);
+    assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);
+    assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
+    assert.deepEqual(resolve("workflow_dispatch", "refs/heads/work/ant-12-cache", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
+    assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", {}), [1, "", "A dispatch of main needs release-commit as the 40-character SHA of the planned commit, got ''.\n"]);
+  });
+}
+
 describe("the frozen caller", () => {
   test("declares every input the release train dispatches for a package at the root", () => {
     const { system, calls } = fakeSystem();
@@ -62,12 +167,12 @@ describe("the frozen caller", () => {
     const accepted = entries(release, ["workflow_call", "inputs"]);
     assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name), ["registry"]);
     assert.equal(accepted.has("integration-branch"), false);
-    const shape = (lines: string[] | undefined) => lines?.filter((line) => line.startsWith("default: ") || line.startsWith("type: "));
+    const inputDefaults = (lines: string[] | undefined) => lines?.filter((line) => line.startsWith("default: ") || line.startsWith("type: "));
     for (const file of ["release-npm-public.yml", "release-npm-private.yml"]) {
       const wrapper = entries(read(`../../.github/workflows/${file}`), ["workflow_call", "inputs"]);
       for (const name of accepted.keys()) {
         if (name === "registry" || (name === "install-core" && file.includes("private"))) continue;
-        assert.deepEqual(shape(accepted.get(name)), shape(wrapper.get(name)), `${file} ${name}`);
+        assert.deepEqual(inputDefaults(accepted.get(name)), inputDefaults(wrapper.get(name)), `${file} ${name}`);
       }
     }
     const direct = caller.replace("release-npm-public.yml", "release-npm.yml").replace("    with:\n", "    with:\n      registry: public\n");
@@ -76,110 +181,7 @@ describe("the frozen caller", () => {
     assert.deepEqual([...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name).filter((name) => !passed.includes(name)), []);
   });
 
-  for (const registry of ["public", "private"]) {
-    const file = `release-npm-${registry}.yml`;
-    const entry = read(`../../.github/workflows/${file}`);
-    const job =
-      registry === "public"
-        ? caller
-        : caller
-            .replace("release-npm-public.yml", file)
-            .replace("  id-token: write\n", "")
-            .replace(/(\n {6}RELEASE_APP_PRIVATE_KEY: .*\n)/, "$1      NPM_ANTELOPE_TOKEN: ${{ secrets.NPM_ANTELOPE_TOKEN }}\n");
-
-    test(`calls ${file} with inputs, secrets and permissions it accepts`, () => {
-      assert.match(job, new RegExp(`uses: AntelopeJS/\\.github/\\.github/workflows/${file.replace(".", "\\.")}@v2\\n`));
-      const accepted = entries(entry, ["workflow_call", "inputs"]);
-      const passed = [...entries(job, ["jobs", "release", "with"]).keys()];
-      assert.deepEqual(passed.filter((name) => !accepted.has(name)), []);
-      const required = [...accepted].filter(([, lines]) => lines.includes("required: true")).map(([name]) => name);
-      assert.deepEqual(required.filter((name) => !passed.includes(name)), []);
-      const declaredSecrets = entries(entry, ["workflow_call", "secrets"]);
-      assert.deepEqual([...declaredSecrets].filter(([, lines]) => lines.includes("required: true")), []);
-      const passedSecrets = entries(job, ["jobs", "release", "secrets"]);
-      assert.deepEqual([...passedSecrets.keys()].sort(), [...declaredSecrets.keys()].sort(), `the caller forwards every secret ${file} declares`);
-      for (const [name, value] of passedSecrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
-      const granted = entries(job, ["permissions"]);
-      for (const [scope, [level = ""]] of entries(entry, ["jobs", "release", "permissions"])) {
-        const grant = granted.get(scope)?.[0];
-        assert.ok(level === "read" ? grant === "read" || grant === "write" : grant === level, `${file} asks ${scope}: ${level}, the caller grants ${grant}`);
-      }
-    });
-
-    test(`${file} forwards every input but integration-branch and every secret to release-npm.yml, and names its registry`, () => {
-      const forwarded = entries(entry, ["jobs", "release", "with"]);
-      assert.deepEqual([...forwarded.keys()].sort(), [...entries(release, ["workflow_call", "inputs"]).keys()].sort());
-      assert.deepEqual(forwarded.get("registry"), [registry]);
-      const declaredInputs = entries(entry, ["workflow_call", "inputs"]);
-      assert.deepEqual(
-        [...declaredInputs.keys()].filter((name) => !forwarded.has(name)),
-        ["integration-branch"],
-      );
-      assert.equal(declaredInputs.get("integration-branch")?.some((line) => line.startsWith("default:")), false);
-      for (const name of declaredInputs.keys()) if (forwarded.has(name)) assert.deepEqual(forwarded.get(name), [`\${{ inputs.${name} }}`]);
-      const secrets = entries(entry, ["jobs", "release", "secrets"]);
-      assert.deepEqual([...secrets.keys()], [...entries(entry, ["workflow_call", "secrets"]).keys()]);
-      for (const [name, value] of secrets) assert.deepEqual(value, [`\${{ secrets.${name} }}`]);
-    });
-
-    test(`${file} resolves the caller's preview and stable dispatches without any other input`, () => {
-      const step = (() => {
-        const lines = release.split("\n");
-        const start = lines.indexOf("      - name: Resolve release mode");
-        const run = lines.indexOf("        run: |", start);
-        const body: string[] = [];
-        for (const line of lines.slice(run + 1)) {
-          if (line !== "" && !line.startsWith("          ")) break;
-          body.push(line.slice(10));
-        }
-        return body.join("\n");
-      })();
-      writeFileSync(join(scratch, "mode.sh"), step);
-      const accepted = entries(entry, ["workflow_call", "inputs"]);
-      const wired = entries(job, ["jobs", "release", "with"]);
-      const forwarded = entries(entry, ["jobs", "release", "with"]);
-      const stepEnv = entries(release.slice(release.indexOf("      - name: Resolve release mode")), ["env"]);
-      const resolve = (event: string, ref: string, dispatched: Record<string, string>, pullRequest = "") => {
-        const input = (name: string): string => {
-          const [, passed, isTrue] = /^\$\{\{ inputs\.([\w-]+)( == true)? \}\}$/.exec(wired.get(name)?.[0] ?? "") ?? [];
-          const value = passed === undefined ? undefined : (new Map(Object.entries(dispatched)).get(passed) ?? "");
-          if (value !== undefined) return isTrue === undefined ? value : String(value === "true");
-          const fallback = accepted.get(name)?.find((line) => line.startsWith("default: "))?.slice(9) ?? "";
-          return fallback.replace(/^"(.*)"$/, "$1");
-        };
-        const expression = (value: string): string => {
-          if (value === "${{ github.event.repository.default_branch }}") return "main";
-          if (value === "${{ github.event.pull_request.number }}") return pullRequest;
-          const name = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(value)?.[1];
-          assert.ok(name !== undefined, `the test cannot evaluate ${value}`);
-          const passed = /^\$\{\{ inputs\.([\w-]+) \}\}$/.exec(forwarded.get(name)?.[0] ?? "")?.[1];
-          assert.ok(passed !== undefined, `${file} does not forward ${name}`);
-          return input(passed);
-        };
-        const env = Object.fromEntries([...stepEnv].map(([name, [value = ""]]) => [name, expression(value)]));
-        const output = join(scratch, `output-${event}`);
-        writeFileSync(output, "");
-        const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", join(scratch, "mode.sh")], {
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            GITHUB_OUTPUT: output,
-            GITHUB_EVENT_NAME: event,
-            GITHUB_REF: ref,
-            ...env,
-          },
-        });
-        return [result.status, readText(output), result.stderr];
-      };
-      assert.doesNotMatch(caller, /^ {2}push:$/m, "the frozen caller publishes nothing on a push");
-      const dispatched = { "release-version": "0.5.0", "release-commit": "a".repeat(40), "dependency-ranges": "{}", preview: "false" };
-      assert.deepEqual(Object.keys(dispatched), declared);
-      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", dispatched), [0, "mode=stable\n", ""]);
-      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
-      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/work/ant-12-cache", { preview: "true" }), [0, "mode=preview\ntag=next\n", ""]);
-      assert.deepEqual(resolve("workflow_dispatch", "refs/heads/main", {}), [1, "", "A dispatch of main needs release-commit as the 40-character SHA of the planned commit, got ''.\n"]);
-    });
-  }
+  for (const registry of ["public", "private"]) registerWrapperTests(registry);
 });
 
 test("no workflow declares or reads RELEASE_GITHUB_TOKEN, and each workflow that writes to the repository mints an app token", () => {

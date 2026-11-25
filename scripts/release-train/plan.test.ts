@@ -1,166 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
-import {
-  commitLevel,
-  computePlan,
-  isRegistrySpec,
-  renderPlan,
-  revertedCommits,
-  withoutReverts,
-  type Commit,
-  type Entry,
-  type Manifest,
-  type PackageSource,
-  type Reverted,
-} from "./plan.ts";
+import { commitLevel, renderPlan, revertedCommits, withoutReverts, type Commit, type Manifest, type PackageSource } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
+import { isRegistrySpec } from "./version.ts";
 import { readText } from "./helpers/read.ts";
+import { at, commit, dmsDatabase, entry, interfaceDatabase, mongodb, names, plan, source } from "./helpers/plan-sources.ts";
 
-function commit(subject: string, body = "", reverts: readonly Reverted[] = []): Commit {
-  return { sha: createHash("sha1").update(subject).digest("hex"), subject, level: commitLevel(subject, body), reverts };
-}
-
-function source(
-  name: string,
-  stable: string | null,
-  subjects: string[],
-  fields: Partial<Manifest> = {},
-  stableFields: Partial<Manifest> = fields,
-): PackageSource {
-  const commits = subjects.map((subject) => commit(subject));
-  return {
-    slug: `AntelopeJS/${name}`,
-    directory: ".",
-    branch: "main",
-    head: createHash("sha1").update(name).digest("hex"),
-    tagName: "v${version}",
-    manifest: { name: `@antelopejs/${name}`, version: stable ?? "0.1.0", ...fields },
-    stable,
-    stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
-    stableSiblings: {},
-    commits,
-    notes: commits,
-  };
-}
-
-function plan(sources: PackageSource[], exclude: string[] = [], contains = (_name: string, _sha: string) => true) {
-  return computePlan(sources, { ref: "main", exclude, contains });
-}
-
-function at(name: string): string {
-  return createHash("sha1").update(name).digest("hex").slice(0, 7);
-}
-
-function entry(entries: Entry[], name: string): Entry {
-  const found = entries.find((candidate) => candidate.source.manifest.name === `@antelopejs/${name}`);
-  assert.ok(found, `no entry for ${name}`);
-  return found;
-}
-
-function names(entries: Entry[]): string[] {
-  return entries.map((candidate) => candidate.source.manifest.name.replace("@antelopejs/", ""));
-}
-
-const interfaceDatabase = source("interface-database", "0.4.2", ["feat(query)!: drop the legacy cursor"], {
-  devDependencies: { "@antelopejs/mongodb": "~1.8.6" },
-});
-const mongodb = source("mongodb", "1.8.6", ["fix(database): close the change feed"], {
-  dependencies: { "@antelopejs/interface-database": "0.5.0-next.12.g3f9a2c1" },
-});
-const dmsDatabase = source("dms-database", "0.5.3", ["fix(data): translate refusals"], {
-  dependencies: { "@antelopejs/interface-database": ">=0.4.0 <0.5.0" },
-  devDependencies: { "@antelopejs/mongodb": "1.8.7-next.40.gabc1234" },
-});
-
-describe("commitLevel", () => {
-  test("a breaking change is a minor, any other releasable type a patch", () => {
-    assert.equal(commitLevel("feat(query)!: drop the cursor", ""), "minor");
-    assert.equal(commitLevel("fix: x", "Details.\n\nBREAKING CHANGE: the cursor is gone"), "minor");
-    assert.equal(commitLevel("refactor: x", "BREAKING-CHANGE: renamed"), "minor");
-    for (const type of ["feat", "fix", "perf", "refactor", "types", "revert"]) {
-      assert.equal(commitLevel(`${type}(scope): x`, ""), "patch", type);
-    }
-  });
-
-  test("the pull request title check accepts a revert, which releases a patch", () => {
-    const workflow = readText(new URL("../../.github/workflows/ci-node.yml", import.meta.url));
-    const pattern = /pattern='([^']+)'/.exec(workflow)?.[1];
-    assert.ok(pattern, "ci-node.yml has a title pattern");
-    assert.match("revert(builder): restore the sample rows", new RegExp(pattern));
-    assert.equal(commitLevel("revert(builder): restore the sample rows", ""), "patch");
-  });
-
-  test("tooling types, unparsed subjects and merges release nothing", () => {
-    for (const subject of ["build: x", "ci(release): x", "chore: x", "test: x", "docs: x", "style: x", "Update README", "Merge pull request #12 from a/b"]) {
-      assert.equal(commitLevel(subject, ""), null, subject);
-    }
-  });
-});
-
-describe("withoutReverts", () => {
-  const breaking = commit("refactor(builder)!: remove the sample rows (#1093)");
-  const fix = commit("fix(builder): close the cursor (#1094)");
-  const restore = commit("refactor(builder): restore the sample rows (#1098)", "", [{ sha: breaking.sha }]);
-  const levelOf = (commits: Commit[]) => {
-    const found = plan([{ ...source("builder", "0.5.2", []), commits: withoutReverts(commits), notes: withoutReverts(commits) }]).entries[0];
-    return found?.status === "release" ? found.level : found?.status;
-  };
-
-  test("a commit and its revert in the same range count for nothing, so the level is the other commits'", () => {
-    assert.deepEqual(withoutReverts([restore, fix, breaking]), [fix]);
-    assert.equal(levelOf([restore, fix, breaking]), "patch");
-    assert.equal(levelOf([restore, breaking]), "unchanged");
-  });
-
-  test("a revert that names two commits cancels both", () => {
-    const other = commit("feat(builder)!: drop the cursor (#1095)");
-    const both = commit("revert: restore the rows and the cursor (#1099)", "", [{ sha: breaking.sha }, { sha: other.sha }]);
-    assert.deepEqual(withoutReverts([both, other, fix, breaking]), [fix]);
-  });
-
-  test("an abbreviated SHA names the commit it reverts", () => {
-    const short = commit("revert: remove the sample rows", "", [{ sha: breaking.sha.slice(0, 9) }]);
-    assert.deepEqual(withoutReverts([short, fix, breaking]), [fix]);
-  });
-
-  test("a pull request number names the squash commit whose subject ends with it", () => {
-    const byPull = commit("refactor(builder): restore the sample rows (#1098)", "", [{ pull: 1093 }]);
-    assert.deepEqual(withoutReverts([byPull, fix, breaking]), [fix]);
-    assert.deepEqual(withoutReverts([commit("revert: x", "", [{ pull: 109 }]), breaking]).length, 2);
-  });
-
-  test("a revert of a commit older than the range counts as a change", () => {
-    const older = commit("revert: drop the cursor", "", [{ sha: "0123456789abcdef0123456789abcdef01234567" }]);
-    assert.deepEqual(withoutReverts([older]), [older]);
-    assert.equal(levelOf([older]), "patch");
-  });
-
-  test("a revert of a revert cancels that revert and leaves the first commit", () => {
-    const again = commit("refactor(builder)!: remove the sample rows again (#1100)", "", [{ sha: restore.sha }]);
-    assert.deepEqual(withoutReverts([again, restore, fix, breaking]), [fix, breaking]);
-    assert.equal(levelOf([again, restore, fix, breaking]), "minor");
-  });
-
-  test("reads the commits a message reverts from git's line and from a reference to a pull request of the same repository", () => {
-    const body = "Restores it.\n\nThis reverts commit daa3203f4.\nReverts antelopejs/DMS#1093\nReverts AntelopeJS/other#7";
-    assert.deepEqual(revertedCommits(body, "AntelopeJS/dms"), [{ sha: "daa3203f4" }, { pull: 1093 }]);
-    assert.deepEqual(revertedCommits("Mentions This reverts commit daa3203f4 inline.", "AntelopeJS/dms"), []);
-  });
-});
-
-describe("isRegistrySpec", () => {
-  test("accepts a semver range or an npm alias to one, and nothing that resolves outside the registry", () => {
-    for (const spec of registrySpecs) assert.equal(isRegistrySpec(spec), true, spec);
-    for (const spec of nonRegistrySpecs) assert.equal(isRegistrySpec(spec), false, spec);
-  });
-
-  test("refuses a long run of comparators and spaces in linear time", { timeout: 2000 }, () => {
-    assert.equal(isRegistrySpec(`${Array.from({ length: 40 }, () => "1").join("      ")}!`), false);
-  });
-});
-
-describe("computePlan", () => {
+function registerWorkspaceSpecTests(): void {
   test("refuses a runtime dependency that does not resolve from the registry, and lets a devDependency one through", () => {
     const local = source("mongodb", "1.8.6", ["fix(database): use the local interface"], {
       dependencies: { "@antelopejs/interface-database": "file:../interface-database" },
@@ -274,7 +120,9 @@ describe("computePlan", () => {
     const found = entry(plan([dependent({ "@antelopejs/interface-dms-saas": "workspace:^" }), minor]).entries, "dms-saas");
     assert.deepEqual(found.status === "release" && [found.to, found.level], ["0.12.2", "patch"]);
   });
+}
 
+function registerWorkspaceRefusalTests(): void {
   test("refuses a workspace spec on a sibling the plan cannot pack to a version npm holds", () => {
     const inRepo = (name: string, stable: string | null, subjects: string[], fields: Partial<Manifest> = {}) => ({
       ...source(name, stable, subjects, fields),
@@ -388,323 +236,99 @@ describe("computePlan", () => {
     assert.equal(mongo.status === "release" && mongo.ranges["@antelopejs/interface-database"], ">=0.5.0 <0.6.0");
     assert.equal(dms.status === "release" && dms.ranges["@antelopejs/mongodb"], ">=1.8.7 <1.9.0");
   });
+}
 
-  test("a pin on an unchanged package moves to its stable release", () => {
-    const x = source("x", "0.2.1", ["chore: tidy"]);
-    const pinned = source("dms", "0.20.2", [], { dependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" } });
-    assert.deepEqual(entry(plan([pinned, x]).entries, "dms"), {
-      status: "release",
-      source: pinned,
-      from: "0.20.2",
-      to: "0.20.3",
-      level: "patch",
-      reasons: ["replaces preview pins"],
-      ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
-      kept: [],
-      siblings: [],
-    });
-  });
-
-  test("a devDependency pin on an unchanged package is rewritten without a release, and a runtime pin beside it still releases", () => {
-    const x = source("x", "0.2.1", ["chore: tidy"]);
-    const tooling = source("dms-api", "0.20.2", ["chore: tidy"], { devDependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" } });
-    const result = plan([tooling, x]);
-    assert.deepEqual(entry(result.entries, "dms-api"), {
-      status: "repin",
-      source: tooling,
-      ranges: { "@antelopejs/x": ">=0.2.1 <0.3.0" },
-    });
-    assert.equal(
-      renderPlan(result),
-      [
-        "Release plan from main, 1 package: 1 to repin",
-        "",
-        `1. @antelopejs/dms-api repins devDependencies, publishes nothing  AntelopeJS/dms-api@${at("dms-api")}`,
-        "     @antelopejs/x 0.2.1-next.3.gabc1234 -> >=0.2.1 <0.3.0",
-        "Unchanged: @antelopejs/x, only chore commits since 0.2.1",
-        "",
-      ].join("\n"),
-    );
-    const runtime = source("dms", "0.20.2", [], {
-      dependencies: { "@antelopejs/x": "0.2.1-next.3.gabc1234" },
-      devDependencies: { "@antelopejs/y": "0.4.0-next.1.gabc1234" },
-    });
-    const both = entry(plan([runtime, x, source("y", "0.4.0", [])]).entries, "dms");
-    assert.deepEqual(both.status === "release" && [both.to, both.reasons, both.ranges], [
-      "0.20.3",
-      ["replaces preview pins"],
-      { "@antelopejs/x": ">=0.2.1 <0.3.0", "@antelopejs/y": ">=0.4.0 <0.5.0" },
-    ]);
-  });
-
-  test("a runtime range change on the name of a devDependency pin still releases", () => {
-    const core = source("core", "1.1.0", []);
-    const accepting = source(
-      "dms-api",
-      "0.20.2",
-      ["chore(deps): accept core 1.1"],
-      { peerDependencies: { "@antelopejs/core": ">=1.1.0 <1.2.0" }, devDependencies: { "@antelopejs/core": "1.1.0-next.4.gabc1234" } },
-      { peerDependencies: { "@antelopejs/core": ">=1.0.0 <1.1.0" } },
-    );
-    const found = entry(plan([accepting, core]).entries, "dms-api");
-    assert.deepEqual(found.status === "release" && [found.to, found.reasons], [
-      "0.20.3",
-      ["moves peerDependencies @antelopejs/core >=1.0.0 <1.1.0 -> >=1.1.0 <1.2.0"],
-    ]);
-  });
-
-  test("refuses a package whose preview dependency is left out, unlisted or has no stable release", () => {
-    const excluded = plan([interfaceDatabase, mongodb], ["@antelopejs/interface-database"]).entries;
-    assert.equal(entry(excluded, "interface-database").status, "excluded");
-    assert.deepEqual(entry(excluded, "mongodb"), {
-      status: "refused",
-      source: mongodb,
-      reasons: ["depends on preview @antelopejs/interface-database@0.5.0-next.12.g3f9a2c1, which is not in this release"],
-    });
-
-    const x = source("x", null, []);
-    const pinned = source("dms", "0.20.2", ["fix: x"], {
-      peerDependencies: { "@antelopejs/x": "0.2.0-next.3.gabc1234", "@antelopejs/y": "0.1.0-next.1.gabc1234" },
-    });
-    assert.deepEqual(entry(plan([pinned, x]).entries, "dms"), {
-      status: "refused",
-      source: pinned,
-      reasons: [
-        "depends on preview @antelopejs/x@0.2.0-next.3.gabc1234, which has no stable release",
-        "depends on preview @antelopejs/y@0.1.0-next.1.gabc1234, which this train does not list",
-      ],
-    });
-  });
-
-  test("refuses a pin whose base is above its dependency's stable or planned release, that is not exact or whose last part names no commit", () => {
-    const pinned = source("dms", "0.20.2", ["fix: x"], {
-      dependencies: {
-        "@antelopejs/x": "0.3.0-next.1.gabc1234",
-        "@antelopejs/z": "0.2.9-beta.1",
-        "@antelopejs/w": "0.3.0-next.4.gabc1234",
-        "@antelopejs/v": "0.2.10-next.g3f9a2c1.4",
-      },
-      optionalDependencies: { "@antelopejs/y": "^0.1.0-next.2" },
-    });
-    const listed = [source("x", "0.2.9", []), source("y", "0.1.0", []), source("z", "0.2.9", []), source("w", "0.2.9", ["fix: w"]), source("v", "0.2.9", ["fix: v"])];
-    const refused = entry(plan([pinned, ...listed], [], (name) => name !== "@antelopejs/x").entries, "dms");
-    assert.deepEqual(refused.status === "refused" && refused.reasons, [
-      "depends on preview @antelopejs/x@0.3.0-next.1.gabc1234, whose stable 0.2.9 is older than 0.3.0",
-      "depends on preview @antelopejs/z@0.2.9-beta.1, which names no commit",
-      "depends on preview @antelopejs/w@0.3.0-next.4.gabc1234, whose stable 0.2.10 is older than 0.3.0",
-      "depends on preview @antelopejs/v@0.2.10-next.g3f9a2c1.4, which names no commit",
-      "depends on preview @antelopejs/y@^0.1.0-next.2, which is not an exact version",
-    ]);
-  });
-
-  test("moves a pin of the preview cut from a release commit to that stable release, whose tag holds the commit", () => {
-    const dependent = source("e", "0.1.0", ["fix: e"], { dependencies: { "@antelopejs/p": "1.2.5-next.40.g20d3668" } });
-    const released = source("p", "1.2.4", []);
-    const holds = (holder: string) => (name: string, sha: string, where?: string) => name === "@antelopejs/p" && sha === "20d3668" && where === holder;
-    const moved = entry(plan([dependent, released], [], holds("stable")).entries, "e");
-    assert.equal(moved.status === "release" && moved.ranges["@antelopejs/p"], ">=1.2.4 <1.3.0");
-    const refused = entry(plan([dependent, released], [], holds("head")).entries, "e");
-    assert.deepEqual(refused.status === "refused" && refused.reasons, ["depends on preview @antelopejs/p@1.2.5-next.40.g20d3668, whose stable 1.2.4 is older than 1.2.5"]);
-  });
-
-  test("moves a pin only to a stable release whose branch contains the preview's commit", () => {
-    const found = new Set(["@antelopejs/interface-database 3f9a2c1"]);
-    const contains = (name: string, sha: string) => found.has(`${name} ${sha}`);
-    const missing = source("dms-database", "0.5.3", ["fix: x"], {
-      dependencies: { "@antelopejs/mongodb": "1.8.7-next.40.gabc1234" },
-    });
-    const { entries } = plan([interfaceDatabase, mongodb, missing], [], contains);
-    const mongo = entry(entries, "mongodb");
-    assert.equal(mongo.status === "release" && mongo.ranges["@antelopejs/interface-database"], ">=0.5.0 <0.6.0");
-    assert.deepEqual(entry(entries, "dms-database"), {
-      status: "refused",
-      source: missing,
-      reasons: ["depends on preview @antelopejs/mongodb@1.8.7-next.40.gabc1234, whose main does not contain commit abc1234"],
-    });
-  });
-
-  test("a refusal cascades to every package pinning a preview of the refused one at runtime", () => {
-    const app = source("app", "2.0.0", ["fix: x"], { peerDependencies: { "@antelopejs/mongodb": "1.8.7-next.41.gabc1234" } });
-    const { entries } = plan([interfaceDatabase, mongodb, dmsDatabase, app], ["@antelopejs/interface-database"]);
-    assert.deepEqual(
-      entries.map((candidate) => candidate.status),
-      ["excluded", "refused", "release", "refused"],
-    );
-    const dms = entry(entries, "dms-database");
-    assert.deepEqual(dms.status === "release" && dms.kept, [
-      { name: "@antelopejs/mongodb", spec: "1.8.7-next.40.gabc1234", reason: "which is refused" },
-    ]);
-    const refused = entry(entries, "app");
-    assert.deepEqual(refused.status === "refused" && refused.reasons, [
-      "depends on preview @antelopejs/mongodb@1.8.7-next.41.gabc1234, which is refused",
-    ]);
-  });
-
-  test("a stable dev dependency back on a dependent is no cycle", () => {
-    const { entries } = plan([interfaceDatabase, mongodb]);
-    assert.deepEqual(names(entries), ["interface-database", "mongodb"]);
-    assert.ok(entries.every((candidate) => candidate.status === "release"));
-  });
-
-  test("refuses every package of a cycle on runtime dependencies and names it", () => {
-    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
-    const b = source("b", "0.1.0", ["fix: x"], { peerDependencies: { "@antelopejs/a": ">=0.1.0 <0.2.0" } });
-    const c = source("c", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/a": ">=0.1.0 <0.2.0" } });
-    const { entries } = plan([c, a, b]);
-    const reason = "is in a dependency cycle between @antelopejs/a, @antelopejs/b";
-    assert.deepEqual(entry(entries, "a"), { status: "refused", source: a, reasons: [reason] });
-    assert.deepEqual(entry(entries, "b"), { status: "refused", source: b, reasons: [reason] });
-    assert.equal(entry(entries, "c").status, "release");
-  });
-
-  test("a devDependency preview on a package that releases after it is kept and blocks nothing", () => {
-    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
-    const b = source("b", "0.1.0", ["fix: y"], {
-      devDependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234", "@antelopejs/z": "0.3.0-next.2.gabc1234" },
-    });
-    const result = plan([a, b]);
-    assert.deepEqual(names(result.entries), ["b", "a"]);
-    assert.deepEqual(entry(result.entries, "b"), {
-      status: "release",
-      source: b,
-      from: "0.1.0",
-      to: "0.1.1",
-      level: "patch",
-      reasons: [],
-      ranges: {},
-      kept: [
-        { name: "@antelopejs/a", spec: "0.1.1-next.1.gabc1234", reason: "which releases after it" },
-        { name: "@antelopejs/z", spec: "0.3.0-next.2.gabc1234", reason: "which this train does not list" },
-      ],
-      siblings: [],
-    });
-    assert.equal(entry(result.entries, "a").status, "release");
-    assert.equal(
-      renderPlan(result),
-      [
-        "Release plan from main, 2 packages: 2 to release",
-        "",
-        `1. @antelopejs/b 0.1.0 -> 0.1.1 (patch)  AntelopeJS/b@${at("b")}`,
-        "     fix: y",
-        "     keeps devDependency @antelopejs/a@0.1.1-next.1.gabc1234, which releases after it",
-        "     keeps devDependency @antelopejs/z@0.3.0-next.2.gabc1234, which this train does not list",
-        `2. @antelopejs/a 0.1.0 -> 0.1.1 (patch)  AntelopeJS/a@${at("a")}`,
-        "     fix: x",
-        "",
-      ].join("\n"),
-    );
-  });
-
-  test("an excluded package is in no cycle, and its dependents read it as not in this release", () => {
-    const a = source("a", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
-    const b = source("b", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/a": "0.1.1-next.1.gabc1234" } });
-    const c = source("c", "0.1.0", ["fix: x"], { dependencies: { "@antelopejs/b": ">=0.1.0 <0.2.0" } });
-    const { entries } = plan([a, b, c], ["@antelopejs/a"]);
-    assert.deepEqual(entry(entries, "a"), { status: "excluded", source: a });
-    assert.deepEqual(entry(entries, "b"), {
-      status: "refused",
-      source: b,
-      reasons: ["depends on preview @antelopejs/a@0.1.1-next.1.gabc1234, which is not in this release"],
-    });
-    assert.equal(entry(entries, "c").status, "release");
-  });
-
-  test("the level reads the cycle's commits as well as the branch's, so a squash commit titled too low still releases a minor", () => {
-    const promoted = {
-      ...source("promoted", "0.3.1", ["fix: tidy the api (#16)"]),
-      notes: [commit("feat(api)!: rename read to fetch (#15)"), commit("chore: tidy (#14)")],
-    };
-    const quiet = { ...source("quiet", "0.2.0", ["fix: tidy the scripts (#3)"]), notes: [commit("chore: tidy (#2)")] };
-    const result = plan([promoted, quiet]);
-    assert.deepEqual(
-      result.entries.map((candidate) => (candidate.status === "release" ? [candidate.to, candidate.level] : candidate.status)),
-      [
-        ["0.4.0", "minor"],
-        ["0.2.1", "patch"],
-      ],
-    );
-    assert.equal(
-      renderPlan(result),
-      [
-        "Release plan from main, 2 packages: 2 to release",
-        "",
-        `1. @antelopejs/promoted 0.3.1 -> 0.4.0 (minor)  AntelopeJS/promoted@${at("promoted")}`,
-        "     feat(api)!: rename read to fetch (#15)",
-        `2. @antelopejs/quiet 0.2.0 -> 0.2.1 (patch)  AntelopeJS/quiet@${at("quiet")}`,
-        "",
-      ].join("\n"),
-    );
-  });
-
-  test("a package with no releasable commit and no preview pin is unchanged, with the types of its commits", () => {
-    const quiet = source("quiet", "0.3.0", ["chore: tidy", "ci: cache", "test: cover"]);
-    assert.deepEqual(plan([quiet]).entries, [{ status: "unchanged", source: quiet, reason: "only chore, ci and test commits since 0.3.0" }]);
-    const silent = source("silent", "0.3.0", []);
-    assert.deepEqual(plan([silent]).entries, [{ status: "unchanged", source: silent, reason: null }]);
-  });
-
-  test("a cycle of tooling commits only plans no release, even for a commit that moves a devDependency", () => {
-    const pack = { devDependencies: { "@antelopejs/tooling-configs": "^0.8.0" } };
-    const before = { devDependencies: { "@antelopejs/tooling-configs": "^0.7.0" } };
-    const moved = source("interface-database", "0.4.2", ["build: move to the next model with @antelopejs/tooling-configs 0.8 (#101)"], pack, before);
-    const mixed = source("dms-database", "0.5.3", ["test(e2e): run the journeys (#198)", "build: move to 0.8 (#197)", "ci: drop the nightly (#194)", "docs: x", "style: x", "chore: x"]);
-    assert.deepEqual(
-      plan([moved, mixed]).entries.map((found) => (found.status === "unchanged" ? found.reason : found.status)),
-      ["only build commits since 0.4.2", "only build, chore, ci, docs, style and test commits since 0.5.3"],
-    );
-  });
-
-  test("a tooling commit that changes a published runtime dependency field plans a patch that names the change", () => {
-    const cases: [string, Partial<Manifest>, Partial<Manifest>, string][] = [
-      ["moved", { dependencies: { mongodb: "^6.21.0" } }, { dependencies: { mongodb: "^7.0.0" } }, "moves dependencies mongodb ^6.21.0 -> ^7.0.0"],
-      ["added", {}, { peerDependencies: { "@antelopejs/interface-core": ">=0.6.0 <0.7.0" } }, "adds peerDependencies @antelopejs/interface-core@>=0.6.0 <0.7.0"],
-      ["removed", { optionalDependencies: { "@antelopejs/interface-mongodb": ">=0.0.7 <0.1.0" } }, {}, "removes optionalDependencies @antelopejs/interface-mongodb@>=0.0.7 <0.1.0"],
-    ];
-    for (const [name, before, after, reason] of cases) {
-      const found = entry(plan([source(name, "1.8.6", ["chore(deps): update"], after, before)]).entries, name);
-      assert.equal(found.status, "release", name);
-      assert.deepEqual(found.status === "release" && [found.to, found.level, found.reasons], ["1.8.7", "patch", [reason]], name);
+describe("commitLevel", () => {
+  test("a breaking change is a minor, any other releasable type a patch", () => {
+    assert.equal(commitLevel("feat(query)!: drop the cursor", ""), "minor");
+    assert.equal(commitLevel("fix: x", "Details.\n\nBREAKING CHANGE: the cursor is gone"), "minor");
+    assert.equal(commitLevel("refactor: x", "BREAKING-CHANGE: renamed"), "minor");
+    for (const type of ["feat", "fix", "perf", "refactor", "types", "revert"]) {
+      assert.equal(commitLevel(`${type}(scope): x`, ""), "patch", type);
     }
   });
 
-  test("a tooling-only dependency releases a patch when a dependent pins its newer preview at runtime, and only then", () => {
-    const dependency = source("interface-database", "0.4.2", ["build: move to 0.8"]);
-    const pin = { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" };
-    const runtime = source("mongodb", "1.8.6", ["fix: x"], { dependencies: pin, peerDependencies: pin });
-    const { entries } = plan([dependency, runtime]);
-    const released = entry(entries, "interface-database");
-    assert.deepEqual(released.status === "release" && [released.to, released.reasons], ["0.4.3", ["@antelopejs/mongodb pins the preview 0.4.3-next.2.g3f9a2c1"]]);
-    const dependent = entry(entries, "mongodb");
-    assert.deepEqual(dependent.status === "release" && dependent.ranges, { "@antelopejs/interface-database": ">=0.4.3 <0.5.0" });
-    assert.equal(entry(plan([dependency, runtime], [], () => false).entries, "interface-database").status, "unchanged");
-
-    const tooling = source("dms-database", "0.5.3", ["fix: y"], { devDependencies: { "@antelopejs/interface-database": "0.4.3-next.2.g3f9a2c1" } });
-    assert.equal(entry(plan([dependency, tooling]).entries, "interface-database").status, "unchanged");
-    const older = source("dms-database", "0.5.3", ["fix: y"], { dependencies: { "@antelopejs/interface-database": "0.4.2-next.9.g3f9a2c1" } });
-    assert.equal(entry(plan([dependency, older]).entries, "interface-database").status, "unchanged");
+  test("the pull request title check accepts a revert, which releases a patch", () => {
+    const workflow = readText(new URL("../../.github/workflows/ci-node.yml", import.meta.url));
+    const pattern = /pattern='([^']+)'/.exec(workflow)?.[1];
+    assert.ok(pattern, "ci-node.yml has a title pattern");
+    assert.match("revert(builder): restore the sample rows", new RegExp(pattern));
+    assert.equal(commitLevel("revert(builder): restore the sample rows", ""), "patch");
   });
 
-  test("a tooling-only cycle that replaces a preview pin names the pin, not a dependency move", () => {
-    const pinned = source("mongodb", "1.8.6", ["chore: pin the interface"], { dependencies: { "@antelopejs/interface-database": "0.4.2-next.1.g3f9a2c1" } }, { dependencies: { "@antelopejs/interface-database": ">=0.4.1 <0.5.0" } });
-    const found = entry(plan([source("interface-database", "0.4.2", []), pinned]).entries, "mongodb");
-    assert.deepEqual(found.status === "release" && found.reasons, ["replaces preview pins"]);
-  });
-
-  test("the reason of an unchanged package reads the cycle's notes, and names no version without a stable release", () => {
-    const promoted = { ...source("promoted", "0.3.1", ["chore: tidy the build (#20)"]), notes: [commit("build: move to 0.8"), commit("test: cover")] };
-    const fresh = source("fresh", null, ["build: scaffold", "docs: describe"]);
-    assert.deepEqual(
-      plan([promoted, fresh]).entries.map((found) => found.status === "unchanged" && found.reason),
-      ["only build, chore and test commits since 0.3.1", "only build and docs commits"],
-    );
-  });
-
-  test("a cycle with a feat, fix, perf or refactor commit beside tooling commits releases as before", () => {
-    for (const type of ["feat", "fix", "perf", "refactor"]) {
-      const found = entry(plan([source("mongodb", "1.8.6", ["build: move to 0.8", `${type}: x`])]).entries, "mongodb");
-      assert.deepEqual(found.status === "release" && [found.to, found.level, found.reasons], ["1.8.7", "patch", []], type);
+  test("tooling types, unparsed subjects and merges release nothing", () => {
+    for (const subject of ["build: x", "ci(release): x", "chore: x", "test: x", "docs: x", "style: x", "Update README", "Merge pull request #12 from a/b"]) {
+      assert.equal(commitLevel(subject, ""), null, subject);
     }
   });
+});
+
+describe("withoutReverts", () => {
+  const breaking = commit("refactor(builder)!: remove the sample rows (#1093)");
+  const fix = commit("fix(builder): close the cursor (#1094)");
+  const restore = commit("refactor(builder): restore the sample rows (#1098)", "", [{ sha: breaking.sha }]);
+  const levelOf = (commits: Commit[]) => {
+    const found = plan([{ ...source("builder", "0.5.2", []), commits: withoutReverts(commits), notes: withoutReverts(commits) }]).entries[0];
+    return found?.status === "release" ? found.level : found?.status;
+  };
+
+  test("a commit and its revert in the same range count for nothing, so the level is the other commits'", () => {
+    assert.deepEqual(withoutReverts([restore, fix, breaking]), [fix]);
+    assert.equal(levelOf([restore, fix, breaking]), "patch");
+    assert.equal(levelOf([restore, breaking]), "unchanged");
+  });
+
+  test("a revert that names two commits cancels both", () => {
+    const other = commit("feat(builder)!: drop the cursor (#1095)");
+    const both = commit("revert: restore the rows and the cursor (#1099)", "", [{ sha: breaking.sha }, { sha: other.sha }]);
+    assert.deepEqual(withoutReverts([both, other, fix, breaking]), [fix]);
+  });
+
+  test("an abbreviated SHA names the commit it reverts", () => {
+    const short = commit("revert: remove the sample rows", "", [{ sha: breaking.sha.slice(0, 9) }]);
+    assert.deepEqual(withoutReverts([short, fix, breaking]), [fix]);
+  });
+
+  test("a pull request number names the squash commit whose subject ends with it", () => {
+    const byPull = commit("refactor(builder): restore the sample rows (#1098)", "", [{ pull: 1093 }]);
+    assert.deepEqual(withoutReverts([byPull, fix, breaking]), [fix]);
+    assert.deepEqual(withoutReverts([commit("revert: x", "", [{ pull: 109 }]), breaking]).length, 2);
+  });
+
+  test("a revert of a commit older than the range counts as a change", () => {
+    const older = commit("revert: drop the cursor", "", [{ sha: "0123456789abcdef0123456789abcdef01234567" }]);
+    assert.deepEqual(withoutReverts([older]), [older]);
+    assert.equal(levelOf([older]), "patch");
+  });
+
+  test("a revert of a revert cancels that revert and leaves the first commit", () => {
+    const again = commit("refactor(builder)!: remove the sample rows again (#1100)", "", [{ sha: restore.sha }]);
+    assert.deepEqual(withoutReverts([again, restore, fix, breaking]), [fix, breaking]);
+    assert.equal(levelOf([again, restore, fix, breaking]), "minor");
+  });
+
+  test("reads the commits a message reverts from git's line and from a reference to a pull request of the same repository", () => {
+    const body = "Restores it.\n\nThis reverts commit daa3203f4.\nReverts antelopejs/DMS#1093\nReverts AntelopeJS/other#7";
+    assert.deepEqual(revertedCommits(body, "AntelopeJS/dms"), [{ sha: "daa3203f4" }, { pull: 1093 }]);
+    assert.deepEqual(revertedCommits("Mentions This reverts commit daa3203f4 inline.", "AntelopeJS/dms"), []);
+  });
+});
+
+describe("isRegistrySpec", () => {
+  test("accepts a semver range or an npm alias to one, and nothing that resolves outside the registry", () => {
+    for (const spec of registrySpecs) assert.equal(isRegistrySpec(spec), true, spec);
+    for (const spec of nonRegistrySpecs) assert.equal(isRegistrySpec(spec), false, spec);
+  });
+
+  test("refuses a long run of comparators and spaces in linear time", { timeout: 2000 }, () => {
+    assert.equal(isRegistrySpec(`${Array.from({ length: 40 }, () => "1").join("      ")}!`), false);
+  });
+});
+
+
+describe("computePlan", () => {
+  registerWorkspaceSpecTests();
+  registerWorkspaceRefusalTests();
 });
 
 describe("renderPlan", () => {

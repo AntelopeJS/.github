@@ -25,8 +25,3 @@ export function exec(system: System, command: string, args: readonly string[]): 
   }
   return result.stdout;
 }
-
-/** Whether a parsed JSON value is a plain object. */
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

@@ -6,7 +6,7 @@ import { parseObject } from "./json.ts";
 import { main } from "./train.ts";
 import { readText } from "./helpers/read.ts";
 
-describe("go", () => {
+function registerDispatchTests(): void {
   test("dispatches each release in dependency order and waits for each run", () => {
     const { system, output, calls } = fakeSystem();
     const status = main(["go", dmsDatabase, mongodb, interfaceDatabase, `${dms}:packages/automation`], system);
@@ -105,7 +105,9 @@ describe("go", () => {
     );
     assert.match(errors(), /^failed @antelopejs\/interface-database 0\.5\.0 gh workflow run release\.yml .* failed\nfailed\nPublished: nothing\.\nNot published: @antelopejs\/interface-database 0\.5\.0, @antelopejs\/mongodb 1\.8\.7\.\n/);
   });
+}
 
+function registerRetryTests(): void {
   test("ends with what it published and what the plan refused", () => {
     const { system, output } = fakeSystem();
     assert.equal(main(["go", "--exclude", "@antelopejs/interface-database", interfaceDatabase, mongodb, `${dms}:packages/automation`], system), 0);
@@ -179,7 +181,9 @@ describe("go", () => {
       ].join("\n"),
     );
   });
+}
 
+function registerNpmWaitTests(): void {
   test("waits until npm serves a release before it dispatches the release that depends on it, with the stable range of that release", () => {
     const { system, calls } = fakeSystem({}, { lag: { "@antelopejs/interface-database@0.5.0": 3 } });
     assert.equal(main(["go", mongodb, interfaceDatabase], system), 0);
@@ -218,7 +222,9 @@ describe("go", () => {
       ].join("\n"),
     );
   });
+}
 
+function registerWorkspaceTests(): void {
   test("releases every listed package of a repository, each from the head the release before it left", () => {
     const workspace = repository("go-workspace", (path) => {
       commit(path, "feat: first", {
@@ -299,7 +305,9 @@ describe("go", () => {
       ].join("\n"),
     );
   });
+}
 
+function registerReplanTests(): void {
   test("releases a tooling-only dependent after the sibling whose release moved its workspace range out of the published one", () => {
     const workspace = repository("go-moves", (path) => {
       commit(path, "feat: first", {
@@ -349,7 +357,8 @@ describe("go", () => {
       commit(path, "fix(inner): trim the input", { "packages/inner/index.ts": "export {};\n" });
       commit(path, "fix: log the start", { "index.ts": "export {};\n" });
     });
-    const fakes: { pullsDown?: boolean; dispatched?: () => void } = {
+    const fakes = {
+      pullsDown: false,
       dispatched: () => {
         commit(workspace, "chore(release): v0.2.1", { "packages/inner/CHANGELOG.md": "x\n" });
         git(workspace, "tag", "inner-v0.2.1");
@@ -369,4 +378,12 @@ describe("go", () => {
       ].join("\n"),
     );
   });
+}
+
+describe("go", () => {
+  registerDispatchTests();
+  registerRetryTests();
+  registerNpmWaitTests();
+  registerWorkspaceTests();
+  registerReplanTests();
 });

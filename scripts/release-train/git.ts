@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
-import { commitLevel, compareCore, dependencyFields, highestLevel, parseVersion, revertedCommits, withoutReverts, type Commit, type Manifest, type PackageSource } from "./plan.ts";
-import { exec, isRecord, type System } from "./system.ts";
+import { commitLevel, dependencyFields, highestLevel, revertedCommits, withoutReverts, type Commit, type Manifest, type PackageSource } from "./plan.ts";
+import { compareCore, parseVersion } from "./version.ts";
+import { isJsonObject, isString, readJson, type Json } from "./json.ts";
+import { exec, type System } from "./system.ts";
 
 /** A package named on the command line: a GitHub repository or a local checkout, and a directory in it. */
 export type Target =
@@ -75,8 +77,8 @@ export function resolveRevision(system: System, { repository }: Checkout): Revis
 }
 
 function parseManifest(text: string, where: string): Manifest {
-  const value: unknown = JSON.parse(text);
-  if (!isRecord(value) || typeof value.name !== "string" || typeof value.version !== "string") {
+  const value = readJson(text);
+  if (!isJsonObject(value) || !isString(value.name) || !isString(value.version)) {
     throw new Error(`${where} has no name or version.`);
   }
   if (parseVersion(value.version) === null) throw new Error(`${where} has an invalid version ${value.version}.`);
@@ -84,10 +86,10 @@ function parseManifest(text: string, where: string): Manifest {
   for (const field of dependencyFields) {
     const specs = value[field];
     if (specs === undefined) continue;
-    if (!isRecord(specs) || !Object.values(specs).every((spec) => typeof spec === "string")) {
+    if (!isJsonObject(specs) || !Object.values(specs).every(isString)) {
       throw new Error(`${where} has an invalid ${field} field.`);
     }
-    manifest[field] = Object.fromEntries(Object.entries(specs).map(([name, spec]) => [name, String(spec)]));
+    manifest[field] = Object.fromEntries(Object.entries(specs).flatMap(([name, spec]) => (isString(spec) ? [[name, spec]] : [])));
   }
   return manifest;
 }
@@ -103,8 +105,8 @@ function readManifest(system: System, repository: string, revision: string, dire
  * Null when the directory's own `package.json` names a package, or when no released package is under it.
  */
 export function workspacePackages(system: System, { repository }: Checkout, { name: revision }: Revision, directory: string): string[] | null {
-  const value: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]));
-  if (isRecord(value) && typeof value.name === "string" && typeof value.version === "string") return null;
+  const value = readJson(exec(system, "git", ["-C", repository, "show", `${revision}:${posix.join(directory, "package.json")}`]));
+  if (isJsonObject(value) && isString(value.name) && isString(value.version)) return null;
   const files = exec(system, "git", ["-C", repository, "ls-tree", "-r", "-z", "--name-only", revision, "--", directory]).split("\0");
   const tracked = new Set(files);
   const released = files
@@ -117,13 +119,13 @@ export function workspacePackages(system: System, { repository }: Checkout, { na
 function packedVersion(system: System, repository: string, revision: string, directory: string): [string, string][] {
   const file = posix.join(directory, "package.json");
   if (exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim() === "") return [];
-  let value: unknown;
+  let value: Json;
   try {
-    value = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
+    value = readJson(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
   } catch {
     return [];
   }
-  if (!isRecord(value) || typeof value.name !== "string" || typeof value.version !== "string" || parseVersion(value.version) === null) return [];
+  if (!isJsonObject(value) || !isString(value.name) || !isString(value.version) || parseVersion(value.version) === null) return [];
   return [[value.name, value.version]];
 }
 
@@ -132,9 +134,9 @@ function readTagName(system: System, repository: string, revision: string, direc
   const listed = exec(system, "git", ["-C", repository, "ls-tree", "--name-only", revision, "--", file]).trim();
   let tagName = "v${version}";
   if (listed !== "") {
-    const config: unknown = JSON.parse(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
-    const git = isRecord(config) ? config.git : undefined;
-    if (isRecord(git) && typeof git.tagName === "string") tagName = git.tagName;
+    const config = readJson(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]));
+    const git = isJsonObject(config) ? config.git : undefined;
+    if (isJsonObject(git) && isString(git.tagName)) tagName = git.tagName;
   }
   const parts = tagName.split("${version}");
   if (parts.length !== 2 || parts.some((part) => part.includes("${"))) {
@@ -178,17 +180,23 @@ function branchHolds(system: System, slug: string, sha: string, branch: string):
   return status === "ahead" || status === "identical";
 }
 
-function cycleNotes(
-  system: System,
-  slug: string,
-  repository: string,
-  head: string,
-  tag: string | null,
-  paths: readonly string[],
-  merged: readonly MergedPull[],
-  shipped: readonly string[],
-  cancelled: ReadonlySet<string>,
-): { notes: Commit[]; explained: Map<string, Commit[]> } {
+/** The commits of a package from its last stable tag to the head of the default branch. */
+interface Range {
+  head: string;
+  tag: string | null;
+  paths: readonly string[];
+  /** The heads of the pull requests merged before the tag, whose commits shipped in it. */
+  shipped: readonly string[];
+}
+
+/** The notes of a release cycle, and the reverted commits that explain each squash commit. */
+interface Cycle {
+  notes: Commit[];
+  explained: Map<string, Commit[]>;
+}
+
+function cycleNotes(system: System, { slug, repository }: Checkout, range: Range, merged: readonly MergedPull[], cancelled: ReadonlySet<string>): Cycle {
+  const { head, tag, paths, shipped } = range;
   const landed = merged.filter((pull) => isAncestor(system, repository, pull.mergeCommit, head));
   const released = (pull: MergedPull): boolean => tag !== null && isAncestor(system, repository, pull.mergeCommit, tag);
   const present = (pull: MergedPull): boolean => hasCommit(system, repository, pull.head);
@@ -280,7 +288,7 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   );
   const kept = withoutReverts(log);
   const cancelled = new Set(log.filter((commit) => !kept.includes(commit)).map((commit) => commit.sha));
-  const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from.slug, repository, head, tag, paths, merged, shipped, cancelled);
+  const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from, { head, tag, paths, shipped }, merged, cancelled);
   const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
   return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, stableSiblings, commits, notes };
