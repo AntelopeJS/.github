@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { parseJson } from "./json.ts";
 import { collectNightlies } from "./nightly-github.ts";
 import { formatNightlyMarkdown, nightlyReport, parseNightlyDataset, type NightlyDataset } from "./nightly.ts";
 
@@ -35,7 +36,7 @@ function fail(message: string): never {
 
 async function dataset(): Promise<NightlyDataset> {
   if (values.load !== undefined) {
-    return parseNightlyDataset(JSON.parse(readFileSync(values.load, "utf8"))) ?? fail(`${values.load} is not a dataset that --save wrote\n`);
+    return parseNightlyDataset(parseJson(readFileSync(values.load, "utf8"))) ?? fail(`${values.load} is not a dataset that --save wrote\n`);
   }
   const days = Number(values.days);
   if (!Number.isFinite(days) || days <= 0) fail(`--days takes a positive number, not ${values.days}\n${usage}`);

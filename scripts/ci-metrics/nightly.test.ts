@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseJson } from "./json.ts";
 import { collectNightlies, parseAnnotations } from "./nightly-github.ts";
 import {
   formatNightlyMarkdown,
@@ -21,7 +22,9 @@ function job(name: string, conclusion: string, fields: Partial<NightlyJob> = {})
 
 function nightly(n: number, sha: string, jobs?: NightlyJob[]): Nightly {
   const conclusion = jobs === undefined ? "success" : jobs.some((one) => one.conclusion === "failure") ? "failure" : "success";
-  return { id: 1000 + n, sha, startedAt: day(n), conclusion, url: `https://github.com/AntelopeJS/dms/actions/runs/${1000 + n}`, ...(jobs === undefined ? {} : { jobs }) };
+  const built: Nightly = { id: 1000 + n, sha, startedAt: day(n), conclusion, url: `https://github.com/AntelopeJS/dms/actions/runs/${1000 + n}` };
+  if (jobs !== undefined) built.jobs = jobs;
+  return built;
 }
 
 function repo(nightlies: Nightly[], fields: Partial<RepoNightlies> = {}): RepoNightlies {
@@ -138,16 +141,17 @@ test("annotations keep the failures and drop the exit code line", () => {
 
 test("the collector reads only repositories with a merge queue and the facts their failures need", async () => {
   process.env.GH_TOKEN = "test-token";
-  const run = (id: number, sha: string, conclusion: string, startedAt: string, event = "schedule", name = "ci") => ({
-    id, name, event, status: "completed", conclusion, head_sha: sha, run_started_at: startedAt, updated_at: startedAt, html_url: `u${id}`,
+  const run = (id: number, sha: string, conclusion: string, startedAt: string, fields: { event?: string; name?: string } = {}) => ({
+    id, name: "ci", event: "schedule", status: "completed", conclusion, head_sha: sha, run_started_at: startedAt, updated_at: startedAt, html_url: `u${id}`,
+    ...fields,
   });
-  const routes: Record<string, unknown> = {
+  const routes = {
     "/orgs/AntelopeJS/repos?type=all&per_page=100&page=1": [{ name: "dms", default_branch: "main" }, { name: "cloud", default_branch: "develop" }],
     "/orgs/AntelopeJS/repos?type=all&per_page=100&page=2": [],
     "/repos/AntelopeJS/dms/rules/branches/main": [{ type: "pull_request" }, { type: "merge_queue" }],
     "/repos/AntelopeJS/cloud/rules/branches/develop": [{ type: "pull_request" }],
-    schedule: { workflow_runs: [run(3, "c", "failure", day(18)), run(1, "a", "success", day(16)), run(2, "b", "failure", day(17)), run(9, "b", "failure", day(17), "schedule", "stale")] },
-    merge_group: { workflow_runs: [run(5, "b", "failure", day(17), "merge_group"), run(6, "b", "success", day(17), "merge_group"), run(7, "c", "success", day(18), "merge_group")] },
+    schedule: { workflow_runs: [run(3, "c", "failure", day(18)), run(1, "a", "success", day(16)), run(2, "b", "failure", day(17)), run(9, "b", "failure", day(17), { name: "stale" })] },
+    merge_group: { workflow_runs: [run(5, "b", "failure", day(17), { event: "merge_group" }), run(6, "b", "success", day(17), { event: "merge_group" }), run(7, "c", "success", day(18), { event: "merge_group" })] },
     "/repos/AntelopeJS/dms/actions/runs/2/jobs?filter=all&per_page=100&page=1": { jobs: [{ id: 20, name: "ci / Test 24", run_attempt: 1, conclusion: "failure", steps: [{ name: "Run tests", conclusion: "failure" }] }] },
     "/repos/AntelopeJS/dms/actions/runs/3/jobs?filter=all&per_page=100&page=1": { jobs: [{ id: 30, name: "ci / Test 24", run_attempt: 1, conclusion: "failure", steps: [{ name: "Run tests", conclusion: "failure" }] }] },
     "/repos/AntelopeJS/dms/compare/a...b?per_page=100&page=1": { commits: [{ sha: "b" }] },
@@ -171,7 +175,7 @@ test("the collector reads only repositories with a merge queue and the facts the
   assert.deepEqual(dms.queue, { b: "success", c: "success" });
   assert.deepEqual(Object.keys(dms.commits).sort(), ["a...b", "a...c"]);
   assert.deepEqual(dms.annotations, { 20: ["route: expected 200"], 30: [] });
-  assert.deepEqual(parseNightlyDataset(JSON.parse(JSON.stringify(collected))), collected);
+  assert.deepEqual(parseNightlyDataset(parseJson(JSON.stringify(collected))), collected);
   const result = nightlyReport(collected);
   assert.deepEqual(result.failures.map((failure) => [failure.nightly.id, failure.verdict, failure.tests]), [
     [2, "missed", ["route: expected 200"]],

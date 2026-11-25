@@ -1,3 +1,5 @@
+import { isBoolean, isList, isNumber, isObject, isText, isTextOrNull, isTexts, type Json } from "./json.ts";
+
 /** A job of a nightly run, of any attempt, as `jobs?filter=all` lists it. */
 export interface NightlyJob {
   id: number;
@@ -256,25 +258,20 @@ export function formatNightlyMarkdown(result: NightlyReport): string {
 
 const sumOf = <T>(items: readonly T[], value: (item: T) => number): number => items.reduce((total, item) => total + value(item), 0);
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const textOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
-
-function savedJob(raw: unknown): NightlyJob | null {
-  if (!isRecord(raw)) return null;
+function savedJob(raw: Json): NightlyJob | null {
+  if (!isObject(raw)) return null;
   const { id, name, attempt, conclusion, started, failedStep } = raw;
-  if (typeof id !== "number" || typeof name !== "string" || typeof attempt !== "number" || typeof started !== "boolean") return null;
-  if (!textOrNull(conclusion) || !textOrNull(failedStep)) return null;
+  if (!isNumber(id) || !isText(name) || !isNumber(attempt) || !isBoolean(started)) return null;
+  if (!isTextOrNull(conclusion) || !isTextOrNull(failedStep)) return null;
   return { id, name, attempt, conclusion, started, failedStep };
 }
 
-function savedNightly(raw: unknown): Nightly | null {
-  if (!isRecord(raw)) return null;
+function savedNightly(raw: Json): Nightly | null {
+  if (!isObject(raw)) return null;
   const { id, sha, startedAt, conclusion, url, jobs } = raw;
-  if (typeof id !== "number" || typeof sha !== "string" || typeof startedAt !== "string" || typeof url !== "string" || !textOrNull(conclusion)) return null;
+  if (!isNumber(id) || !isText(sha) || !isText(startedAt) || !isText(url) || !isTextOrNull(conclusion)) return null;
   const nightly: Nightly = { id, sha, startedAt, conclusion, url };
-  if (Array.isArray(jobs)) {
+  if (isList(jobs)) {
     const parsed = jobs.map(savedJob);
     if (parsed.some((job) => job === null)) return null;
     nightly.jobs = parsed.flatMap((job) => job ?? []);
@@ -282,12 +279,12 @@ function savedNightly(raw: unknown): Nightly | null {
   return nightly;
 }
 
-function savedRepo(raw: unknown): RepoNightlies | null {
-  if (!isRecord(raw) || typeof raw.repo !== "string" || !Array.isArray(raw.nightlies)) return null;
+function savedRepo(raw: Json): RepoNightlies | null {
+  if (!isObject(raw) || !isText(raw.repo) || !isList(raw.nightlies)) return null;
   const { queue, commits, annotations } = raw;
-  if (!isRecord(queue) || !Object.values(queue).every((value) => value === "success" || value === "failure")) return null;
-  if (!isRecord(commits) || !Object.values(commits).every(strings)) return null;
-  if (!isRecord(annotations) || !Object.values(annotations).every(strings)) return null;
+  if (!isObject(queue) || !Object.values(queue).every((value) => value === "success" || value === "failure")) return null;
+  if (!isObject(commits) || !Object.values(commits).every(isTexts)) return null;
+  if (!isObject(annotations) || !Object.values(annotations).every(isTexts)) return null;
   const nightlies = raw.nightlies.map(savedNightly);
   if (nightlies.some((nightly) => nightly === null)) return null;
   return {
@@ -303,8 +300,8 @@ function savedRepo(raw: unknown): RepoNightlies | null {
 }
 
 /** A dataset that `--save` wrote, or `null` when the value is not one. */
-export function parseNightlyDataset(raw: unknown): NightlyDataset | null {
-  if (!isRecord(raw) || typeof raw.org !== "string" || typeof raw.to !== "string" || typeof raw.days !== "number" || !Array.isArray(raw.repos)) return null;
+export function parseNightlyDataset(raw: Json): NightlyDataset | null {
+  if (!isObject(raw) || !isText(raw.org) || !isText(raw.to) || !isNumber(raw.days) || !isList(raw.repos)) return null;
   const repos = raw.repos.map(savedRepo);
   if (repos.some((repo) => repo === null)) return null;
   return { org: raw.org, to: raw.to, days: raw.days, repos: repos.flatMap((repo) => repo ?? []) };

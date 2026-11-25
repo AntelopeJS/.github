@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { collect, parseJobs, parseRun, tierJobId } from "./github.ts";
+import { parseJson } from "./json.ts";
 import {
   estimateMinutes,
   formatTable,
@@ -42,8 +43,11 @@ function run(fields: Partial<Run> & { minutes?: number; start?: number } = {}): 
   };
 }
 
-const sampledRun = (tier: Tier | undefined, minutes: number, jobs: Job[], fields: Partial<Run> = {}): Run =>
-  run({ minutes, jobs, ...(tier === undefined ? {} : { tier }), ...fields });
+function sampledRun(tier: Tier | undefined, minutes: number, jobs: Job[], fields: Partial<Run> = {}): Run {
+  const sampled = run({ minutes, jobs, ...fields });
+  if (tier !== undefined) sampled.tier = tier;
+  return sampled;
+}
 
 test("quantile interpolates between the two closest ranks", () => {
   assert.equal(quantile([], 0.5), null);
@@ -181,7 +185,7 @@ test("the API parsers keep runs and jobs and find the Tier job that ran", () => 
 });
 
 test("a run with no logged tier skipped its checks when its lint job or every Node.js job skipped", () => {
-  const checked = (jobs: Job[], tier?: Tier): boolean => ranChecks({ ...run(), jobs, ...(tier === undefined ? {} : { tier }) });
+  const checked = (jobs: Job[], tier?: Tier): boolean => ranChecks({ ...run({ tier }), jobs });
   const tierJob = job("ci / Tier", 0, 1);
   assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3, "skipped")]), false);
   assert.equal(checked([tierJob, job("ci / Lint and typecheck", 1, 3), job("ci / Node 24", 3, 5, "skipped")]), false);
@@ -193,7 +197,7 @@ test("a run with no logged tier skipped its checks when its lint job or every No
 
 test("a saved dataset loads back, and anything else is refused", () => {
   const dataset = { to: at(0), days: 14, runs: [run({ jobs: [job("lint", 0, 1)], tier: "fast" }), run()] };
-  assert.deepEqual(parseDataset(JSON.parse(JSON.stringify(dataset))), dataset);
+  assert.deepEqual(parseDataset(parseJson(JSON.stringify(dataset))), dataset);
   assert.equal(parseDataset({ window: {}, repos: [] }), null);
   assert.equal(parseDataset({ to: at(0), days: 14, runs: [{ id: 1 }] }), null);
 });
@@ -211,9 +215,8 @@ test("the collector pages, splits a listing over 1,000 runs, waits out a seconda
   const fetcher = async (input: string | URL | Request): Promise<Response> => {
     const url = new URL(String(input));
     seen.push(url.pathname + url.search);
-    const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200 });
     if (url.pathname === "/orgs/AntelopeJS/repos") {
-      return json(url.searchParams.get("page") === "1" ? [{ name: "dms" }, { name: "old", archived: true }] : []);
+      return Response.json(url.searchParams.get("page") === "1" ? [{ name: "dms" }, { name: "old", archived: true }] : []);
     }
     if (url.pathname === "/repos/AntelopeJS/dms/actions/runs") {
       if (!limited) {
@@ -223,10 +226,10 @@ test("the collector pages, splits a listing over 1,000 runs, waits out a seconda
       const [start, end] = (url.searchParams.get("created") ?? "").split("..").map(Date.parse);
       const inRange = all.filter((raw) => Date.parse(raw.created_at) >= start && Date.parse(raw.created_at) <= end);
       const page = Number(url.searchParams.get("page"));
-      return json({ total_count: inRange.length, workflow_runs: inRange.length > 1000 ? inRange.slice(0, 100) : inRange.slice((page - 1) * 100, page * 100) });
+      return Response.json({ total_count: inRange.length, workflow_runs: inRange.length > 1000 ? inRange.slice(0, 100) : inRange.slice((page - 1) * 100, page * 100) });
     }
     if (/\/runs\/\d+\/jobs$/.test(url.pathname)) {
-      return json({ jobs: [{ id: 9, name: "ci / Tier", conclusion: "success", created_at: at(0), started_at: at(0), completed_at: at(1) }] });
+      return Response.json({ jobs: [{ id: 9, name: "ci / Tier", conclusion: "success", created_at: at(0), started_at: at(0), completed_at: at(1) }] });
     }
     if (url.pathname === "/repos/AntelopeJS/dms/actions/jobs/9/logs") return new Response("2026-11-19T01:50:02.0670192Z   TIER: full\n");
     return new Response("not found", { status: 404 });

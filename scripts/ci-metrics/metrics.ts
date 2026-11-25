@@ -1,3 +1,5 @@
+import { isList, isNumber, isObject, isText, isTextOrNull, type Json } from "./json.ts";
+
 /** The tiers the shared `Tier` job prints, plus `unknown` for a sampled run whose tier no log names. */
 export const tiers = ["none", "draft", "fast", "full", "queue", "nightly", "unknown"] as const;
 export type Tier = (typeof tiers)[number];
@@ -34,6 +36,27 @@ export interface Dataset {
   to: string;
   days: number;
   runs: Run[];
+}
+
+/** The first and last instants of a dataset's window. */
+export interface DatasetWindow {
+  from: string;
+  to: string;
+  days: number;
+}
+
+/** The job-minutes per week of one workflow of one repository. */
+export interface WorkflowEstimate {
+  repo: string;
+  workflow: string;
+  runs: number;
+  jobMinutesPerWeek: number;
+}
+
+/** The estimate of each workflow with a sampled run, and the completed runs of the workflows with none. */
+export interface MinutesEstimate {
+  groups: WorkflowEstimate[];
+  unsampled: number;
 }
 
 /**
@@ -80,7 +103,7 @@ export interface WorkflowMinutes {
 }
 
 export interface Report {
-  window: { ci: { from: string; to: string; days: number }; org: { from: string; to: string; days: number } };
+  window: { ci: DatasetWindow; org: DatasetWindow };
   ci: {
     repos: number;
     runs: number;
@@ -198,7 +221,7 @@ export function pickSample(runs: readonly Run[], size: number): Run[] {
 }
 
 /** The first and last instants of a dataset's window. */
-export function windowOf(dataset: Dataset): { from: string; to: string; days: number } {
+export function windowOf(dataset: Dataset): DatasetWindow {
   return { from: new Date(time(dataset.to) - dataset.days * dayMs).toISOString(), to: dataset.to, days: dataset.days };
 }
 
@@ -259,10 +282,7 @@ function queueTimes(runs: readonly SampledRun[]): number[] {
  * completed runs times its completed runs, over the weeks of the window. A workflow with no sampled run
  * counts in `unsampled`.
  */
-export function estimateMinutes(dataset: Dataset): {
-  groups: { repo: string; workflow: string; runs: number; jobMinutesPerWeek: number }[];
-  unsampled: number;
-} {
+export function estimateMinutes(dataset: Dataset): MinutesEstimate {
   const weeks = dataset.days / 7;
   const completed = dataset.runs.filter((run) => run.status === "completed");
   const groups = [...groupBy(completed, (run) => `${run.repo}\n${run.path}\n${run.workflow}`).values()];
@@ -420,33 +440,28 @@ export function formatTable(result: Report): string {
   return `${lines.join("\n")}\n`;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const textOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
-
-function savedJob(raw: unknown): Job | null {
-  if (!isRecord(raw) || typeof raw.name !== "string") return null;
+function savedJob(raw: Json): Job | null {
+  if (!isObject(raw) || !isText(raw.name)) return null;
   const { conclusion, createdAt, startedAt, completedAt } = raw;
-  if (!textOrNull(conclusion) || !textOrNull(createdAt) || !textOrNull(startedAt) || !textOrNull(completedAt)) return null;
+  if (!isTextOrNull(conclusion) || !isTextOrNull(createdAt) || !isTextOrNull(startedAt) || !isTextOrNull(completedAt)) return null;
   return { name: raw.name, conclusion, createdAt, startedAt, completedAt };
 }
 
-function savedRun(raw: unknown): Run | null {
-  if (!isRecord(raw) || typeof raw.id !== "number" || !textOrNull(raw.conclusion)) return null;
+function savedRun(raw: Json): Run | null {
+  if (!isObject(raw) || !isNumber(raw.id) || !isTextOrNull(raw.conclusion)) return null;
   const { repo, workflow, path, event, status, startedAt, updatedAt } = raw;
-  if ([repo, workflow, path, event, status, startedAt, updatedAt].some((field) => typeof field !== "string")) return null;
-  const run: Run = {
-    repo: String(repo), id: raw.id, workflow: String(workflow), path: String(path), event: String(event),
-    status: String(status), conclusion: raw.conclusion, startedAt: String(startedAt), updatedAt: String(updatedAt),
-  };
-  if (Array.isArray(raw.jobs)) run.jobs = raw.jobs.flatMap((job: unknown) => savedJob(job) ?? []);
-  if (typeof raw.tier === "string" && isTier(raw.tier)) run.tier = raw.tier;
+  if (!isText(repo) || !isText(workflow) || !isText(path) || !isText(event) || !isText(status) || !isText(startedAt) || !isText(updatedAt)) {
+    return null;
+  }
+  const run: Run = { repo, id: raw.id, workflow, path, event, status, conclusion: raw.conclusion, startedAt, updatedAt };
+  if (isList(raw.jobs)) run.jobs = raw.jobs.flatMap((job) => savedJob(job) ?? []);
+  if (isText(raw.tier) && isTier(raw.tier)) run.tier = raw.tier;
   return run;
 }
 
 /** A dataset that `--save` wrote, or `null` when the value is not one. */
-export function parseDataset(raw: unknown): Dataset | null {
-  if (!isRecord(raw) || typeof raw.to !== "string" || typeof raw.days !== "number" || !Array.isArray(raw.runs)) return null;
+export function parseDataset(raw: Json): Dataset | null {
+  if (!isObject(raw) || !isText(raw.to) || !isNumber(raw.days) || !isList(raw.runs)) return null;
   const runs = raw.runs.map(savedRun);
   if (runs.some((run) => run === null)) return null;
   return { to: raw.to, days: raw.days, runs: runs.flatMap((run) => run ?? []) };
