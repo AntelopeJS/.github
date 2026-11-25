@@ -4,7 +4,6 @@ import { describe, test } from "node:test";
 import {
   commitLevel,
   computePlan,
-  isRegistrySpec,
   renderPlan,
   revertedCommits,
   withoutReverts,
@@ -15,6 +14,7 @@ import {
   type Reverted,
 } from "./plan.ts";
 import { nonRegistrySpecs, registrySpecs } from "./registry-specs.ts";
+import { isRegistrySpec } from "./version.ts";
 import { readText } from "./helpers/read.ts";
 
 function commit(subject: string, body = "", reverts: readonly Reverted[] = []): Commit {

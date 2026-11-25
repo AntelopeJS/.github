@@ -1,6 +1,7 @@
 import { isAncestor, type Checkout, type MergedPull, type Revision } from "./git.ts";
 import type { Run } from "./plan.ts";
-import { isRecord, type System } from "./system.ts";
+import { isJsonObject, isNumber, isString, parseJson } from "./json.ts";
+import type { System } from "./system.ts";
 
 const runPollMilliseconds = 15_000;
 const runViewRetries = 8;
@@ -21,21 +22,11 @@ export type RunOutcome =
   | { kind: "incomplete"; detail: string }
   | { kind: "unknown"; detail: string; url: string };
 
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
 function parseRuns(text: string): { id: number; branch: string }[] | null {
   const value = parseJson(text);
   if (!Array.isArray(value)) return null;
-  return value.flatMap((run: unknown) =>
-    isRecord(run) && typeof run.databaseId === "number" && typeof run.headBranch === "string"
-      ? [{ id: run.databaseId, branch: run.headBranch }]
-      : [],
+  return value.flatMap((run) =>
+    isJsonObject(run) && isNumber(run.databaseId) && isString(run.headBranch) ? [{ id: run.databaseId, branch: run.headBranch }] : [],
   );
 }
 
@@ -50,8 +41,8 @@ function listRuns(system: System, slug: string): { id: number; branch: string }[
 function viewRun(system: System, slug: string, id: number): { status: string; conclusion: string; url: string } | null {
   const result = system.run("gh", ["run", "view", String(id), "--repo", slug, "--json", "status,conclusion,url"]);
   const value = result.status === 0 ? parseJson(result.stdout) : null;
-  if (!isRecord(value) || typeof value.status !== "string") return null;
-  return { status: value.status, conclusion: String(value.conclusion ?? ""), url: String(value.url ?? "") };
+  if (!isJsonObject(value) || !isString(value.status)) return null;
+  return { status: value.status, conclusion: isString(value.conclusion) ? value.conclusion : "", url: isString(value.url) ? value.url : "" };
 }
 
 function npmHolds(system: System, name: string, version: string): boolean | null {
@@ -134,13 +125,13 @@ function parsePulls(text: string): MergedPull[] {
   const value = parseJson(text);
   if (!Array.isArray(value)) return [];
   return value
-    .flatMap((pull: unknown) =>
-      isRecord(pull) &&
-      typeof pull.number === "number" &&
-      typeof pull.headRefOid === "string" &&
-      isRecord(pull.mergeCommit) &&
-      typeof pull.mergeCommit.oid === "string"
-        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid, branch: typeof pull.headRefName === "string" ? pull.headRefName : "" }]
+    .flatMap((pull) =>
+      isJsonObject(pull) &&
+      isNumber(pull.number) &&
+      isString(pull.headRefOid) &&
+      isJsonObject(pull.mergeCommit) &&
+      isString(pull.mergeCommit.oid)
+        ? [{ number: pull.number, mergeCommit: pull.mergeCommit.oid, head: pull.headRefOid, branch: isString(pull.headRefName) ? pull.headRefName : "" }]
         : [],
     )
     .sort((left, right) => right.number - left.number);

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { after } from "node:test";
-import { parseObject } from "./json.ts";
+import { isString, parseObject, type Json } from "./json.ts";
 import type { RunResult, System } from "./system.ts";
 
 const root = mkdtempSync(join(tmpdir(), "release-train-"));
@@ -21,10 +21,10 @@ export function git(repository: string, ...args: string[]): string {
   return result.stdout.trim();
 }
 
-export function commit(repository: string, message: string, files: Record<string, unknown>, author = "Test"): string {
+export function commit(repository: string, message: string, files: Record<string, Json>, author = "Test"): string {
   for (const [file, content] of Object.entries(files)) {
     mkdirSync(dirname(join(repository, file)), { recursive: true });
-    writeFileSync(join(repository, file), typeof content === "string" ? content : `${JSON.stringify(content, null, 2)}\n`);
+    writeFileSync(join(repository, file), isString(content) ? content : `${JSON.stringify(content, null, 2)}\n`);
   }
   git(repository, "add", "--all");
   git(repository, "commit", "--quiet", "--allow-empty", `--author=${author} <test@example.com>`, "-m", message);
@@ -132,6 +132,64 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   let err = "";
   const answer = (stdout: string, status = 0): RunResult => ({ status, stdout, stderr: status === 0 ? "" : "failed" });
   const flag = (args: readonly string[], name: string): string => args[args.indexOf(name) + 1] ?? "";
+  const distTag = (name: string): RunResult => {
+    const version = latest.get(name) ?? gh.latest?.[name];
+    const spec = `${name}@${version}`;
+    const lag = lags[spec] ?? 0;
+    if (lag > 0) lags[spec] = lag - 1;
+    if (version === undefined || lag > 0) return answer("previous\n");
+    return answer(`${version}\n`);
+  };
+  const npmView = (spec: string): RunResult => {
+    const version = spec.slice(spec.lastIndexOf("@") + 1);
+    const lag = lags[spec] ?? 0;
+    if (released.has(version) && lag > 0) lags[spec] = lag - 1;
+    const held = gh.npm?.[spec] ?? (released.has(version) && lag === 0 ? version : undefined);
+    if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
+    return held === "error" ? answer("", 1) : answer(`${held}\n`);
+  };
+  const dispatch = (repo: string, args: readonly string[]): RunResult => {
+    if (conclusionOf.get(repo) === "rejected") return answer("", 1);
+    if (conclusionOf.get(repo) !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0, name: "" });
+    const fields = Object.fromEntries(
+      args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
+    );
+    const dispatched = runs.at(-1);
+    if (dispatched !== undefined && conclusionOf.get(repo) !== "lost") {
+      const shown = git(join(root, repo.slice(repo.indexOf("/") + 1)), "show", `${fields["release-commit"]}:${posix.join(fields["package-directory"] ?? ".", "package.json")}`);
+      const { name } = parseObject(shown);
+      assert.ok(isString(name));
+      dispatched.name = name;
+    }
+    gh.dispatched?.(repo, fields);
+    return answer("");
+  };
+  const viewRun = (repo: string, id: string | undefined): RunResult => {
+    const run = runs.find((candidate) => String(candidate.id) === id);
+    assert.ok(run, `no run ${id}`);
+    const view = gh.views?.[repo]?.shift() ?? (run.views === 0 ? "running" : "done");
+    run.views += 1;
+    if (view === "fail") return answer("", 1);
+    const status = view === "running" ? "in_progress" : "completed";
+    const conclusion = status === "completed" ? (conclusionOf.get(repo) ?? "success") : "";
+    if (conclusion === "success") {
+      released.add(run.version);
+      latest.set(run.name, run.version);
+    }
+    return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
+  };
+  const runGh = (args: readonly string[]): RunResult => {
+    if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
+    if (args[0] === "pr") return answer(JSON.stringify(flag(args, "--base") === "main" ? (new Map(Object.entries(pulls)).get(flag(args, "--repo")) ?? []) : []));
+    if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
+    const repo = flag(args, "--repo");
+    if (args[0] === "workflow") return dispatch(repo, args);
+    if (args[0] === "run" && args[1] === "list") {
+      const listed = runs.filter((run) => run.repo === repo).map((run) => ({ databaseId: run.id, headBranch: run.branch }));
+      return answer(JSON.stringify(listed));
+    }
+    return viewRun(repo, args[2]);
+  };
   const system: System = {
     run: (command, args) => {
       if (command === "git") {
@@ -139,60 +197,9 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
         return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
       }
       calls.push([...args]);
-      if (command === "npm" && args[2] === "dist-tags.latest") {
-        const name = args[1] ?? "";
-        const version = latest.get(name) ?? gh.latest?.[name];
-        const spec = `${name}@${version}`;
-        const lag = lags[spec] ?? 0;
-        if (lag > 0) lags[spec] = lag - 1;
-        if (version === undefined || lag > 0) return answer("previous\n");
-        return answer(`${version}\n`);
-      }
-      if (command === "npm") {
-        const spec = args[1] ?? "";
-        const version = spec.slice(spec.lastIndexOf("@") + 1);
-        const lag = lags[spec] ?? 0;
-        if (released.has(version) && lag > 0) lags[spec] = lag - 1;
-        const held = gh.npm?.[spec] ?? (released.has(version) && lag === 0 ? version : undefined);
-        if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
-        return held === "error" ? answer("", 1) : answer(`${held}\n`);
-      }
-      if (gh.down || (gh.pullsDown && args[0] === "pr")) return answer("", 1);
-      if (args[0] === "pr") return answer(JSON.stringify(flag(args, "--base") === "main" ? (new Map(Object.entries(pulls)).get(flag(args, "--repo")) ?? []) : []));
-      if (args[0] === "api") return gh.compareDown ? { status: 1, stdout: "", stderr: "gh: Bad Gateway (HTTP 502)" } : compare(args[1] ?? "");
-      const repo = flag(args, "--repo");
-      if (args[0] === "workflow") {
-        if (conclusionOf.get(repo) === "rejected") return answer("", 1);
-        if (conclusionOf.get(repo) !== "lost") runs.push({ id: 100 + runs.length, repo, branch: flag(args, "--ref"), version: flag(args, "-f").slice("release-version=".length), views: 0, name: "" });
-        const fields = Object.fromEntries(
-          args.filter((_, index) => args[index - 1] === "-f").map((field) => [field.slice(0, field.indexOf("=")), field.slice(field.indexOf("=") + 1)]),
-        );
-        const dispatched = runs.at(-1);
-        if (dispatched !== undefined && conclusionOf.get(repo) !== "lost") {
-          const shown = git(join(root, repo.slice(repo.indexOf("/") + 1)), "show", `${fields["release-commit"]}:${posix.join(fields["package-directory"] ?? ".", "package.json")}`);
-          const { name } = parseObject(shown);
-          assert.ok(typeof name === "string");
-          dispatched.name = name;
-        }
-        gh.dispatched?.(repo, fields);
-        return answer("");
-      }
-      if (args[0] === "run" && args[1] === "list") {
-        const listed = runs.filter((run) => run.repo === repo).map((run) => ({ databaseId: run.id, headBranch: run.branch }));
-        return answer(JSON.stringify(listed));
-      }
-      const run = runs.find((candidate) => String(candidate.id) === args[2]);
-      assert.ok(run, `no run ${args[2]}`);
-      const view = gh.views?.[repo]?.shift() ?? (run.views === 0 ? "running" : "done");
-      run.views += 1;
-      if (view === "fail") return answer("", 1);
-      const status = view === "running" ? "in_progress" : "completed";
-      const conclusion = status === "completed" ? (conclusionOf.get(repo) ?? "success") : "";
-      if (conclusion === "success") {
-        released.add(run.version);
-        latest.set(run.name, run.version);
-      }
-      return answer(JSON.stringify({ status, conclusion, url: `https://github.com/${repo}/actions/runs/${run.id}` }));
+      if (command === "npm" && args[2] === "dist-tags.latest") return distTag(args[1] ?? "");
+      if (command === "npm") return npmView(args[1] ?? "");
+      return runGh(args);
     },
     sleep: (milliseconds) => {
       sleeps.push(milliseconds);

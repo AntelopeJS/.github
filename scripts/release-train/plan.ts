@@ -1,5 +1,4 @@
-/** Release level of a commit or a package. A breaking change ships as a minor, never as a major. */
-export type Level = "minor" | "patch";
+import { bumpVersion, compareCore, isPreviewSpec, isRegistrySpec, parseVersion, requireVersion, stableRange, type Level, type Version } from "./version.ts";
 
 /** One commit since the last stable tag, with the release level it asks for. */
 export interface Commit {
@@ -120,16 +119,6 @@ export interface PlanOptions {
   contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
-interface Version {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease: string | null;
-}
-
-const versionPattern =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-const previewPattern = /\d+\.\d+\.\d+-/;
 const commitIdentifierPattern = /^g([0-9a-f]{7,40})$/;
 const headerPattern = /^([a-z]+)(?:\(([^()]*)\))?(!)?: (\S.*)$/;
 const breakingFooterPattern = /^BREAKING[ -]CHANGE:/m;
@@ -137,68 +126,7 @@ const revertedCommitPattern = /^This reverts commit ([0-9a-f]{7,40})\b/gm;
 const revertedPullPattern = /^Reverts ([\w.-]+\/[\w.-]+)#(\d+)\s*$/gm;
 const patchTypes = new Set(["feat", "fix", "perf", "refactor", "types", "revert"]);
 const runtimeFields = dependencyFields.filter((field) => field !== "devDependencies");
-const versionPart = "(?:0|[1-9]\\d*|[xX*])";
-const identifiers = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
-const partial = `v?${versionPart}(?:\\.${versionPart}(?:\\.${versionPart}(?:-${identifiers})?(?:\\+${identifiers})?)?)?`;
-const partialPattern = new RegExp(`^${partial}$`);
-const comparatorPattern = new RegExp(`^(?:[<>]=?|=|~>?|\\^)?${partial}$`);
-const aliasPattern = /^npm:(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@(.+)$/;
 const workspacePrefix = "workspace:";
-
-/** Parses `M.m.p` or `M.m.p-pre`, or returns null. */
-export function parseVersion(text: string): Version | null {
-  const match = versionPattern.exec(text);
-  if (match === null) return null;
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ?? null,
-  };
-}
-
-function requireVersion(text: string): Version {
-  const version = parseVersion(text);
-  if (version === null) throw new Error(`not a version: ${text}`);
-  return version;
-}
-
-/** Orders two versions by major, minor and patch, ignoring any prerelease. */
-export function compareCore(left: string, right: string): number {
-  const a = requireVersion(left);
-  const b = requireVersion(right);
-  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
-}
-
-/** The next version at a level: minor gives `M.(m+1).0`, patch gives `M.m.(p+1)`. */
-export function bumpVersion(version: string, level: Level): string {
-  const { major, minor, patch } = requireVersion(version);
-  return level === "minor" ? `${major}.${minor + 1}.0` : `${major}.${minor}.${patch + 1}`;
-}
-
-/** The org range for a stable version: `>=M.m.p <M.(m+1).0`. */
-export function stableRange(version: string): string {
-  const { major, minor } = requireVersion(version);
-  return `>=${version} <${major}.${minor + 1}.0`;
-}
-
-/** Whether a dependency spec names a semver prerelease. */
-export function isPreviewSpec(spec: string): boolean {
-  return previewPattern.test(spec);
-}
-
-/**
- * Whether a dependency spec resolves from the registry: a semver range, or an `npm:` alias to one.
- * A path, `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec does not.
- */
-export function isRegistrySpec(spec: string): boolean {
-  const range = aliasPattern.exec(spec)?.[1] ?? spec;
-  return range.split("||").every((set) => {
-    const words = set.trim().replace(/([<>=~^])\s+/g, "$1").split(/\s+/);
-    if (words.length === 3 && words[1] === "-") return words.every((word, index) => index === 1 || partialPattern.test(word));
-    return words.every((word) => comparatorPattern.test(word));
-  });
-}
 
 interface Header {
   type: string;
@@ -275,6 +203,12 @@ function edgesOf(source: PackageSource, targets: ReadonlySet<string>, runtimeOnl
     .map(({ name }) => name);
 }
 
+/** Where Tarjan's walk first reached a package, and the lowest index reachable from it. */
+interface Visit {
+  index: number;
+  low: number;
+}
+
 function components(sources: readonly PackageSource[], targets: ReadonlySet<string>, runtimeOnly: boolean): PackageSource[][] {
   const members = new Set(sources.map((source) => source.manifest.name));
   const edges = new Map(
@@ -283,11 +217,11 @@ function components(sources: readonly PackageSource[], targets: ReadonlySet<stri
       edgesOf(source, targets, runtimeOnly).filter((name) => members.has(name)),
     ]),
   );
-  const visited = new Map<string, { index: number; low: number }>();
+  const visited = new Map<string, Visit>();
   const stack: string[] = [];
   const result: PackageSource[][] = [];
 
-  const visit = (name: string): { index: number; low: number } => {
+  const visit = (name: string): Visit => {
     const node = { index: visited.size, low: visited.size };
     visited.set(name, node);
     stack.push(name);
@@ -368,6 +302,8 @@ interface Resolution {
 
 type PinOutcome = { range: string } | { reason: string };
 
+type VersionOutcome = { version: string } | { reason: string };
+
 type SiblingOutcome =
   | {
       range: string;
@@ -388,12 +324,8 @@ function admits(operator: string, base: string, version: string): boolean {
   return from.slice(0, fixed).every((part, index) => part === to[index]);
 }
 
-function resolveSibling(source: PackageSource, { field, name, spec }: Dependency, context: Resolution): SiblingOutcome {
-  const range = spec.slice(workspacePrefix.length);
-  if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
-  const sibling = context.listed.get(name);
-  if (sibling === undefined) return { reason: "which this train does not list" };
-  if (sibling.slug !== source.slug) return { reason: `which this train lists from ${sibling.slug}` };
+/** The version the plan gives a listed sibling: its planned release, or its stable release when it has none. */
+function siblingVersion(name: string, sibling: PackageSource, context: Resolution): VersionOutcome {
   const planned = context.resolved.get(name);
   if (planned === undefined && !context.exclude.has(name)) return { reason: "which releases after it" };
   if (planned?.status === "refused") return { reason: "which is refused" };
@@ -402,6 +334,18 @@ function resolveSibling(source: PackageSource, { field, name, spec }: Dependency
   if (planned?.status !== "release" && sibling.manifest.version !== version) {
     return { reason: `whose package.json holds ${sibling.manifest.version}, not its stable ${version}` };
   }
+  return { version };
+}
+
+function resolveSibling(source: PackageSource, { field, name, spec }: Dependency, context: Resolution): SiblingOutcome {
+  const range = spec.slice(workspacePrefix.length);
+  if (range !== "*" && range !== "^" && range !== "~") return { reason: "which is not workspace:*, workspace:^ or workspace:~" };
+  const sibling = context.listed.get(name);
+  if (sibling === undefined) return { reason: "which this train does not list" };
+  if (sibling.slug !== source.slug) return { reason: `which this train lists from ${sibling.slug}` };
+  const outcome = siblingVersion(name, sibling, context);
+  if ("reason" in outcome) return outcome;
+  const { version } = outcome;
   const packed = source.stableManifest?.[field]?.[name] === spec && Object.hasOwn(source.stableSiblings, name) ? source.stableSiblings[name] : undefined;
   const published = packed === undefined || admits(range, packed, version) ? null : packedRange(range, packed);
   return { range: packedRange(range, version), published };
@@ -431,7 +375,17 @@ function resolvePin({ name, spec }: Dependency, context: Resolution): PinOutcome
   return { range: stableRange(target) };
 }
 
-function resolveEntry(source: PackageSource, context: Resolution): Entry {
+/** What the dependencies of a package resolve to, and why any of them refuses its release. */
+interface DependencyResolution {
+  refusals: Set<string>;
+  ranges: Record<string, string>;
+  kept: KeptPin[];
+  siblings: Sibling[];
+  moves: string[];
+  pins: Dependency[];
+}
+
+function resolveDependencies(source: PackageSource, context: Resolution): DependencyResolution {
   const refusals = new Set<string>();
   const ranges: Record<string, string> = {};
   const kept: KeptPin[] = [];
@@ -465,6 +419,11 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     } else if (field === "devDependencies") kept.push({ name, spec, reason: outcome.reason });
     else refusals.add(`depends on preview ${name}@${spec}, ${outcome.reason}`);
   }
+  return { refusals, ranges, kept, siblings, moves, pins };
+}
+
+function resolveEntry(source: PackageSource, context: Resolution): Entry {
+  const { refusals, ranges, kept, siblings, moves, pins } = resolveDependencies(source, context);
   if (refusals.size > 0) return { status: "refused", source, reasons: [...refusals] };
 
   const reasons: string[] = [];
