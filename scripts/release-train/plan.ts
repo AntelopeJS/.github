@@ -1,3 +1,4 @@
+import { raisedFloors, type Requirement } from "./floors.ts";
 import { bumpVersion, compareCore, isPreviewSpec, isRegistrySpec, parseVersion, requireVersion, stableRange, type Level, type Version } from "./version.ts";
 
 /** One commit since the last stable tag, with the release level it asks for. */
@@ -49,6 +50,10 @@ export interface PackageSource {
   stableManifest: Manifest | null;
   /** The version of each other listed package of the same checkout at the stable tag, by name, which `pnpm pack` wrote for a `workspace:` spec on it. */
   stableSiblings: Record<string, string>;
+  /** The ranges the `package.json` files under the directory declare on other `@antelopejs` packages at the head. */
+  requirements: Requirement[];
+  /** The same ranges at the stable tag, or none when there is no stable tag. */
+  stableRequirements: Requirement[];
   /** The commits on the default branch since the stable tag. */
   commits: Commit[];
   /** The commits of the tasks this release ships, read from the heads of the pull requests merged since the stable tag. */
@@ -116,6 +121,8 @@ export interface Plan {
 export interface PlanOptions {
   ref: string;
   exclude: readonly string[];
+  /** The packages whose raised requirements release with the dependents that lock the required package. */
+  coordinated: readonly string[];
   contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
@@ -297,6 +304,7 @@ interface Resolution {
   /** For each listed package, the runtime preview pins of other listed packages newer than its stable release. */
   awaited: ReadonlyMap<string, readonly AwaitedPin[]>;
   resolved: ReadonlyMap<string, Entry>;
+  coordinated: ReadonlySet<string>;
   contains: (name: string, sha: string, holder: Holder) => boolean;
 }
 
@@ -443,6 +451,11 @@ function resolveEntry(source: PackageSource, context: Resolution): Entry {
     source.stable === null
       ? source.manifest.version.replace(/-.*$/, "")
       : bumpVersion(source.stable, level);
+  const raised = raisedFloors(source, level);
+  if (raised.length > 0 && !context.coordinated.has(source.manifest.name)) {
+    return { status: "refused", source, reasons: raised.map(({ refusal }) => refusal) };
+  }
+  reasons.push(...raised.map(({ line }) => line));
   return { status: "release", source, from: source.stable, to, level, reasons, ranges, kept, siblings };
 }
 
@@ -469,7 +482,14 @@ export function computePlan(sources: readonly PackageSource[], options: PlanOpti
   const exclude = new Set(options.exclude);
   const resolved = new Map<string, Entry>();
   const listed = new Map(sources.map((source) => [source.manifest.name, source]));
-  const context: Resolution = { listed, exclude, resolved, contains: options.contains, awaited: awaitedPins(sources, listed, exclude) };
+  const context: Resolution = {
+    listed,
+    exclude,
+    resolved,
+    coordinated: new Set(options.coordinated),
+    contains: options.contains,
+    awaited: awaitedPins(sources, listed, exclude),
+  };
   for (const component of releaseOrder(sources, exclude)) {
     const names = component.map((source) => source.manifest.name);
     for (const source of component) {

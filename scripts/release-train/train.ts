@@ -10,13 +10,14 @@ import type { System } from "./system.ts";
 interface Command {
   action: "plan" | "go";
   exclude: string[];
+  coordinated: string[];
   targets: Target[];
 }
 
 const usage = [
   "Usage:",
-  "  node scripts/release-train/train.ts plan [--exclude <name>]... <package>...",
-  "  node scripts/release-train/train.ts go [--exclude <name>]... <package>...",
+  "  node scripts/release-train/train.ts plan [--exclude <name>]... [--coordinated <name>]... <package>...",
+  "  node scripts/release-train/train.ts go [--exclude <name>]... [--coordinated <name>]... <package>...",
   "A package is owner/repo or a path to a git checkout, optionally followed by :directory.",
 ].join("\n");
 const slugPattern = /^[\w.-]+\/[\w.-]+$/;
@@ -47,7 +48,7 @@ function parseCommand(argv: readonly string[]): Command {
   if (action !== "plan" && action !== "go") throw new Error(usage);
   const { values, positionals } = parseArgs({
     args: rest,
-    options: { ref: { type: "string" }, exclude: { type: "string", multiple: true } },
+    options: { ref: { type: "string" }, exclude: { type: "string", multiple: true }, coordinated: { type: "string", multiple: true } },
     allowPositionals: true,
     strict: true,
   });
@@ -58,6 +59,7 @@ function parseCommand(argv: readonly string[]): Command {
   return {
     action,
     exclude: values.exclude ?? [],
+    coordinated: values.coordinated ?? [],
     targets: positionals.map(parseTarget),
   };
 }
@@ -105,8 +107,10 @@ function buildPlan(command: Command, system: System): Plan {
   const names = sources.map((source) => source.manifest.name);
   const duplicate = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicate !== undefined) throw new Error(`${duplicate} is listed twice.`);
-  const unknown = command.exclude.find((name) => !names.includes(name));
-  if (unknown !== undefined) throw new Error(`--exclude ${unknown} names no listed package.`);
+  for (const option of ["exclude", "coordinated"] as const) {
+    const unknown = command[option].find((name) => !names.includes(name));
+    if (unknown !== undefined) throw new Error(`--${option} ${unknown} names no listed package.`);
+  }
   const ref = [...new Set(sources.map((source) => source.branch))].join(", ");
   const search = commitSearch(system, pulls);
   const contains = (name: string, sha: string, holder: Holder): boolean => {
@@ -116,7 +120,7 @@ function buildPlan(command: Command, system: System): Plan {
     const { stable, tagName } = place.source;
     return stable !== null && search(place.from, { ...place.revision, name: `refs/tags/${tagName.replace("${version}", stable)}` }, sha);
   };
-  return computePlan(sources, { ref, exclude: command.exclude, contains });
+  return computePlan(sources, { ref, exclude: command.exclude, coordinated: command.coordinated, contains });
 }
 
 function label(entry: Run): string {

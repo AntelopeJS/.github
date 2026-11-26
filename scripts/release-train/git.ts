@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
+import { requirementFields, type Requirement } from "./floors.ts";
 import { commitLevel, dependencyFields, highestLevel, revertedCommits, withoutReverts, type Commit, type Manifest, type PackageSource } from "./plan.ts";
 import { compareCore, parseVersion } from "./version.ts";
-import { isJsonObject, isString, readJson, type Json } from "./json.ts";
+import { isJsonObject, isString, parseJson, readJson, type Json } from "./json.ts";
 import { exec, type System } from "./system.ts";
 
 /** A package named on the command line: a GitHub repository or a local checkout, and a directory in it. */
@@ -127,6 +128,33 @@ function packedVersion(system: System, repository: string, revision: string, dir
   }
   if (!isJsonObject(value) || !isString(value.name) || !isString(value.version) || parseVersion(value.version) === null) return [];
   return [[value.name, value.version]];
+}
+
+function requirementsOf(text: string, file: string, own: string): Requirement[] {
+  const value = parseJson(text);
+  if (!isJsonObject(value)) return [];
+  return requirementFields.flatMap((field) => {
+    const specs = value[field];
+    if (!isJsonObject(specs)) return [];
+    return Object.entries(specs).flatMap(([name, spec]) =>
+      isString(spec) && name.startsWith("@antelopejs/") && name !== own ? [{ file, field, name, spec }] : [],
+    );
+  });
+}
+
+/**
+ * The requirements every tracked `package.json` under the directory declares at a revision, less those of the
+ * `nested` directories. None without a revision.
+ */
+function readRequirements(system: System, repository: string, revision: string | null, place: Place, own: string): Requirement[] {
+  const { directory, nested } = place;
+  if (revision === null) return [];
+  return exec(system, "git", ["-C", repository, "ls-tree", "-r", "-z", "--name-only", revision, "--", directory])
+    .split("\0")
+    .filter((file) => posix.basename(file) === "package.json" && !nested.some((inner) => file.startsWith(`${inner}/`)))
+    .flatMap((file) =>
+      requirementsOf(exec(system, "git", ["-C", repository, "show", `${revision}:${file}`]), posix.relative(directory, file), own),
+    );
 }
 
 function readTagName(system: System, repository: string, revision: string, directory: string): string {
@@ -291,7 +319,9 @@ export function readSource(system: System, from: Checkout, { branch, name: revis
   const cycle = merged === null || merged.length === 0 ? null : cycleNotes(system, from, { head, tag, paths, shipped }, merged, cancelled);
   const commits = cycle === null ? kept : kept.filter((commit) => !titleExplained(commit, cycle.explained.get(commit.sha) ?? []));
   const notes = cycle === null ? kept : cycle.notes;
-  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, stableSiblings, commits, notes };
+  const requirements = readRequirements(system, repository, revision, place, manifest.name);
+  const stableRequirements = readRequirements(system, repository, tag, place, manifest.name);
+  return { slug: from.slug, directory, branch, head, tagName, manifest, stable: stable?.version ?? null, stableManifest, stableSiblings, requirements, stableRequirements, commits, notes };
 }
 
 /** Whether a commit is an ancestor of, or equal to, another commit of the checkout. */
