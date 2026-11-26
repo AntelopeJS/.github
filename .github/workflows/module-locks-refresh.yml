@@ -67,11 +67,23 @@ jobs:
         env:
           PROJECTS: ${{ inputs.projects }}
         run: |
-          # ajs installs each module with --ignore-workspace, which cannot resolve a workspace: range, so install in the workspace instead
+          # ajs installs each module with --ignore-workspace, which cannot resolve a workspace: range, so install in the workspace and dedupe it, so that every package builds against one copy of each interface
           shim="$RUNNER_TEMP/workspace-shim"
           mkdir -p "$shim"
-          printf '%s\n' '#!/usr/bin/env bash' 'args=()' 'for arg in "$@"; do' '  [ "$arg" = --ignore-workspace ] || args+=("$arg")' 'done' "exec $(command -v corepack) \"\${args[@]}\"" > "$shim/corepack"
+          cat > "$shim/corepack" <<'SHIM'
+          #!/usr/bin/env bash
+          args=()
+          for arg in "$@"; do
+            [ "$arg" = --ignore-workspace ] || args+=("$arg")
+          done
+          "$REAL_COREPACK" "${args[@]}" || exit
+          if [ "${args[1]:-}" = install ]; then
+            exec "$REAL_COREPACK" "${args[0]}" dedupe
+          fi
+          SHIM
           chmod +x "$shim/corepack"
+          export REAL_COREPACK
+          REAL_COREPACK=$(command -v corepack)
           while IFS= read -r project; do
             if [ -z "$project" ]; then
               continue
