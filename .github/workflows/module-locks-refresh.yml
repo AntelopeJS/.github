@@ -90,6 +90,13 @@ jobs:
           COMMANDS: ${{ inputs.commands }}
         run: bash -euo pipefail -c "$COMMANDS"
 
+      - name: Run the repository's sync script, so the files antelopejs-sync writes follow the refreshed ranges
+        run: |
+          pnpm run --silent --if-present sync >&2
+          if ! git diff --quiet -- package.json; then
+            pnpm install --lockfile-only --reporter=silent >&2
+          fi
+
       - name: Describe the refresh
         id: describe
         env:

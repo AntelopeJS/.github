@@ -738,11 +738,13 @@ examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 ### Renovate sync
 
 The reusable `ci-renovate-sync.yml` workflow takes no inputs. On a pull request
-from a `renovate/*` branch of the same repository whose diff changes
-`@antelopejs/tooling-configs`, its `renovate-sync` job installs, runs
-`antelopejs-sync` (with `--profile template` when the repository's `pack`
-custom property is `template`) and commits the output to the branch as
-`github-actions[bot]`, so the bump pull request becomes conformant on its own.
+from a `renovate/*` branch of the same repository whose diff changes a
+`package.json` or a `pnpm-lock.yaml`, its `renovate-sync` job installs, runs the
+repository's `sync` script (the write side of the `sync:check` its checks run,
+so the profile is the repository's own; a repository without one is left
+alone) and commits the output to the branch as `github-actions[bot]`, so the
+bump pull request becomes conformant on its own. The hosted Renovate app runs
+no `postUpgradeTasks`, so this job does that work.
 A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
 `checks` on the new head. A check from a `workflow_dispatch` run does not count
@@ -824,8 +826,10 @@ command records the newest release each range accepts, resolves the
 dependencies of every locked module again and deletes the locks no environment
 uses. It runs a second time when the first run fails, until a core release
 carries AntelopeJS/antelopejs#535. The workflow then runs
-`pnpm install --no-frozen-lockfile` and the caller's `commands`. It fails
-without pushing when the change touches `.github/` or `.gitmodules`, adds a
+`pnpm install --no-frozen-lockfile`, the caller's `commands` and the
+repository's `sync` script, so a moved range reaches the files
+`antelopejs-sync` writes from it, such as the README compatibility table. It
+fails without pushing when the change touches `.github/` or `.gitmodules`, adds a
 symlink or a submodule, or holds a path `git apply` refuses, such as one under
 `.git` or outside the checkout. When a file changed, it pushes the result to `antelopejs/module-locks` with an installation
 token of the `antelopejs-release` GitHub App and opens a pull request into the
@@ -948,8 +952,11 @@ The preset:
 - runs daily before 4:00 in Europe/Brussels, and rebases a branch only when it
   conflicts, since the merge queue tests the merged result;
 - enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
-  green one enters the merge queue. Majors stay manual, and so do 0.x minors,
-  which can break; a minor from 1.x on keeps auto-merge. Every update in
+  green one enters the merge queue. Majors stay manual, and so do third-party
+  0.x minors, which can break; a minor from 1.x on keeps auto-merge, and so
+  does a 0.x minor of an `@antelopejs` package, an `AntelopeJS/*` action or
+  the tooling configs group, whose checks cover the bump; `oxfmt` and `oxlint`
+  still wait out the three days of a third-party release. Every update in
   `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
   `antelope-compliance` stays manual, since they have no merge queue. A third-party release waits
   three days before such an update opens; an `@antelopejs` one does not;

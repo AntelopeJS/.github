@@ -40,7 +40,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/tools/node_modules/.bin/renovate-config-validator" --strict --no-global renovate.json5
 
-      - name: Lint the module locks workflows
+      - name: Lint the module locks and Renovate sync workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -50,4 +50,4 @@ jobs:
           curl -fsSLo "$RUNNER_TEMP/$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --quiet
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" .github/workflows/module-locks-checks.yml .github/workflows/module-locks-refresh.yml .github/workflows/module-locks-renovate.yml
+          "$RUNNER_TEMP/actionlint" .github/workflows/ci-renovate-sync.yml .github/workflows/module-locks-checks.yml .github/workflows/module-locks-refresh.yml .github/workflows/module-locks-renovate.yml
