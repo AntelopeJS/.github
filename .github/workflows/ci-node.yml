@@ -291,7 +291,7 @@ jobs:
 
       - name: Check documentation
         if: steps.leg.outputs.work == 'true' && inputs.docs-files != '' && (matrix.part == 'all' || matrix.part == 'checks')
-        uses: AntelopeJS/tooling-configs/actions/docs@0071b4bcf51cda8276c3ad318fbe496f2cef7abe # v0.8.2 + #419, #422 (0.8.3-next.390.g0071b4b)
+        uses: AntelopeJS/tooling-configs/actions/docs@e31be133d368451dd440fbd0b87b94e436998d36 # v0.10.7 + #419, #422 (0.8.3-next.390.g0071b4b)
         with:
           files: ${{ inputs.docs-files }}
           typescript-project: ${{ inputs.docs-typescript-project }}
