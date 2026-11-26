@@ -24,13 +24,15 @@ export function source(
     stable,
     stableManifest: stable === null ? null : { name: `@antelopejs/${name}`, version: stable, ...stableFields },
     stableSiblings: {},
+    requirements: [],
+    stableRequirements: [],
     commits,
     notes: commits,
   };
 }
 
 export function plan(sources: PackageSource[], exclude: string[] = [], contains = (_name: string, _sha: string) => true) {
-  return computePlan(sources, { ref: "main", exclude, contains });
+  return computePlan(sources, { ref: "main", exclude, coordinated: [], contains });
 }
 
 export function at(name: string): string {

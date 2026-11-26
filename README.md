@@ -281,6 +281,13 @@ dependency order.
   unchanged.
 - `--exclude <name>` leaves a package out of this release. It is listed under
   "Not now". Its commits stay unreleased, so the next plan includes them.
+- The plan refuses a release that raises or adds an `engines` or
+  `peerDependencies` floor on another `@antelopejs` package, in any
+  `package.json` under its directory, when the caret range of its stable
+  version admits the bump: a patch of a 0.x package, any release from 1.0.0
+  on. Dependents that lock the older version would break. Release a 0.x
+  package as a minor instead, or release those dependents with it and pass
+  `--coordinated <name>`, which releases it and lists each raise.
 
 `go` prints the plan, then dispatches `release.yml` on the
 default branch of each package to release, one at a time, with the planned

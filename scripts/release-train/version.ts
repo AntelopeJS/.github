@@ -67,10 +67,38 @@ export function isPreviewSpec(spec: string): boolean {
  * A path, `file:`, `link:`, `workspace:`, git, tarball or dist-tag spec does not.
  */
 export function isRegistrySpec(spec: string): boolean {
-  const range = aliasPattern.exec(spec)?.[1] ?? spec;
-  return range.split("||").every((set) => {
-    const words = set.trim().replace(/([<>=~^])\s+/g, "$1").split(/\s+/);
+  return comparatorSets(spec).every((words) => {
     if (words.length === 3 && words[1] === "-") return words.every((word, index) => index === 1 || partialPattern.test(word));
     return words.every((word) => comparatorPattern.test(word));
   });
+}
+
+function comparatorSets(spec: string): string[][] {
+  const range = aliasPattern.exec(spec)?.[1] ?? spec;
+  return range.split("||").map((set) => set.trim().replace(/([<>=~^])\s+/g, "$1").split(/\s+/));
+}
+
+function partialFloor(word: string): string {
+  const [core = ""] = word.replace(/^(?:[<>]=?|=|~>?|\^)?v?/, "").split(/[-+]/);
+  const parts = core.split(".");
+  return [0, 1, 2].map((index) => (/^\d+$/.test(parts[index] ?? "") ? Number(parts[index]) : 0)).join(".");
+}
+
+function setFloor(words: readonly string[]): string {
+  if (words.length === 3 && words[1] === "-") return partialFloor(words[0] ?? "");
+  return words
+    .filter((word) => word !== "" && !word.startsWith("<"))
+    .map(partialFloor)
+    .reduce((floor, bound) => (compareCore(bound, floor) > 0 ? bound : floor), "0.0.0");
+}
+
+/**
+ * The lowest version a range admits, as `M.m.p`: the lowest floor of its `||` sets, where a set floors at its
+ * highest lower bound, or at `0.0.0` when it has none. Null when the spec is not a registry range.
+ */
+export function rangeFloor(spec: string): string | null {
+  if (spec.trim() !== "" && !isRegistrySpec(spec)) return null;
+  return comparatorSets(spec)
+    .map(setFloor)
+    .reduce((lowest, floor) => (compareCore(floor, lowest) < 0 ? floor : lowest));
 }
