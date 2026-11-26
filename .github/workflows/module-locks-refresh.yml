@@ -67,6 +67,11 @@ jobs:
         env:
           PROJECTS: ${{ inputs.projects }}
         run: |
+          # ajs installs each module with --ignore-workspace, which cannot resolve a workspace: range, so install in the workspace instead
+          shim="$RUNNER_TEMP/workspace-shim"
+          mkdir -p "$shim"
+          printf '%s\n' '#!/usr/bin/env bash' 'args=()' 'for arg in "$@"; do' '  [ "$arg" = --ignore-workspace ] || args+=("$arg")' 'done' "exec $(command -v corepack) \"\${args[@]}\"" > "$shim/corepack"
+          chmod +x "$shim/corepack"
           while IFS= read -r project; do
             if [ -z "$project" ]; then
               continue
@@ -80,7 +85,7 @@ jobs:
               folder=$(dirname "$folder")
             done
             ajs="$folder/node_modules/.bin/ajs"
-            "$ajs" project modules update --fix -p "$project" < /dev/null >&2 || "$ajs" project modules update --fix -p "$project" < /dev/null >&2
+            PATH="$shim:$PATH" "$ajs" project modules update --fix -p "$project" < /dev/null >&2 || PATH="$shim:$PATH" "$ajs" project modules update --fix -p "$project" < /dev/null >&2
           done <<< "$PROJECTS"
           pnpm install --no-frozen-lockfile --reporter=silent >&2
 
