@@ -61,9 +61,10 @@
       automerge: true,
     },
     {
-      description: 'A 0.x minor can break, so it stays manual; 1.x and later keep auto-merge',
+      description: 'A third-party 0.x minor can break, so it stays manual; 1.x and later keep auto-merge. Our own packages and the tooling configs group merge on green, since their checks cover the bump',
       matchUpdateTypes: ['minor'],
       matchCurrentVersion: '/^v?0\\./',
+      matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**', '!oxfmt', '!oxlint', '!@oxlint/plugins'],
       automerge: false,
     },
     {

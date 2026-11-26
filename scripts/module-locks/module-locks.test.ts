@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { after, describe, test } from "node:test";
+import { join } from "node:path";
+import { describe, test } from "node:test";
 import { readText } from "./helpers/read.ts";
+import { nextRun, repoFile, repository, root, runStep, runs, git, write, type StepResult } from "./helpers/workflow.ts";
+import { SYNC_PATH, syncRepository } from "./helpers/sync.ts";
 
-const repoFile = (path: string): string => readText(new URL(`../../${path}`, import.meta.url));
 const refresh = repoFile(".github/workflows/module-locks-refresh.yml");
 const renovate = repoFile(".github/workflows/module-locks-renovate.yml");
 const committed = repoFile(".github/actions/module-locks-committed/action.yml");
@@ -23,121 +23,7 @@ const LOCK_COMMIT = "build(deps): record the module locks of the bumped modules"
 const BRANCH = "antelopejs/module-locks";
 const CHECK = "Check the refresh patch";
 const PUBLISH = "Open, update or close the pull request, and turn on its auto-merge";
-
-const root = mkdtempSync(join(tmpdir(), "module-locks-"));
-after(() => rmSync(root, { recursive: true, force: true }));
-
-const GIT_ENV = {
-  GIT_AUTHOR_NAME: "test",
-  GIT_AUTHOR_EMAIL: "test@example.com",
-  GIT_COMMITTER_NAME: "test",
-  GIT_COMMITTER_EMAIL: "test@example.com",
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_NOSYSTEM: "1",
-};
-
-const stubs = join(root, "bin");
-mkdirSync(stubs);
-writeFileSync(join(stubs, "pnpm"), '#!/usr/bin/env bash\necho "pnpm $*" >> "${PNPM_LOG:-/dev/null}"\n');
-chmodSync(join(stubs, "pnpm"), 0o755);
-writeFileSync(
-  join(stubs, "gh"),
-  `#!/usr/bin/env bash
-echo "gh $*" >> "\${GH_LOG:-/dev/null}"
-case "$1 $2" in
-  "pr list") response=$GH_OPEN ;;
-  "pr create") echo "https://github.com/$GITHUB_REPOSITORY/pull/7"; exit 0 ;;
-  "api graphql") response=$GH_GRAPHQL ;;
-  *) exit 0 ;;
-esac
-while [ "$#" -gt 0 ] && [ "$1" != --jq ]; do shift; done
-jq -r "$2" <<< "$response"
-`,
-);
-chmodSync(join(stubs, "gh"), 0o755);
-
-const indent = (line: string): number => line.length - line.trimStart().length;
-
-function runBlock(text: string, step: string): string {
-  const lines = text.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `- name: ${step}`);
-  assert.notEqual(start, -1, `no step ${step}`);
-  const run = lines.findIndex((line, index) => index > start && line.trim() === "run: |");
-  assert.notEqual(run, -1, `step ${step} has no run block`);
-  const own = indent(lines[run]);
-  const end = lines.findIndex((line, index) => index > run && line.trim() !== "" && indent(line) <= own);
-  return lines
-    .slice(run + 1, end === -1 ? undefined : end)
-    .map((line) => line.slice(own + 2))
-    .join("\n");
-}
-
-interface StepResult {
-  status: number;
-  stdout: string;
-  stderr: string;
-  outputs: Record<string, string>;
-}
-
-let runs = 0;
-function runStep(text: string, step: string, cwd: string, env: Record<string, string> = {}): StepResult {
-  runs += 1;
-  const temp = join(root, `runner-${runs}`);
-  mkdirSync(temp);
-  const script = join(temp, "step.sh");
-  const output = join(temp, "output");
-  writeFileSync(script, runBlock(text, step));
-  writeFileSync(output, "");
-  const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", script], {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...GIT_ENV,
-      PATH: `${stubs}:${process.env.PATH}`,
-      RUNNER_TEMP: temp,
-      GITHUB_OUTPUT: output,
-      GITHUB_STEP_SUMMARY: join(temp, "summary"),
-      ...env,
-    },
-  });
-  const outputs = Object.fromEntries(
-    readText(output)
-      .split("\n")
-      .filter((line) => line.includes("="))
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
-  );
-  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs };
-}
-
-function git(cwd: string, ...args: string[]): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...GIT_ENV } });
-  assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
-  return result.stdout.trim();
-}
-
-function write(dir: string, files: Record<string, string>): void {
-  for (const [path, content] of Object.entries(files)) {
-    mkdirSync(dirname(join(dir, path)), { recursive: true });
-    writeFileSync(join(dir, path), content);
-  }
-}
-
-let repos = 0;
-function repository(files: Record<string, string>): string {
-  repos += 1;
-  const origin = join(root, `origin-${repos}.git`);
-  const dir = join(root, `repo-${repos}`);
-  mkdirSync(dir);
-  git(root, "init", "-q", "--bare", "-b", "main", origin);
-  git(dir, "init", "-q", "-b", "main");
-  write(dir, { ".gitignore": "node_modules\n", ...files });
-  git(dir, "add", "-A");
-  git(dir, "commit", "-qm", "initial");
-  git(dir, "remote", "add", "origin", origin);
-  git(dir, "push", "-q", "origin", "main");
-  return dir;
-}
+const REFRESH_SYNC = "Run the repository's sync script, so the files antelopejs-sync writes follow the refreshed ranges";
 
 const lock = (folder: string, module: string, content = "lockfileVersion: '9.0'\n") => ({
   [`${folder}/${module}/pnpm-lock.yaml`]: content,
@@ -159,8 +45,7 @@ function refreshRun(dir: string, projects: string) {
 
 function refreshPatchChecks(): void {
   const checkPatch = (dir: string, patch: string): StepResult => {
-    runs += 1;
-    const temp = join(root, `patch-${runs}`);
+    const temp = join(root, `patch-${nextRun()}`);
     mkdirSync(join(temp, "module-locks"), { recursive: true });
     writeFileSync(join(temp, "module-locks", "refresh.patch"), patch);
     return runStep(refresh, CHECK, dir, { RUNNER_TEMP: temp });
@@ -357,6 +242,17 @@ describe("module-locks-refresh.yml", () => {
 
     assert.equal(runStep(refresh, UPDATE, dir, { PROJECTS: "a\nb\n" }).status, 0);
     assert.equal(readText(log), "project modules update --fix -p a\nproject modules update --fix -p b\n");
+  });
+
+  test("proposes the files the repository's sync script writes after the refresh", () => {
+    const dir = syncRepository("antelopejs-sync", "README.md");
+
+    const sync = runStep(refresh, REFRESH_SYNC, dir, SYNC_PATH);
+    const describe = runStep(refresh, DESCRIBE, dir, { GH_TOKEN: "unused", BRANCH });
+
+    assert.equal(sync.status, 0, sync.stderr);
+    assert.equal(describe.outputs.state, "changed");
+    assert.match(readText(join(root, `runner-${runs}`, "module-locks", "refresh.patch")), /^\+synced $/m);
   });
 
   describe("checks the refresh patch before it pushes", refreshPatchChecks);

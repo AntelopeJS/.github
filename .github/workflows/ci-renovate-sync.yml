@@ -30,21 +30,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Detect a tooling-configs bump
+      - name: Detect a dependency bump
         id: bump
         run: |
-          if git diff -U0 "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' ':(glob)**/pnpm-lock.yaml' | grep -qE '^[+-].*@antelopejs/tooling-configs'; then
+          if ! git diff --quiet "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' ':(glob)**/pnpm-lock.yaml'; then
             echo "bumped=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Read the pack property
-        id: pack
-        if: steps.bump.outputs.bumped == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          pack=$(gh api "repos/${GH_REPO}/properties/values" --jq '.[] | select(.property_name == "pack") | .value')
-          echo "pack=${pack}" >> "$GITHUB_OUTPUT"
 
       - if: steps.bump.outputs.bumped == 'true'
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -62,14 +53,8 @@ jobs:
       - name: Run antelopejs-sync
         id: sync
         if: steps.bump.outputs.bumped == 'true'
-        env:
-          PACK: ${{ steps.pack.outputs.pack }}
         run: |
-          args=()
-          if [ "$PACK" = "template" ]; then
-            args+=(--profile template)
-          fi
-          if ! out=$(pnpm exec antelopejs-sync "${args[@]}" 2>&1); then
+          if ! out=$(pnpm run --silent --if-present sync 2>&1); then
             echo "$out"
             exit 1
           fi
