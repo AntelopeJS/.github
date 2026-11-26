@@ -20,6 +20,9 @@ importers:
       oxlint-tsgolint:
         specifier: 7.0.2008
         version: 7.0.2008
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
 packages:
 

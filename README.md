@@ -561,8 +561,8 @@ compared with.
 | `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
 | Push to the default branch | `none` | none | none; `checks` succeeds |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
-| `schedule` | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
-| `workflow_dispatch` and any other event | `full` | none | as `full` |
+| `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
+| Any other `workflow_dispatch`, and any other event | `full` | none | as `full` |
 
 A root file is a file at the repository root other than a `*.md` file, a
 `pnpm-lock.yaml` at any depth, or a file under `.github/workflows/` or
@@ -702,14 +702,19 @@ It accepts these optional inputs:
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
+| `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress`, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
 ignored. The workflow no longer writes to Notion. The secret stays declared
 because callers still pass it and a reusable workflow rejects a secret it does
 not declare.
 
-The `checks` job stays the single required result. It checks that the pull
-request title uses Conventional Commits. It fails when the `node` job did not
+The `verdict` job is the result the merge queue waits for. It needs every other
+job, `checks` included, runs with `if: always()` whatever they ended with, and
+fails, naming them, when any of them failed or was cancelled. A required check
+that is skipped passes, so a gate that a failed job would skip gates nothing.
+
+The `checks` job checks that the pull request title uses Conventional Commits. It fails when the `node` job did not
 succeed, when any job it waits for failed or was cancelled, and in the
 `nightly` tier when `Stress` did not succeed. A newer run of the same pull
 request cancels the older one whole, and the older run's `checks` then ends
@@ -734,6 +739,78 @@ successful start, cleanup runs with `docker compose down -v` even if checks,
 tests or extra commands fail. See the [checks
 contract](CONTRIBUTING.md#the-pnpm-run-checks-contract) and [caller
 examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
+
+### The verdict of a caller
+
+The merge queue waits only for the checks the rulesets of the default branch
+require. A job of the caller's own `ci.yml`, beside the `ci-node.yml` call, is
+one more result the queue would merge past. Such a caller adds a job named
+`verdict` that needs every job of the file, runs with `if: always()`, and fails
+when any of them failed or was cancelled, and its rulesets require `verdict`
+alone. A caller whose `ci.yml` is the `ci-node.yml` call alone needs no job of
+its own: its rulesets require `ci / verdict`. The
+[verdict conformance](#verdict-conformance) workflow lists every repository that
+does neither.
+
+The caller also forwards the `nightly` input of its `workflow_dispatch` trigger,
+so `gh workflow run ci.yml --ref <branch> -f nightly=true` runs the `nightly`
+tier on a branch:
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  merge_group:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      nightly:
+        description: Run the nightly tier, with the Windows jobs and Stress
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
+    permissions:
+      contents: read
+    with:
+      renovate-sync: false
+      test-job: true
+      nightly: ${{ inputs.nightly == true }}
+  renovate-sync:
+    if: >-
+      github.event_name == 'pull_request' && startsWith(github.head_ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      actions: write
+      statuses: write
+    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
+  verdict:
+    needs: [ci, renovate-sync]
+    if: ${{ always() }}
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail when a job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "$failed"
+            exit 1
+          fi
+```
 
 ### Renovate sync
 
@@ -1069,6 +1146,25 @@ over the last 30 days, writes its Markdown report to the job summary, and
 uploads it with the JSON report and dataset as the `nightly-report` artifact.
 It reads the organization with the run's `GITHUB_TOKEN`, so it sees the public
 repositories only.
+
+## Verdict conformance
+
+`verdict-conformance.yml` runs every day at 06:11 UTC in this repository, on
+demand by `workflow_dispatch`, and on a pull request that changes it or its
+script. It runs `scripts/ci-verdict/main.ts`, which reads every unarchived
+repository of the organization that has a `.github/workflows/ci.yml` with the
+release app's token, and fails, listing each repository and its problems in the
+job summary, when the merge queue of its default branch does not wait on
+[its verdict](#the-verdict-of-a-caller) alone:
+
+- `ci.yml` is not one `ci-node.yml` call and has no `verdict` job;
+- its `verdict` job does not need a job of the file, or runs without
+  `if: always()`;
+- a ruleset of the default branch requires a check other than the verdict, or
+  none requires the verdict.
+
+On a pull request the list does not fail the run, since it reads the
+organization as it is, not the change.
 
 ## pnpm workspaces
 
