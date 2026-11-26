@@ -9,8 +9,8 @@ importers:
   .:
     devDependencies:
       '@antelopejs/tooling-configs':
-        specifier: 0.10.0
-        version: 0.10.0(oxlint@1.94.0(oxlint-tsgolint@7.0.2008))
+        specifier: ^0.10.7
+        version: 0.10.7(oxlint@1.94.0(oxlint-tsgolint@7.0.2008))
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
@@ -23,8 +23,8 @@ importers:
 
 packages:
 
-  '@antelopejs/tooling-configs@0.10.0':
-    resolution: {integrity: sha512-5UwQirzbFvd6Elzab7B8sssS2zVp5m2zIc0sAr7hpAMvHq7Cy0JIqY0XEZlwFJ3NwJZez5fBPbTU/6/lYJt+0Q==}
+  '@antelopejs/tooling-configs@0.10.7':
+    resolution: {integrity: sha512-13abD0BhsR9RF6LQoYYKa+XBknlmcrZVB6iW3BwdfHKu6pPG4ClhAQCLJSSPYtbTMuvNU4imI+dVFSB78TdTnQ==}
     engines: {node: '>=22.18.0'}
     hasBin: true
     peerDependencies:
@@ -452,7 +452,7 @@ packages:
 
 snapshots:
 
-  '@antelopejs/tooling-configs@0.10.0(oxlint@1.94.0(oxlint-tsgolint@7.0.2008))':
+  '@antelopejs/tooling-configs@0.10.7(oxlint@1.94.0(oxlint-tsgolint@7.0.2008))':
     dependencies:
       '@oxlint/plugins': 1.94.0
       dts-bundle-generator: 9.5.1
