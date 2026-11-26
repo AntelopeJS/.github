@@ -33,8 +33,12 @@ jobs:
       - name: Detect a dependency bump
         id: bump
         run: |
-          if ! git diff --quiet "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' ':(glob)**/pnpm-lock.yaml'; then
+          status=0
+          git diff --quiet "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' ':(glob)**/pnpm-lock.yaml' || status=$?
+          if [ "$status" -eq 1 ]; then
             echo "bumped=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
           fi
 
       - if: steps.bump.outputs.bumped == 'true'

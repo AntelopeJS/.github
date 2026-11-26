@@ -821,8 +821,8 @@ uses. It runs a second time when the first run fails, until a core release
 carries AntelopeJS/antelopejs#535. The workflow then runs
 `pnpm install --no-frozen-lockfile`, the caller's `commands` and the
 repository's `sync` script, so a moved range reaches the files
-`antelopejs-sync` writes from it, such as the README compatibility table. It fails
-without pushing when the change touches `.github/` or `.gitmodules`, adds a
+`antelopejs-sync` writes from it, such as the README compatibility table. It
+fails without pushing when the change touches `.github/` or `.gitmodules`, adds a
 symlink or a submodule, or holds a path `git apply` refuses, such as one under
 `.git` or outside the checkout. When a file changed, it pushes the result to `antelopejs/module-locks` with an installation
 token of the `antelopejs-release` GitHub App and opens a pull request into the
@@ -947,8 +947,9 @@ The preset:
 - enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
   green one enters the merge queue. Majors stay manual, and so do third-party
   0.x minors, which can break; a minor from 1.x on keeps auto-merge, and so
-  does a 0.x minor of an `@antelopejs` package or of the tooling configs
-  group, whose checks cover the bump. Every update in
+  does a 0.x minor of an `@antelopejs` package, an `AntelopeJS/*` action or
+  the tooling configs group, whose checks cover the bump; `oxfmt` and `oxlint`
+  still wait out the three days of a third-party release. Every update in
   `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
   `antelope-compliance` stays manual, since they have no merge queue. A third-party release waits
   three days before such an update opens; an `@antelopejs` one does not;
