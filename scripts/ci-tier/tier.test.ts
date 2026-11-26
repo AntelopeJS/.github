@@ -26,6 +26,7 @@ import { readText } from "./helpers/read.ts";
 import { type Context, block, interpolateAll, keyed, keys, scope, step } from "./helpers/workflow.ts";
 
 const BASE = "<the checkout's base commit>";
+const nightly = scope("inputs", { nightly: "true" });
 
 interface ContractRow {
   name: string;
@@ -54,6 +55,8 @@ const contract: ContractRow[] = [
   { name: "push to next", github: other("push", "next"), expected: { tier: "full", base: "", tests: "true", "test-base": "", work: "true" } },
   { name: "schedule", github: other("schedule", "main"), expected: { tier: "nightly", base: "", tests: "true", "test-base": "", work: "true" } },
   { name: "workflow_dispatch", github: other("workflow_dispatch", "main"), expected: { tier: "full", base: "", tests: "true", "test-base": "", work: "true" } },
+  { name: "workflow_dispatch with nightly", github: () => ({ ...other("workflow_dispatch", "fix/x")(), ...nightly }), expected: { tier: "nightly", base: "", tests: "true", "test-base": "", work: "true" } },
+  { name: "PR from a caller that forwards nightly", github: (base) => ({ ...pullRequest("main", "feat/x")(base), ...nightly }), expected: { tier: "fast", base: BASE, tests: "true", "test-base": BASE, work: "true" } },
 ];
 
 const withBase = (expected: Expected, base: string): Expected => ({

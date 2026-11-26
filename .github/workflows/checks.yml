@@ -14,6 +14,9 @@ jobs:
   ci-tier:
     uses: ./.github/workflows/ci-tier-checks.yml
 
+  ci-verdict:
+    uses: ./.github/workflows/ci-verdict-checks.yml
+
   module-locks:
     uses: ./.github/workflows/module-locks-checks.yml
 
@@ -21,7 +24,7 @@ jobs:
     uses: ./.github/workflows/release-train-checks.yml
 
   checks:
-    needs: [ci-metrics, ci-tier, module-locks, release-train]
+    needs: [ci-metrics, ci-tier, ci-verdict, module-locks, release-train]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions: {}

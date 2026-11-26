@@ -36,7 +36,7 @@ describe("ci-node.yml", () => {
     return ciNode.slice(start, next.exec(ciNode)?.index);
   };
 
-  test("Windows legs join the matrix only for a repository the API reports public, and only in the tiers that ran them before", () => {
+  test("Windows legs join the matrix only for a repository the API reports public, in the nightly tier and, with windows-merge-queue, in the merge queue and manual runs", () => {
     const gate = /^ {4}if: (.*)$/m.exec(jobText("windows"))?.[1] ?? "";
     const matrix = /^ {8}os: (.*)$/m.exec(jobText("node"))?.[1] ?? "";
     assert.doesNotMatch(matrix, /github\.event\.repository/, "a schedule payload carries no repository");
@@ -48,10 +48,10 @@ describe("ci-node.yml", () => {
     const events = ["schedule", "merge_group", "workflow_dispatch", "pull_request", "push"];
     for (const visibility of ["public", "private", "internal"]) {
       for (const event of events) {
-        for (const [windows, queue, pullRequests] of [[true, false, false], [true, true, false], [true, false, true], [true, true, true], [false, true, false], [false, false, false]]) {
-          const inputs = { windows, "windows-merge-queue": queue, "windows-pull-requests": pullRequests };
+        for (const [windows, queue, pullRequests, nightly] of [[true, false, false, false], [true, true, false, false], [true, false, true, false], [true, true, true, false], [true, false, false, true], [false, true, false, false], [false, false, false, true], [false, false, false, false]]) {
+          const inputs = { windows, "windows-merge-queue": queue, "windows-pull-requests": pullRequests, nightly };
           const manual = event === "merge_group" || event === "workflow_dispatch";
-          const before = windows && (event === "schedule" || (manual && (queue || pullRequests)));
+          const before = windows && (event === "schedule" || (event === "workflow_dispatch" && nightly) || (manual && (queue || pullRequests)));
           const expected = visibility === "public" && before ? ["ubuntu-latest", "windows-latest"] : ["ubuntu-latest"];
           assert.deepEqual(os(visibility, event, inputs), expected, `${visibility} ${event} ${JSON.stringify(inputs)}`);
         }

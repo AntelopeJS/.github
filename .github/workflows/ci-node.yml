@@ -75,6 +75,10 @@ on:
         description: "In the fast tier, run only the tests the pull request can affect: in a pnpm workspace, the test script of each package changed since the diff base and of its dependents, or the whole test script when a file outside the packages changes; in a single package whose test script is one vitest or jest command, that command with its changed-file option; otherwise the whole test script"
         default: false
         type: boolean
+      nightly:
+        description: On a workflow_dispatch run, run the nightly tier instead of full, with the Windows jobs and Stress, so a fix to a nightly failure can be proven on a branch; the caller forwards the nightly input of its own workflow_dispatch trigger
+        default: false
+        type: boolean
     secrets:
       NOTION_TOKEN:
         description: Deprecated and ignored; kept only because callers still pass it and a reusable workflow rejects a secret it does not declare
@@ -87,7 +91,7 @@ concurrency:
 jobs:
   windows:
     name: Windows eligibility
-    if: inputs.windows && (github.event_name == 'schedule' || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
+    if: inputs.windows && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
@@ -159,7 +163,7 @@ jobs:
       run:
         shell: bash
     outputs:
-      tier: ${{ steps.tier.outputs.tier }}
+      tier: ${{ steps.leg.outputs.tier }}
     env:
       PRIMARY_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == fromJSON(inputs.node-versions || '[""]')[0] }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (matrix.part == 'test' || matrix.part == 'extra' || (matrix.part == 'checks' && inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
@@ -191,7 +195,12 @@ jobs:
           TIER: ${{ steps.tier.outputs.tier }}
           BASE: ${{ steps.tier.outputs.base }}
           PART: ${{ matrix.part }}
+          EVENT: ${{ github.event_name }}
+          NIGHTLY: ${{ inputs.nightly }}
         run: |
+          if [[ "$EVENT" == workflow_dispatch && "$NIGHTLY" == true ]]; then
+            TIER=nightly
+          fi
           tests=true test_base=""
           case "$TIER" in
             none) tests=false ;;
@@ -218,6 +227,7 @@ jobs:
             echo "ANTELOPEJS_TEST_BASE=${test_base}"
           } >> "$GITHUB_ENV"
           {
+            echo "tier=${TIER}"
             echo "tests=${tests}"
             echo "work=${work}"
           } >> "$GITHUB_OUTPUT"
@@ -688,3 +698,23 @@ jobs:
         run: |
           echo "::error::Tier ${TIER:-unknown}: node ${NODE}, stress ${STRESS}."
           exit 1
+
+  verdict:
+    needs: [windows, shards, node, stress, checks]
+    if: ${{ always() }}
+    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    permissions: {}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Fail when a job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            echo "$failed"
+            exit 1
+          fi
