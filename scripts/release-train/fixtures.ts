@@ -87,6 +87,11 @@ export const dms = repository("dms", (path) => {
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
+/** Reads an own key of a string-keyed table, never one inherited from `Object.prototype`. */
+function own<T>(table: Record<string, T> | undefined, key: string): T | undefined {
+  return table !== undefined && Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 interface Run {
   id: number;
   repo: string;
@@ -133,7 +138,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   const answer = (stdout: string, status = 0): RunResult => ({ status, stdout, stderr: status === 0 ? "" : "failed" });
   const flag = (args: readonly string[], name: string): string => args[args.indexOf(name) + 1] ?? "";
   const distTag = (name: string): RunResult => {
-    const version = latest.get(name) ?? gh.latest?.[name];
+    const version = latest.get(name) ?? own(gh.latest, name);
     const spec = `${name}@${version}`;
     const lag = lags[spec] ?? 0;
     if (lag > 0) lags[spec] = lag - 1;
@@ -144,7 +149,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
     const version = spec.slice(spec.lastIndexOf("@") + 1);
     const lag = lags[spec] ?? 0;
     if (released.has(version) && lag > 0) lags[spec] = lag - 1;
-    const held = gh.npm?.[spec] ?? (released.has(version) && lag === 0 ? version : undefined);
+    const held = own(gh.npm, spec) ?? (released.has(version) && lag === 0 ? version : undefined);
     if (held === undefined) return { status: 1, stdout: "", stderr: "npm error code E404" };
     return held === "error" ? answer("", 1) : answer(`${held}\n`);
   };
@@ -167,7 +172,7 @@ export function fakeSystem(conclusions: Record<string, string> = {}, gh: Fakes =
   const viewRun = (repo: string, id: string | undefined): RunResult => {
     const run = runs.find((candidate) => String(candidate.id) === id);
     assert.ok(run, `no run ${id}`);
-    const view = gh.views?.[repo]?.shift() ?? (run.views === 0 ? "running" : "done");
+    const view = own(gh.views, repo)?.shift() ?? (run.views === 0 ? "running" : "done");
     run.views += 1;
     if (view === "fail") return answer("", 1);
     const status = view === "running" ? "in_progress" : "completed";

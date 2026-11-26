@@ -134,6 +134,11 @@ function verdictOf(failure: Omit<Failure, "verdict">, hasNext: boolean): Verdict
   return allPassed ? "missed" : "unqueued";
 }
 
+/** Reads an own key of a string-keyed table, never one inherited from `Object.prototype`. */
+function own<T>(table: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 /** The failures of a repository's nightlies that started at `from` or later. */
 export function failuresOf(repo: RepoNightlies, from: number): Failure[] {
   const { nightlies } = repo;
@@ -141,8 +146,8 @@ export function failuresOf(repo: RepoNightlies, from: number): Failure[] {
     if (Date.parse(nightly.startedAt) < from) return [];
     return failedJobs(nightly).map((job): Failure => {
       const baseline = nightlies.slice(0, index).findLast((earlier) => passedJob(earlier, job.name)) ?? null;
-      const tests = repo.annotations[String(job.id)] ?? [];
-      const range = baseline === null ? [] : repo.commits[rangeKey(baseline.sha, nightly.sha)] ?? [];
+      const tests = own(repo.annotations, String(job.id)) ?? [];
+      const range = baseline === null ? [] : own(repo.commits, rangeKey(baseline.sha, nightly.sha)) ?? [];
       const failure = {
         repo: repo.repo,
         nightly: { id: nightly.id, url: nightly.url, startedAt: nightly.startedAt, sha: nightly.sha },
@@ -152,7 +157,7 @@ export function failuresOf(repo: RepoNightlies, from: number): Failure[] {
         tests,
         reproducedBy: reproducedBy(nightlies, index, job),
         baseline: baseline === null ? null : { id: baseline.id, sha: baseline.sha },
-        commits: range.map((sha) => ({ sha, queue: queueResult(repo.queue[sha]) })),
+        commits: range.map((sha) => ({ sha, queue: queueResult(own(repo.queue, sha)) })),
       };
       return { ...failure, verdict: verdictOf(failure, index + 1 < nightlies.length) };
     });
