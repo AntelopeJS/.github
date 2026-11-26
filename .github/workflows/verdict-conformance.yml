@@ -58,5 +58,6 @@ jobs:
               cat "$RUNNER_TEMP/conformance.md"
             } >> "$GITHUB_STEP_SUMMARY"
             cat "$RUNNER_TEMP/conformance.md"
+            echo "::error::$(grep -c '^- ' "$RUNNER_TEMP/conformance.md") repositories do not wait on their verdict alone; the job summary lists them."
           fi
           exit "$status"
