@@ -715,7 +715,7 @@ not declare.
 The check `ci / checks` is the one result every ruleset requires and the merge
 queue waits for. A run with one job alone, `Node <version>` with `single-job`,
 no services, no `extra-commands-job`, at most one `node-versions` entry, no
-Windows job and no `nightly` tier, gives that job the name `checks`: its own
+`Windows eligibility` job and no `nightly` tier, gives that job the name `checks`: its own
 result is the check, and a small module pays one runner and one queue hop per
 run, not two. Any other run reports it from the `gate` job. The leg that runs
 the checks on the first `node-versions` entry, on Linux, checks that a pull

@@ -70,7 +70,8 @@ describe("ci-node.yml verdict", () => {
   test("exactly one job that runs is named checks: the gate, or the run's only leg when nothing else runs beside it", () => {
     const axes: JsonObject[][] = [
       ["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"].map((event) => ({ event })),
-      [["skipped", ""], ["success", "public"], ["success", "private"]].map(([windows, visibility]) => ({ windows, visibility })),
+      [["skipped", ""], ["success", "public"], ["success", "private"], ["failure", ""]].map(([windows, visibility]) => ({ windows, visibility })),
+      ["skipped", "success"].map((shards) => ({ shards })),
       [true, false].map((singleJob) => ({ "single-job": singleJob })),
       ["", "compose.yml"].map((services) => ({ "services-compose-file": services })),
       [[false, ""], [false, "x"], [true, ""], [true, "x"]].map(([extraJob, extra]) => ({ "extra-commands-job": extraJob, "extra-commands": extra })),
@@ -79,11 +80,12 @@ describe("ci-node.yml verdict", () => {
     ];
     const scenarios = axes.reduce<JsonObject[]>((partial, axis) => partial.flatMap((scenario) => axis.map((value) => ({ ...scenario, ...value }))), [{}]);
     let folded = 0;
-    for (const { event, windows, visibility, ...inputs } of scenarios) {
-      const scope = { github: { event_name: event }, inputs, needs: { windows: { result: windows, outputs: { visibility } }, shards: { result: "skipped", outputs: {} } } };
+    for (const { event, windows, visibility, shards, ...inputs } of scenarios) {
+      const scope = { github: { event_name: event }, inputs, needs: { windows: { result: windows, outputs: { visibility } }, shards: { result: shards, outputs: {} } } };
       const versions = evaluate(matrixKey("node-version"), scope);
       assert.ok(Array.isArray(versions));
-      const legs = evaluateStrings(matrixKey("os"), scope).flatMap((os) =>
+      const legsRun = evaluate(notCancelled(key("node", "if")), scope) === true;
+      const legs = !legsRun ? [] : evaluateStrings(matrixKey("os"), scope).flatMap((os) =>
         versions.flatMap((version) => evaluateStrings(matrixKey("part"), scope).map((part) => evaluate(key("node", "name"), { ...scope, matrix: { os, "node-version": version, part, shard: "" } }))));
       const gateRuns = evaluate(notCancelled(key("gate", "if")), scope) === true;
       const gateName = evaluate(key("gate", "name"), scope);
