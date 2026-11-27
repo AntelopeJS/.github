@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Install the type checker and Renovate
         run: npm install --no-save --no-audit --no-fund --silent --prefix "$RUNNER_TEMP/tools" typescript@5.9.3 @types/node@24.10.1 renovate@44.247.1

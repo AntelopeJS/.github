@@ -250,7 +250,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24
+          node-version: 26
           registry-url: ${{ inputs.registry == 'private' && 'https://npm.antelopejs.cloud/' || 'https://registry.npmjs.org' }}
           scope: ${{ inputs.registry == 'private' && '@antelopejs-private' || '' }}
 
@@ -527,7 +527,7 @@ jobs:
         if: steps.version.outputs.version != '' || steps.mode.outputs.mode == 'repin'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
           cache-dependency-path: ${{ steps.lockfile.outputs.path }}
 
