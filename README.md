@@ -747,7 +747,13 @@ reusable workflow reads the caller's variables, so each private repository sets
 `RUNNER_CI` to its self-hosted runner scale set, and a public repository sets
 nothing. Set it per repository, never at the organisation level: a runner group
 limited to the private repositories would leave a public repository's jobs
-waiting. The Windows legs run only for a public repository, on `windows-latest`.
+waiting. The four small jobs, `Windows eligibility`, `Extra shards`, `checks`
+and `verdict`, run a few seconds of shell and install nothing: they go to the
+scale set the caller's `RUNNER_CI_SMALL` variable names when it is set, before
+`RUNNER_CI`, so a small lane with a warm runner answers them at once instead of
+queueing each behind the full-size legs of other runs. A caller's own gate and
+tier jobs can read the same variable. The Windows legs run only for a public
+repository, on `windows-latest`.
 The npm release workflows follow `RUNNER_CI` for a private or internal
 repository, and a public repository's release stays on `ubuntu-latest`, because
 npm provenance needs a GitHub-hosted runner. The renovate-sync, next-sync and

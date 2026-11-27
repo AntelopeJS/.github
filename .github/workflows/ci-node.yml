@@ -89,10 +89,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The four small jobs (windows, shards, checks, verdict) run a few seconds of shell and no install. They go to
+  # the caller's RUNNER_CI_SMALL scale set when that variable names one, else to RUNNER_CI like the Node legs,
+  # else to ubuntu-latest: a small lane with a warm runner answers them at once instead of queueing each
+  # behind the full-size legs of other runs. Set the variable per repository, as RUNNER_CI.
   windows:
     name: Windows eligibility
     if: inputs.windows && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -110,7 +114,7 @@ jobs:
   shards:
     name: Extra shards
     if: inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards > 1
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -673,7 +677,7 @@ jobs:
     # blocks the merge as a failed one does. A leg that timed out or failed still runs and fails this job.
     if: ${{ !cancelled() }}
     needs: [windows, shards, node, stress]
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     defaults:
@@ -706,7 +710,7 @@ jobs:
     # As checks: it runs and fails after any failed or cancelled job of a run that goes on, and in a run that
     # was cancelled it ends cancelled without waiting for a runner, which still blocks a merge.
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     defaults:
