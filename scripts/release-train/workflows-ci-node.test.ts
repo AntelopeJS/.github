@@ -39,7 +39,7 @@ describe("ci-node.yml runners", () => {
   test("the small jobs take the caller's RUNNER_CI_SMALL lane before RUNNER_CI, and the legs and Stress keep RUNNER_CI", () => {
     const runsOn = (job: string): string => /^ {4}runs-on: (.*)$/m.exec(jobText(job))?.[1] ?? "";
     const on = (job: string, vars: JsonObject): Evaluated => evaluate(runsOn(job), { vars, matrix: { os: "ubuntu-latest" } });
-    for (const job of ["windows", "shards", "checks", "verdict"]) {
+    for (const job of ["windows", "shards", "checks"]) {
       assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci-small", job);
       assert.equal(on(job, { RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: without a small lane, the pool as before`);
       assert.equal(on(job, { RUNNER_CI_SMALL: "", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: an empty variable is unset`);
@@ -52,13 +52,16 @@ describe("ci-node.yml runners", () => {
 });
 
 describe("ci-node.yml verdict", () => {
-  test("verdict runs after a failed or cancelled job of a run that goes on, and ends cancelled without a runner in a cancelled run", () => {
-    assert.match(jobText("verdict"), /^ {4}needs: \[windows, shards, node, stress, checks\]$/m, "verdict waits for every other job");
-    const gate = /^ {4}if: (.*)$/m.exec(jobText("verdict"))?.[1] ?? "";
+  test("checks is the one reporting job: it needs every other job, runs unless the run was cancelled, and there is no verdict job after it", () => {
+    assert.doesNotMatch(ciNode, /^ {2}verdict:$/m, "a second reporting job is a second queue hop on the pool for a run that is already decided");
+    assert.match(jobText("checks"), /^ {4}needs: \[windows, shards, node, stress\]$/m, "checks waits for every other job");
+    const gate = /^ {4}if: (.*)$/m.exec(jobText("checks"))?.[1] ?? "";
     assert.equal(gate, "${{ !cancelled() }}", "not always(): a job that runs after a cancel waits for a runner of the pool");
     const runs = (runCancelled: boolean): boolean => evaluate(gate.replace(/\bcancelled\(\)/g, String(runCancelled)), {}) === true;
-    assert.equal(runs(false), true, "a run that was not cancelled always gets its verdict, whatever its jobs ended with");
-    assert.equal(runs(true), false, "a cancelled run's verdict ends cancelled, a conclusion that blocks a merge");
+    assert.equal(runs(false), true, "a run that was not cancelled always gets its checks, whatever its jobs ended with");
+    assert.equal(runs(true), false, "a cancelled run's checks end cancelled, a conclusion that blocks a merge");
+    const fail = stepOf(ciNode, "Fail when a job failed, was cancelled or did not run");
+    assert.match(fail, /NEEDS: \$\{\{ toJSON\(needs\) \}\}/, "the step reads every need's result and names the failed ones");
   });
 });
 

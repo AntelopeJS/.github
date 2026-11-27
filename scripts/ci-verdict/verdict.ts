@@ -58,30 +58,35 @@ export function jobsOf(workflow: string): Job[] {
 /** `if: ${{ !cancelled() }}`, with or without the `${{ }}`, and nothing else. */
 const NOT_CANCELLED = /^(\$\{\{\s*)?!\s*cancelled\(\)(\s*\}\})?$/;
 
+/** The job of ci-node.yml that reports the whole run: the check `ci / checks` of a caller named `ci`. */
+export const SHARED_CI_VERDICT_JOB = "checks";
+
 /**
- * The verdict of a workflow: its `verdict` job, or the `verdict` of ci-node.yml when the workflow is one
- * ci-node.yml call. Any other job needs a `verdict` job of the workflow's own that needs it and runs with
- * `if: ${{ !cancelled() }}`: a failed need skips a job without a status function, and a skipped required check
- * passes, while `always()` also runs it in a cancelled run, which then waits for a runner of the pool only to
+ * The verdict of a workflow: its `verdict` job, or the `checks` of ci-node.yml when the workflow is one
+ * ci-node.yml call (ci-node.yml itself has no `verdict` job: its `checks` is the one reporting job, so a run
+ * pays one queue hop for it, not two). Any other job needs a `verdict` job of the workflow's own that needs it and
+ * runs with `if: ${{ !cancelled() }}`: a failed need skips a job without a status function, and a skipped required
+ * check passes, while `always()` also runs it in a cancelled run, which then waits for a runner of the pool only to
  * fail. Under `!cancelled()`, a cancelled run's verdict ends cancelled without a runner, and that blocks a merge.
+ * `id` names the reporting job to judge: `verdict` in a caller, `checks` in ci-node.yml itself.
  */
-export function verdictOf(jobs: readonly Job[]): Verdict {
-  const verdict = jobs.find((job) => job.id === "verdict");
+export function verdictOf(jobs: readonly Job[], id = "verdict"): Verdict {
+  const verdict = jobs.find((job) => job.id === id);
   const [only] = jobs;
   if (verdict === undefined && jobs.length === 1 && SHARED_CI.test(only.uses ?? "")) {
-    return { check: `${only.check} / verdict`, problems: [] };
+    return { check: `${only.check} / ${SHARED_CI_VERDICT_JOB}`, problems: [] };
   }
   if (verdict === undefined) {
     const ids = jobs.map((job) => job.id).join(", ");
-    return { check: "verdict", problems: [`ci.yml is not a single ci-node.yml call (jobs ${ids}) and has no verdict job`] };
+    return { check: id, problems: [`ci.yml is not a single ci-node.yml call (jobs ${ids}) and has no ${id} job`] };
   }
   const missing = jobs.filter((job) => job !== verdict && !verdict.needs.includes(job.id)).map((job) => job.id);
-  const problems = missing.length === 0 ? [] : [`its verdict job does not need ${missing.join(", ")}`];
+  const problems = missing.length === 0 ? [] : [`its ${id} job does not need ${missing.join(", ")}`];
   const condition = (verdict.condition ?? "").trim();
   if (/\balways\(\)/.test(condition)) {
-    problems.push("its verdict job runs with if: always(), so a cancelled run still waits for a runner to fail it; use if: ${{ !cancelled() }}");
+    problems.push(`its ${id} job runs with if: always(), so a cancelled run still waits for a runner to fail it; use if: \${{ !cancelled() }}`);
   } else if (!NOT_CANCELLED.test(condition)) {
-    problems.push("its verdict job does not run with if: ${{ !cancelled() }}, so a failed job skips it and the skipped check passes");
+    problems.push(`its ${id} job does not run with if: \${{ !cancelled() }}, so a failed job skips it and the skipped check passes`);
   }
   return { check: verdict.check, problems };
 }
