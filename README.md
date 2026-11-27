@@ -1043,6 +1043,9 @@ The preset:
   [Renovate lock job](#module-locks-of-a-renovate-pull-request) commits;
 - groups GitHub Actions updates, and `@antelopejs/tooling-configs` with the
   linters it pins;
+- updates nothing in template-dms-adonis's `demo/src`, `demo/content` and
+  `demo/frontend-vue`, copies of template-dms-demo that the
+  [template demo sync](#template-demo-sync) keeps in step;
 - ignores the commits of `github-actions[bot]` on its branches.
 
 A repository's own `renovate.json` keeps only what is specific to it.
@@ -1135,6 +1138,40 @@ exits or prints an error line of `ajs` (one that starts with `✖ `, or
 `Failed to start modules` or `Failed to construct modules`), or the AdonisJS
 watcher's `Underlying HTTP server died`, before the ready
 line or in the 10 seconds after it, and when 25 minutes pass without it.
+
+## Template demo sync
+
+template-dms-adonis keeps a copy of template-dms-demo in `demo/`, and the
+`demo-drift` job of its `ci.yml` fails while that copy differs from
+template-dms-demo's `main`. `template-demo-sync.yml` runs every hour, at minute
+47, in this repository and on demand by `workflow_dispatch`, and keeps one pull
+request open on template-dms-adonis while they differ:
+
+1. The `sync` job checks out both repositories, runs template-dms-adonis's own
+   `scripts/sync-demo.sh` against template-dms-demo's `main`, which mirrors its
+   `src`, `content` and `frontend-vue` into `demo/`. The synced
+   `demo/frontend-vue/package.json` can declare a package at a higher version
+   than the template's own `package.json` and `demo/package.json`, which its
+   `dependency:one-range` check refuses, so
+   [`scripts/module-locks/demo-sync-ranges-main.ts`](scripts/module-locks/demo-sync-ranges.ts)
+   raises those ranges to the synced ones, and never lowers one. When a
+   manifest moved, `pnpm install --lockfile-only` updates the root
+   `pnpm-lock.yaml`. The job holds no write token.
+2. The `publish` job pushes the result to the `antelopejs/demo-sync` branch of
+   template-dms-adonis with the release app's token, limited to that
+   repository, so the pull request's checks start. It refuses a patch that
+   changes a path outside `demo/`, `package.json` and `pnpm-lock.yaml`, or
+   makes a symlink or a submodule. It opens the
+   `chore(demo): sync demo/ with template-dms-demo` pull request, whose body
+   lists the raised ranges, or updates its body, and turns on its auto-merge,
+   so it enters the merge queue once green. When `demo/` on `main` already
+   matches, it closes that pull request.
+
+The workflow lives here rather than in either template because `ajs project
+init` copies every workflow of a template into each project made from it,
+except `module-locks.yml` and `next-canary.yml`: an hourly schedule there would
+run, skipped, in every such project. A pull request that changes the workflow
+runs the `sync` job only and publishes nothing.
 
 ## Nightly failures the merge queue missed
 

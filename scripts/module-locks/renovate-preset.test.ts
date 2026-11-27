@@ -131,6 +131,15 @@ test("a third-party release waits three days before it can merge on its own", as
   assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);
 });
 
+test("template-dms-adonis's synced copy of template-dms-demo gets no update of its own, while its own manifests and other repositories do", async () => {
+  const nuxtUi = { repository: "AntelopeJS/template-dms-adonis", manager: "npm", depName: "@nuxt/ui", currentVersion: "4.13.0", updateType: "patch" };
+  assert.equal((await rules({ ...nuxtUi, packageFile: "demo/frontend-vue/package.json" })).enabled, false);
+  assert.equal((await rules({ ...testStack, repository: "AntelopeJS/template-dms-adonis", updateType: "patch", packageFile: "demo/src/test/antelope-modules.ts" })).enabled, false);
+  assert.equal((await rules({ ...nuxtUi, packageFile: "demo/package.json" })).enabled, true);
+  assert.equal((await rules({ ...nuxtUi, packageFile: "package.json" })).enabled, true);
+  assert.equal((await rules({ ...nuxtUi, repository: "AntelopeJS/template-dms-demo", packageFile: "frontend-vue/package.json" })).enabled, true);
+});
+
 test("only the module managers read **/test/**", async () => {
   assert.equal((await rules({ ...testStack, updateType: "patch" })).enabled, true);
   assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "minor", packageFile: "packages/dms-media/src/test/fixture/package.json" })).enabled, false);
