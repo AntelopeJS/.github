@@ -19,7 +19,7 @@ interface Resolution {
   label: string;
 }
 
-const workflows = listDirectory(new URL("../../.github/workflows/", import.meta.url)).filter((file) => file.endsWith(".yml"));
+const workflows = listDirectory(new URL("../../.github/workflows/", import.meta.url)).filter((file) => /\.ya?ml$/.test(file));
 
 function runsOn(file: string): [string, string][] {
   const workflow = readJson(JSON.stringify(parse(workflowText(file))));
@@ -62,12 +62,25 @@ describe("runners", () => {
     }
   });
 
-  test("a repository variable moves every Blacksmith job to another runner", () => {
+  test("no branch of a runs-on names a label but the Blacksmith ones, and ubuntu-latest only in the npm release", () => {
+    for (const file of workflows) {
+      for (const [job, expression] of runsOn(file)) {
+        const labels = expression.startsWith("${{") ? [...expression.replace(/[!=]=\s*'[^']*'/g, "").matchAll(/'([^']*)'/g)].map((match) => match[1]) : [expression];
+        const allowed = file === "release-npm.yml" && job === "release" ? [linux, "ubuntu-latest"] : [linux, windows];
+        for (const label of labels) assert.ok(allowed.includes(label), `${file} ${job} can run on ${label}`);
+      }
+    }
+  });
+
+  test("each job moves with its own variable: RUNNER_CI_SMALL for the small ci-node jobs, RUNNER_CI_WINDOWS for the Windows legs, RUNNER_CI for the rest", () => {
     const vars = { RUNNER_CI: "other", RUNNER_CI_SMALL: "other-small", RUNNER_CI_WINDOWS: "other-windows" };
+    const small = ["windows", "shards", "checks"];
     for (const file of workflows) {
       for (const resolution of resolve(file, vars)) {
         if (publishesPublicly(file, resolution)) continue;
-        assert.ok(Object.values(vars).includes(resolution.label), `${file} ${resolution.job} (${resolution.visibility}, ${resolution.os}) ignores the variables`);
+        const ciNode = file === "ci-node.yml";
+        const expected = ciNode && small.includes(resolution.job) ? vars.RUNNER_CI_SMALL : ciNode && resolution.job === "node" && resolution.os === "windows-latest" ? vars.RUNNER_CI_WINDOWS : vars.RUNNER_CI;
+        assert.equal(resolution.label, expected, `${file} ${resolution.job} (${resolution.visibility}, ${resolution.os})`);
       }
     }
   });

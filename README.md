@@ -737,7 +737,7 @@ points at its head and whose head is not on the base branch: it fails with a
 `Superseded merge group` error, before the install or the tests. A group that
 merged also loses its branch, but its head is then on the base branch, so a late
 job of it runs as before. When either API call fails, the job runs as before.
-The run's `checks` and `verdict` then fail in seconds, on a commit no queue
+The run's `checks` then fails in seconds, on a commit no queue
 waits for.
 
 The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
