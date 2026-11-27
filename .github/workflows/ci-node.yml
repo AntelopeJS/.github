@@ -175,6 +175,7 @@ jobs:
       PRIMARY_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == fromJSON(inputs.node-versions || '[""]')[0] }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (matrix.part == 'test' || matrix.part == 'extra' || (matrix.part == 'checks' && inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
       CACHE_PREFIX: ${{ matrix.part == 'extra' && 'ci-node-extra' || 'ci-node' }}
+      SAVES_STORE: ${{ github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
@@ -228,6 +229,10 @@ jobs:
           if [[ "$TIER" == none || ( "$PART" == test && "$tests" == false ) ]]; then
             work=false
           fi
+          install=$work
+          if [[ "$TIER" == none && "$EVENT" == push && "$PRIMARY_LEG" == true && ( "$PART" == all || "$PART" == checks ) ]]; then
+            install=true
+          fi
 
           {
             echo "ANTELOPEJS_CI_TIER=${TIER}"
@@ -237,6 +242,7 @@ jobs:
             echo "tier=${TIER}"
             echo "tests=${tests}"
             echo "work=${work}"
+            echo "install=${install}"
           } >> "$GITHUB_OUTPUT"
           if [[ "$PRIMARY_LEG" == true ]]; then
             echo "Tier \`${TIER}\`: tests ${tests}, test base ${test_base:-none}" >> "$GITHUB_STEP_SUMMARY"
@@ -269,18 +275,40 @@ jobs:
             "$FILE" "$RUNNER_TEMP/services.log" "$RUNNER_TEMP/services.status" > /dev/null 2>&1 &
 
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        if: steps.leg.outputs.work == 'true'
+        if: steps.leg.outputs.install == 'true'
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: steps.leg.outputs.work == 'true'
+        if: steps.leg.outputs.install == 'true'
         with:
           node-version: ${{ matrix.node-version }}
           node-version-file: ${{ matrix.node-version == '' && '.nvmrc' || '' }}
-          cache: pnpm
+          package-manager-cache: false
+
+      - name: Find the pnpm store
+        id: store-path
+        if: steps.leg.outputs.install == 'true'
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pnpm store of this lockfile, else the newest one
+        id: store
+        if: steps.leg.outputs.install == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.store-path.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ${{ env.SAVES_STORE != 'true' && format('node-cache-{0}-{1}-pnpm-', runner.os, runner.arch == 'ARM64' && 'arm64' || 'x64') || '' }}
+          lookup-only: ${{ steps.leg.outputs.work != 'true' }}
 
       - name: Install dependencies
-        if: steps.leg.outputs.work == 'true'
+        if: steps.leg.outputs.work == 'true' || (steps.leg.outputs.install == 'true' && steps.store.outputs.cache-hit != 'true')
         run: pnpm install --frozen-lockfile
+
+      - name: Save the pnpm store from the default branch
+        if: steps.leg.outputs.install == 'true' && steps.store.outputs.cache-hit != 'true' && env.SAVES_STORE == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.store-path.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Run setup commands
         if: steps.leg.outputs.work == 'true' && inputs.setup-commands != ''

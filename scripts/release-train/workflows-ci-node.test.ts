@@ -303,6 +303,69 @@ describe("ci-node.yml formal checks", () => {
   });
 });
 
+describe("ci-node.yml pnpm store", () => {
+  const leg = (tier: string, event: string, part: string, primary: boolean) => {
+    const env = join(root, "store-env");
+    const summary = join(root, "store-summary");
+    writeFileSync(env, "");
+    writeFileSync(summary, "");
+    const result = runStep(ciNode, "Pick the work of this leg from the tier", root, { TIER: tier, BASE: "", PART: part, EVENT: event, NIGHTLY: "false", PRIMARY_LEG: String(primary), GITHUB_ENV: env, GITHUB_STEP_SUMMARY: summary });
+    assert.equal(result.status, 0, result.stderr);
+    const output = (name: string): string | undefined => new RegExp(`^${name}=(.*)$`, "m").exec(result.outputs)?.[1];
+    return { work: output("work"), install: output("install") };
+  };
+  const condition = (step: string): string => /^ {8}if: (.*)$/m.exec(stepOf(ciNode, step))?.[1] ?? "";
+  const restore = stepOf(ciNode, "Restore the pnpm store of this lockfile, else the newest one");
+  const save = stepOf(ciNode, "Save the pnpm store from the default branch");
+
+  test("a push to the default branch installs on one leg, which seeds the store, and runs no check", () => {
+    assert.deepEqual([leg("none", "push", "all", true).work, leg("none", "push", "all", true).install], ["false", "true"]);
+    assert.equal(leg("none", "push", "checks", true).install, "true");
+    assert.equal(leg("none", "push", "test", true).install, "false", "one leg per run seeds it");
+    assert.equal(leg("none", "push", "all", false).install, "false", "the second Node version saves nothing new");
+    for (const [tier, event] of [["full", "workflow_dispatch"], ["queue", "merge_group"], ["nightly", "schedule"]]) {
+      assert.deepEqual([leg(tier, event, "all", false).work, leg(tier, event, "all", false).install], ["true", "true"], tier);
+    }
+  });
+
+  test("the seeding leg installs only when the store lacks its lockfile, and a leg with work always installs", () => {
+    const install = condition("Install dependencies");
+    const run = (work: string, hit: string): Evaluated => evaluate(install, { steps: { leg: { outputs: { work, install: "true" } }, store: { outputs: { "cache-hit": hit } } } });
+    assert.deepEqual([run("false", "true"), run("false", ""), run("true", "true"), run("true", "")], [false, true, true, true]);
+  });
+
+  test("only the default branch and the nightly schedule save the store, and they never start it from another lockfile's", () => {
+    const key = (step: string, name: string): string => new RegExp(`^ {10}${name}: (.*)$`, "m").exec(step)?.[1] ?? "";
+    assert.equal(key(save, "key"), key(restore, "key"));
+    assert.equal(key(restore, "path"), key(save, "path"));
+    const prefix = key(restore, "key").replace(/\$\{\{ hashFiles\('pnpm-lock\.yaml'\) \}\}$/, "");
+    assert.notEqual(prefix, key(restore, "key"), "the key ends with the lockfile hash");
+    const savesStore = /^ {6}SAVES_STORE: (.*)$/m.exec(ciNode)?.[1] ?? "";
+    const runner = { os: "Linux", arch: "X64" };
+    const store = (event_name: string, ref: string, hit = "") => {
+      const github = { event_name, ref, event: event_name === "schedule" ? {} : { repository: { default_branch: "main" } } };
+      const scope = { github, runner, env: { SAVES_STORE: evaluate(savesStore, { github }) === true ? "true" : "false" }, steps: { leg: { outputs: { install: "true" } }, store: { outputs: { "cache-hit": hit } } } };
+      return { saves: evaluate(condition("Save the pnpm store from the default branch"), scope), fallback: evaluate(key(restore, "restore-keys"), scope) };
+    };
+    const fresh = { saves: true, fallback: "" };
+    const borrowed = { saves: false, fallback: interpolate(prefix, { runner }) };
+    assert.equal(borrowed.fallback, "node-cache-Linux-x64-pnpm-", "setup-node's key, so the stores it saved keep serving");
+    assert.deepEqual(store("push", "refs/heads/main"), fresh, "a saved store holds one lockfile's packages, so it never grows");
+    assert.deepEqual(store("schedule", "refs/heads/main"), fresh, "a schedule payload names no repository, and it runs on the default branch");
+    assert.deepEqual(store("workflow_dispatch", "refs/heads/main"), fresh);
+    assert.equal(store("push", "refs/heads/main", "true").saves, false, "the store of this lockfile is already saved");
+    assert.deepEqual(store("pull_request", "refs/pull/7/merge"), borrowed, "a pull request's store would serve that pull request alone");
+    assert.deepEqual(store("merge_group", "refs/heads/gh-readonly-queue/main/pr-7-abc"), borrowed);
+    assert.deepEqual(store("workflow_dispatch", "refs/heads/feature"), borrowed);
+  });
+
+  test("the seeding leg only looks the store up, and a leg with work downloads it", () => {
+    const lookup = /^ {10}lookup-only: (.*)$/m.exec(restore)?.[1] ?? "";
+    assert.equal(evaluate(lookup, { steps: { leg: { outputs: { work: "false" } } } }), true, "a push that leaves the lockfile alone downloads nothing");
+    assert.equal(evaluate(lookup, { steps: { leg: { outputs: { work: "true" } } } }), false);
+  });
+});
+
 test("the starter workflow is the frozen caller that antelopejs-sync writes", () => {
   const template = readText(new URL("../../workflow-templates/npm-release.yml", import.meta.url));
   assert.equal(template, readText(new URL("./frozen-caller.yml", import.meta.url)));
