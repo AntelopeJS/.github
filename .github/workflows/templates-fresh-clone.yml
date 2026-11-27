@@ -50,7 +50,7 @@ jobs:
         template: ${{ fromJSON(needs.templates.outputs.templates) }}
     services:
       mongo:
-        image: mongo:8
+        image: mongo:9
         ports:
           - 27017:27017
     env:
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Create the project with the latest ajs
         env:

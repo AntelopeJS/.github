@@ -2,13 +2,13 @@
   "name": "antelopejs-github",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.34.9",
+  "packageManager": "pnpm@12.23.0",
   "scripts": {
     "checks": "oxlint"
   },
   "devDependencies": {
     "@antelopejs/tooling-configs": "^0.10.7",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.11",
     "oxlint": "1.95.0",
     "oxlint-tsgolint": "7.0.2008",
     "yaml": "2.9.1"

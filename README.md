@@ -128,7 +128,7 @@ credentials check fails a private preview of it.
 ### Release train
 
 The release train publishes the stable versions of several packages once, in
-dependency order. Run it from a checkout of this repository with Node.js 24 and
+dependency order. Run it from a checkout of this repository with Node.js 26 and
 an authenticated `gh`:
 
 ```sh
