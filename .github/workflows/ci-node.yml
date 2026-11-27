@@ -89,7 +89,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The three small jobs (windows, shards, checks) run a few seconds of shell and no install. They go to the
+  # The three small jobs (windows, shards, gate) run a few seconds of shell and no install. They go to the
   # caller's RUNNER_CI_SMALL label when that variable names one, else to RUNNER_CI like the Node legs, else to
   # Blacksmith's 4 vCPU Ubuntu 24.04 runner. Set the variables per repository.
   windows:
@@ -144,7 +144,7 @@ jobs:
   node:
     needs: [windows, shards]
     if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
-    name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
+    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'checks' || format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
     # Linux legs on Blacksmith's 4 vCPU Ubuntu 24.04 runner, Windows legs on its 4 vCPU Windows Server 2025
     # runner, unless the CALLING repository's variable RUNNER_CI (Linux) or RUNNER_CI_WINDOWS (Windows) names
     # another label. Windows legs run only for a calling repository the API reports public, and a schedule
@@ -548,6 +548,17 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+      - name: Check pull request title
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.PRIMARY_LEG == 'true' && (matrix.part == 'all' || matrix.part == 'checks') }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
+            exit 1
+          fi
+
   stress:
     name: Stress
     needs: node
@@ -673,14 +684,9 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
-  checks:
-    # The one result a caller's rulesets require, `ci / checks`, and the one the merge queue waits for: it needs every
-    # other job, runs unless the run was cancelled, and fails, naming them, when any of them failed or was cancelled,
-    # when node did not succeed, when Stress did not succeed in the nightly tier, or when a pull request's title is not
-    # Conventional Commits. Not always(): a cancelled run ends it cancelled without a runner, and a cancelled required
-    # check blocks a merge as a failed one does; a leg that timed out or failed in a run that goes on still fails it.
-    # One reporting job, not two: each is a queue hop on the pool before a caller's own gate.
-    if: ${{ !cancelled() }}
+  gate:
+    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'gate' || 'checks' }}
+    if: ${{ !cancelled() && !(needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly)) }}
     needs: [windows, shards, node, stress]
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
@@ -689,17 +695,6 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Check pull request title
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          pattern='^(feat|fix|refactor|perf|revert|docs|test|build|ci|chore)(\([^)]+\))?!?: .+'
-          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
-            echo "::error::PR title must use Conventional Commits: type(scope): description, with an optional scope and ! for breaking changes. Allowed types: feat, fix, refactor, perf, revert, docs, test, build, ci, chore."
-            exit 1
-          fi
-
       - name: Fail when a job failed, was cancelled or did not run
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.node.result != 'success' || (needs.node.outputs.tier == 'nightly' && needs.stress.result != 'success')
         env:
