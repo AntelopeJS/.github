@@ -2,7 +2,7 @@
 
 `main.ts` measures the GitHub Actions CI of an organization over a window. It
 prints a short table, and writes the full report as JSON with `--json`. It needs
-Node.js 24 and no dependency. It prints nothing else unless it fails.
+Node.js 26 and no dependency. It prints nothing else unless it fails.
 
 ## What it reports
 

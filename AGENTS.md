@@ -8,7 +8,7 @@ Every repository calls the shared workflows at the `v2` tag, as in `AntelopeJS/.
 
 ## Checks
 
-The `Checks` workflow runs on every pull request and merge group. It calls the five `*-checks.yml` workflows, and its `checks` job, the check the merge queue requires, fails when any of them did not succeed. `release-train-checks.yml` runs these. Run them locally with Node.js 24 and pnpm 10. `pnpm run checks` runs oxlint with the full `antelopePreset()` of `@antelopejs/tooling-configs`, anti-slop and complexity rules included, over `scripts/**/*.ts` with the `SAFETY:` rule on:
+The `Checks` workflow runs on every pull request and merge group. It calls the five `*-checks.yml` workflows, and its `checks` job, the check the merge queue requires, fails when any of them did not succeed. `release-train-checks.yml` runs these. Run them locally with Node.js 26 and pnpm 12. `pnpm run checks` runs oxlint with the full `antelopePreset()` of `@antelopejs/tooling-configs`, anti-slop and complexity rules included, over `scripts/**/*.ts` with the `SAFETY:` rule on:
 
 ```sh
 pnpm install --frozen-lockfile
