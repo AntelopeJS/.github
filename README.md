@@ -1084,29 +1084,32 @@ A repository's own `renovate.json` keeps only what is specific to it.
 
 ## Renovate sweep
 
-`renovate-sweep.yml` runs every hour at minute 29 in this repository, and on
-demand by `workflow_dispatch`. It runs `scripts/module-locks/renovate-sweep-main.ts`
-with the release app's token over every open Renovate pull request of the
-organization, from a `renovate/*` branch of its own repository:
+`renovate-sweep.yml` runs every hour at minute 29 in this repository. It runs
+`scripts/module-locks/renovate-sweep-main.ts` with the release app's token over
+every open Renovate pull request of the organization, from a `renovate/*`
+branch of its own repository, outside `cloud`, `k8s-gitops-infra`,
+`antelope-hardening` and `antelope-compliance`:
 
-- a green one whose last merge-queue or auto-merge event is its removal from
-  the queue gets auto-merge armed again, when its base is the default branch
-  and has a merge queue, it does not conflict, and its repository is not
-  `cloud`, `k8s-gitops-infra`, `antelope-hardening` or `antelope-compliance`.
-  A removal turns auto-merge off. When someone turned auto-merge off, the
-  pull request stays as it is;
+- a green one whose last merge-queue or auto-merge event is its removal by the
+  queue gets auto-merge armed again, when its base is the default branch and
+  has a merge queue and it does not conflict. A removal turns auto-merge off.
+  The sweep re-arms a head once: when the queue removes the same head again,
+  the pull request stays as it is until its head changes. A pull request a
+  person dequeued, or whose auto-merge a person turned off, stays as it is;
 - a red one whose head lacks commits of its base gets Renovate's rebase
   checkbox ticked. Renovate rebases it on the current base, and its checks run
   again against it. Once rebased, the head holds the base, so the pull request
   gets no second request before the base moves again, and none while a
-  request is waiting for Renovate.
+  request is waiting for Renovate. When its head commit is not Renovate's or
+  the Renovate sync's, or Renovate noted someone else's commit, the sweep
+  leaves it alone, since the rebase would drop that commit.
 
 The preset keeps `rebaseWhen: 'conflicted'`: `behind-base-branch` would rebase
 every open Renovate pull request on every merge, green ones included.
 
-A pull request that changes the workflow or its script runs the sweep as a
-dry run, which changes nothing, and lists the moves it would make in the job
-summary.
+`gh workflow run renovate-sweep.yml` runs it on demand as a dry run, which
+changes nothing and lists the moves it would make in the job summary;
+`-f dry-run=false` makes them.
 
 ## Bot branch cleanup
 

@@ -17,7 +17,13 @@ interface Node {
   draft?: boolean;
   head?: string;
   fork?: boolean;
+  author?: string;
+  removals?: { at: string; by: string }[];
 }
+
+const RENOVATE = "29139614+renovate[bot]@users.noreply.github.com";
+const HEAD_AT = "2026-11-27T15:42:14Z";
+const QUEUE_REMOVAL = { at: "2026-11-27T15:42:34Z", by: "github-merge-queue" };
 
 /** A search node shaped as GitHub's GraphQL API answered for AntelopeJS/brevo-private#49 on 2026-11-27. */
 function node(scene: Node = {}): Json {
@@ -37,7 +43,17 @@ function node(scene: Node = {}): Json {
       defaultBranchRef: { name: "main" },
       mergeQueue: scene.mergeQueue === false ? null : { id: "MQ_1" },
     },
-    commits: { nodes: [{ commit: { oid: "a".repeat(40), statusCheckRollup: scene.rollup === null ? null : { state: scene.rollup ?? "SUCCESS" } } }] },
+    commits: {
+      nodes: [{
+        commit: {
+          oid: "a".repeat(40),
+          committedDate: HEAD_AT,
+          author: { email: scene.author ?? RENOVATE },
+          statusCheckRollup: scene.rollup === null ? null : { state: scene.rollup ?? "SUCCESS" },
+        },
+      }],
+    },
+    removals: { nodes: (scene.removals ?? [QUEUE_REMOVAL]).map(({ at, by }) => ({ createdAt: at, actor: { login: by } })) },
     timelineItems: { nodes: scene.last === null ? [] : [{ __typename: scene.last ?? "RemovedFromMergeQueueEvent" }] },
   };
 }
@@ -64,6 +80,13 @@ describe("renovate-sweep", () => {
     assert.equal(moveOf(pull({ inQueue: true, last: "AddedToMergeQueueEvent" }), current), "none");
   });
 
+  test("re-arms a head once: a head the queue removed again stays as it is, and so does one a person dequeued", () => {
+    const earlier = { at: "2026-11-27T11:37:34Z", by: "github-merge-queue" };
+    assert.equal(moveOf(pull({ removals: [earlier, QUEUE_REMOVAL] }), current), "rearm", "the earlier removal was of an older head");
+    assert.equal(moveOf(pull({ removals: [QUEUE_REMOVAL, { at: "2026-11-27T16:40:00Z", by: "github-merge-queue" }] }), current), "none");
+    assert.equal(moveOf(pull({ removals: [{ at: QUEUE_REMOVAL.at, by: "antony" }] }), current), "none");
+  });
+
   test("never arms auto-merge where it would not land through a merge queue or on a held repository", () => {
     assert.equal(moveOf(pull({ mergeQueue: false }), current), "none");
     assert.equal(moveOf(pull({ repo: "AntelopeJS/cloud" }), current), "none");
@@ -81,6 +104,13 @@ describe("renovate-sweep", () => {
     const asked = pull({ rollup: "FAILURE", body: tickRebase(BODY) });
     assert.equal(asked.rebaseBox, "ticked");
     assert.equal(moveOf(asked, behind), "none");
+  });
+
+  test("never asks for a rebase that would drop someone's commit on the Renovate branch", () => {
+    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "dev@example.com" }), behind), "none");
+    const noted = `${BODY}\n🔕 Renovate will not automatically rebase this PR, because it does not recognize the last commit author.\n`;
+    assert.equal(moveOf(pull({ rollup: "FAILURE", body: noted }), behind), "none");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "41898282+github-actions[bot]@users.noreply.github.com" }), behind), "rebase");
   });
 
   test("reads the base only for a red pull request with an unticked rebase checkbox", () => {

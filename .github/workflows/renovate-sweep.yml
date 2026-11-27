@@ -4,10 +4,11 @@ on:
   schedule:
     - cron: "29 * * * *"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - scripts/module-locks/renovate-sweep*.ts
-      - .github/workflows/renovate-sweep.yml
+    inputs:
+      dry-run:
+        description: List the moves without making them
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -20,10 +21,10 @@ jobs:
       contents: read
     timeout-minutes: 15
     concurrency:
-      group: renovate-sweep-${{ github.event_name == 'pull_request' && github.ref || 'org' }}
+      group: renovate-sweep
       cancel-in-progress: false
     env:
-      DRY_RUN: ${{ github.event_name == 'pull_request' }}
+      DRY_RUN: ${{ inputs.dry-run == true }}
     steps:
       - name: Create the sweep token
         id: token
@@ -61,11 +62,15 @@ jobs:
               echo "## Renovate sweep"
             fi
             echo
+            if [ "$status" -ne 0 ]; then
+              echo "The sweep failed; the log names the cause."
+              echo
+            fi
             if [ -s "$RUNNER_TEMP/sweep.md" ]; then
               cat "$RUNNER_TEMP/sweep.md"
-            else
+            elif [ "$status" -eq 0 ]; then
               echo "No Renovate pull request to re-arm or rebase."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          grep '^::error::' "$RUNNER_TEMP/sweep.md" || true
+          grep -E '^::(error|warning)::' "$RUNNER_TEMP/sweep.md" || true
           exit "$status"

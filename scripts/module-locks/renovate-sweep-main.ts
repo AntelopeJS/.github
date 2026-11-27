@@ -17,7 +17,8 @@ const SEARCH = `query($search: String!, $cursor: String) {
         number isDraft headRefName baseRefName isCrossRepository isInMergeQueue mergeable body
         autoMergeRequest { enabledAt }
         repository { nameWithOwner isArchived defaultBranchRef { name } mergeQueue { id } }
-        commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { oid committedDate author { email } statusCheckRollup { state } } } }
+        removals: timelineItems(last: 2, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) { nodes { ... on RemovedFromMergeQueueEvent { createdAt actor { login } } } }
         timelineItems(last: 1, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT, AUTO_MERGE_ENABLED_EVENT, AUTO_MERGE_DISABLED_EVENT]) {
           nodes { __typename }
         }
@@ -70,8 +71,11 @@ function rearm(pull: RenovatePull): void {
   gh(["pr", "merge", "-R", pull.repo, String(pull.number), "--squash", "--auto"]);
 }
 
+/** Ticks the rebase checkbox in the body as it is now, since Renovate may have rewritten it since the search. */
 function requestRebase(pull: RenovatePull): void {
-  gh(["api", "-X", "PATCH", `repos/${pull.repo}/pulls/${pull.number}`, "--input", "-"], JSON.stringify({ body: tickRebase(pull.body) }));
+  const body = gh(["pr", "view", "-R", pull.repo, String(pull.number), "--json", "body", "--jq", ".body"]).replace(/\n$/, "");
+  const ticked = tickRebase(body);
+  if (ticked !== body) gh(["pr", "edit", "-R", pull.repo, String(pull.number), "--body-file", "-"], ticked);
 }
 
 const [org, flag] = process.argv.slice(2);
