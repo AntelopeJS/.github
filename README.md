@@ -559,7 +559,7 @@ compared with.
 | Pull request with the `ci:full` label, from a repository whose `CI_SELECTION` variable is `full`, or that changes a root file | `full` | the pull request base | the Node.js jobs and the tests |
 | Any other pull request, draft or ready, into any branch | `fast` | the pull request base | the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
 | `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
-| Push to the default branch | `none` | none | none; `ci / checks` succeeds |
+| Push to the default branch | `none` | none | none: the first Linux job installs the dependencies when the pnpm store of its lockfile is not saved yet, and saves it; `ci / checks` succeeds |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
 | `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
 | Any other `workflow_dispatch`, and any other event | `full` | none | as `full` |
@@ -594,6 +594,14 @@ with the first `node-versions` entry or `.nvmrc`; the other jobs add
 `lint,typecheck` to `ANTELOPEJS_CHECKS_SKIP`. The skill evals run on that job
 only, on the skills the change touches since the diff base, or since `HEAD^1`
 without one.
+
+Each job restores the pnpm store saved for its lockfile, or the newest store
+when its lockfile has none, such as a Renovate pull request's. Only the
+default branch saves the store: the push that merges a lockfile change, and
+the nightly run. A pull request's store would serve that pull request alone,
+so it saves none, and the merge queue and every pull request restore the
+store `main` saved. The key, `node-cache-<os>-<arch>-pnpm-<lockfile hash>`, is
+the one `setup-node` used, so the stores saved before this rule still serve.
 
 In the `queue` tier only, which is the `merge_group` event, a failed
 `pnpm run test` runs once more, and so do failed `extra-commands`. When the

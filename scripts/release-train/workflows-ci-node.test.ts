@@ -303,6 +303,56 @@ describe("ci-node.yml formal checks", () => {
   });
 });
 
+describe("ci-node.yml pnpm store", () => {
+  const leg = (tier: string, event: string, part: string, primary: boolean) => {
+    const env = join(root, "store-env");
+    const summary = join(root, "store-summary");
+    writeFileSync(env, "");
+    writeFileSync(summary, "");
+    const result = runStep(ciNode, "Pick the work of this leg from the tier", root, { TIER: tier, BASE: "", PART: part, EVENT: event, NIGHTLY: "false", PRIMARY_LEG: String(primary), GITHUB_ENV: env, GITHUB_STEP_SUMMARY: summary });
+    assert.equal(result.status, 0, result.stderr);
+    const output = (name: string): string | undefined => new RegExp(`^${name}=(.*)$`, "m").exec(result.outputs)?.[1];
+    return { work: output("work"), install: output("install") };
+  };
+  const condition = (step: string): string => /^ {8}if: (.*)$/m.exec(stepOf(ciNode, step))?.[1] ?? "";
+  const restore = stepOf(ciNode, "Restore the pnpm store of this lockfile, else the newest one");
+  const save = stepOf(ciNode, "Save the pnpm store from the default branch");
+
+  test("a push to the default branch installs on one leg, which seeds the store, and runs no check", () => {
+    assert.deepEqual([leg("none", "push", "all", true).work, leg("none", "push", "all", true).install], ["false", "true"]);
+    assert.equal(leg("none", "push", "checks", true).install, "true");
+    assert.equal(leg("none", "push", "test", true).install, "false", "one leg per run seeds it");
+    assert.equal(leg("none", "push", "all", false).install, "false", "the second Node version saves nothing new");
+    for (const [tier, event] of [["full", "workflow_dispatch"], ["queue", "merge_group"], ["nightly", "schedule"]]) {
+      assert.deepEqual([leg(tier, event, "all", false).work, leg(tier, event, "all", false).install], ["true", "true"], tier);
+    }
+  });
+
+  test("the seeding leg installs only when the store lacks its lockfile, and a leg with work always installs", () => {
+    const install = condition("Install dependencies");
+    const run = (work: string, hit: string): Evaluated => evaluate(install, { steps: { leg: { outputs: { work, install: "true" } }, store: { outputs: { "cache-hit": hit } } } });
+    assert.deepEqual([run("false", "true"), run("false", ""), run("true", "true"), run("true", "")], [false, true, true, true]);
+  });
+
+  test("only the default branch and the nightly schedule save the store, under the key a pull request restores", () => {
+    const key = (step: string, name: string): string => new RegExp(`^ {10}${name}: (.*)$`, "m").exec(step)?.[1] ?? "";
+    assert.equal(key(save, "key"), key(restore, "key"));
+    assert.ok(key(restore, "key").startsWith(key(restore, "restore-keys")), "a lockfile with no store of its own restores the newest one");
+    assert.equal(key(restore, "path"), key(save, "path"));
+    const saves = (event_name: string, ref: string, hit = ""): Evaluated => {
+      const event = event_name === "schedule" ? {} : { repository: { default_branch: "main" } };
+      return evaluate(condition("Save the pnpm store from the default branch"), { github: { event_name, ref, event }, steps: { leg: { outputs: { install: "true" } }, store: { outputs: { "cache-hit": hit } } } });
+    };
+    assert.equal(saves("push", "refs/heads/main"), true);
+    assert.equal(saves("schedule", "refs/heads/main"), true, "a schedule payload names no repository, and it runs on the default branch");
+    assert.equal(saves("workflow_dispatch", "refs/heads/main"), true);
+    assert.equal(saves("push", "refs/heads/main", "true"), false, "the store of this lockfile is already saved");
+    assert.equal(saves("pull_request", "refs/pull/7/merge"), false, "a pull request's store would serve that pull request alone");
+    assert.equal(saves("merge_group", "refs/heads/gh-readonly-queue/main/pr-7-abc"), false);
+    assert.equal(saves("workflow_dispatch", "refs/heads/feature"), false);
+  });
+});
+
 test("the starter workflow is the frozen caller that antelopejs-sync writes", () => {
   const template = readText(new URL("../../workflow-templates/npm-release.yml", import.meta.url));
   assert.equal(template, readText(new URL("./frozen-caller.yml", import.meta.url)));

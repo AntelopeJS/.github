@@ -78,7 +78,7 @@ export function evaluate(expression: string, scope: Scope): Evaluated {
   const source = expression
     .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
     .replace(/\.labels\.\*\.name\b/g, ".labels")
-    .replace(/\b(inputs|matrix)\.([\w-]+)/g, '$1["$2"]')
+    .replace(/\b(inputs|matrix|outputs)\.([\w-]+)/g, '$1["$2"]')
     .replace(/==/g, "===")
     .replace(/!=/g, "!==");
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
