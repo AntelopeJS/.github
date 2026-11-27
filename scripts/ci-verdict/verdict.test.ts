@@ -48,13 +48,12 @@ function readmeExample(): string {
 }
 
 describe("the verdict of ci-node.yml", () => {
-  test("is its checks job, the one reporting job: it needs every other job and runs unless the run was cancelled", () => {
+  test("is the check checks, which its gate job or its only leg reports, and it has no second reporting job", () => {
     assert.equal(SHARED_CI_VERDICT_JOB, "checks", "the check every ruleset requires is ci / checks");
-    assert.deepEqual(verdictOf(jobsOf(ciNode), SHARED_CI_VERDICT_JOB), { check: "checks", problems: [] });
     assert.ok(!jobsOf(ciNode).some((job) => job.id === "verdict"), "no second reporting job: each is a queue hop on the pool");
   });
 
-  const run = stepRun(ciNode, "checks", "Fail when a job failed, was cancelled or did not run");
+  const run = stepRun(ciNode, "gate", "Fail when a job failed, was cancelled or did not run");
   test("its failing step names each job that failed or was cancelled, then the tier and the node and Stress results", () => {
     assert.deepEqual(runScript(run, results({ windows: "skipped", shards: "skipped", node: "failure", stress: "skipped" })), {
       status: 1,

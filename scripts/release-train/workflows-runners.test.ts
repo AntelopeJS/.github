@@ -74,7 +74,7 @@ describe("runners", () => {
 
   test("each job moves with its own variable: RUNNER_CI_SMALL for the small ci-node jobs, RUNNER_CI_WINDOWS for the Windows legs, RUNNER_CI for the rest", () => {
     const vars = { RUNNER_CI: "other", RUNNER_CI_SMALL: "other-small", RUNNER_CI_WINDOWS: "other-windows" };
-    const small = ["windows", "shards", "checks"];
+    const small = ["windows", "shards", "gate"];
     for (const file of workflows) {
       for (const resolution of resolve(file, vars)) {
         if (publishesPublicly(file, resolution)) continue;

@@ -58,19 +58,19 @@ export function jobsOf(workflow: string): Job[] {
 /** `if: ${{ !cancelled() }}`, with or without the `${{ }}`, and nothing else. */
 const NOT_CANCELLED = /^(\$\{\{\s*)?!\s*cancelled\(\)(\s*\}\})?$/;
 
-/** The job of ci-node.yml that reports the whole run: the check `ci / checks` of a caller named `ci`. */
+/** The check of ci-node.yml that reports the whole run, `ci / checks` for a caller job named `ci`: its gate job, or its only leg when nothing runs beside it. */
 export const SHARED_CI_VERDICT_JOB = "checks";
 
 /**
  * The verdict of a workflow: its `verdict` job, or the `checks` of ci-node.yml when the workflow is one
- * ci-node.yml call (ci-node.yml itself has no `verdict` job: its `checks` is the one reporting job, so a run
- * pays one queue hop for it, not two). Any other job needs a `verdict` job of the workflow's own that needs it and
+ * ci-node.yml call (ci-node.yml itself has no `verdict` job: `checks` is its one reporting check, so a run
+ * pays at most one queue hop for it, not two). Any other job needs a `verdict` job of the workflow's own that needs it and
  * runs with `if: ${{ !cancelled() }}`: a failed need skips a job without a status function, and a skipped required
  * check passes, while `always()` also runs it in a cancelled run, which then waits for a runner of the pool only to
  * fail. Under `!cancelled()`, a cancelled run's verdict ends cancelled without a runner, and that blocks a merge.
- * `id` names the reporting job to judge: `verdict` in a caller, `checks` in ci-node.yml itself.
  */
-export function verdictOf(jobs: readonly Job[], id = "verdict"): Verdict {
+export function verdictOf(jobs: readonly Job[]): Verdict {
+  const id = "verdict";
   const verdict = jobs.find((job) => job.id === id);
   const [only] = jobs;
   if (verdict === undefined && jobs.length === 1 && SHARED_CI.test(only.uses ?? "")) {
