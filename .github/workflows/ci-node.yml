@@ -175,6 +175,7 @@ jobs:
       PRIMARY_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == fromJSON(inputs.node-versions || '[""]')[0] }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (matrix.part == 'test' || matrix.part == 'extra' || (matrix.part == 'checks' && inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
       CACHE_PREFIX: ${{ matrix.part == 'extra' && 'ci-node-extra' || 'ci-node' }}
+      SAVES_STORE: ${{ github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
       - name: Use LF line endings, symlinks and Git Bash for package scripts
         if: runner.os == 'Windows'
@@ -295,14 +296,15 @@ jobs:
         with:
           path: ${{ steps.store-path.outputs.path }}
           key: node-cache-${{ runner.os }}-${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: node-cache-${{ runner.os }}-${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}-pnpm-
+          restore-keys: ${{ env.SAVES_STORE != 'true' && format('node-cache-{0}-{1}-pnpm-', runner.os, runner.arch == 'ARM64' && 'arm64' || 'x64') || '' }}
+          lookup-only: ${{ steps.leg.outputs.work != 'true' }}
 
       - name: Install dependencies
         if: steps.leg.outputs.work == 'true' || (steps.leg.outputs.install == 'true' && steps.store.outputs.cache-hit != 'true')
         run: pnpm install --frozen-lockfile
 
       - name: Save the pnpm store from the default branch
-        if: steps.leg.outputs.install == 'true' && steps.store.outputs.cache-hit != 'true' && (github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        if: steps.leg.outputs.install == 'true' && steps.store.outputs.cache-hit != 'true' && env.SAVES_STORE == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.store-path.outputs.path }}

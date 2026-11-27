@@ -69,6 +69,8 @@ export interface Scope {
   vars?: object;
   needs?: object;
   secrets?: object;
+  env?: object;
+  runner?: object;
 }
 
 /** What a workflow expression evaluates to. */
@@ -84,7 +86,7 @@ export function evaluate(expression: string, scope: Scope): Evaluated {
   assert.doesNotMatch(source, /\*/, `the test cannot evaluate ${expression}`);
   const contains = (list: string[], item: string): boolean => list.includes(item);
   const format = (template: string, ...values: unknown[]): string => template.replace(/\{(\d+)\}/g, (_, index: string) => String(values[Number(index)]));
-  const value: unknown = runInNewContext(`(${source})`, { matrix: scope.matrix, steps: scope.steps, inputs: scope.inputs, github: scope.github, vars: scope.vars, needs: scope.needs, secrets: scope.secrets, contains, fromJSON: JSON.parse, format });
+  const value: unknown = runInNewContext(`(${source})`, { matrix: scope.matrix, steps: scope.steps, inputs: scope.inputs, github: scope.github, vars: scope.vars, needs: scope.needs, secrets: scope.secrets, env: scope.env, runner: scope.runner, contains, fromJSON: JSON.parse, format });
   return value === undefined ? undefined : readJson(JSON.stringify(value));
 }
 

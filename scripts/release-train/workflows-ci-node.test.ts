@@ -334,22 +334,35 @@ describe("ci-node.yml pnpm store", () => {
     assert.deepEqual([run("false", "true"), run("false", ""), run("true", "true"), run("true", "")], [false, true, true, true]);
   });
 
-  test("only the default branch and the nightly schedule save the store, under the key a pull request restores", () => {
+  test("only the default branch and the nightly schedule save the store, and they never start it from another lockfile's", () => {
     const key = (step: string, name: string): string => new RegExp(`^ {10}${name}: (.*)$`, "m").exec(step)?.[1] ?? "";
     assert.equal(key(save, "key"), key(restore, "key"));
-    assert.ok(key(restore, "key").startsWith(key(restore, "restore-keys")), "a lockfile with no store of its own restores the newest one");
     assert.equal(key(restore, "path"), key(save, "path"));
-    const saves = (event_name: string, ref: string, hit = ""): Evaluated => {
-      const event = event_name === "schedule" ? {} : { repository: { default_branch: "main" } };
-      return evaluate(condition("Save the pnpm store from the default branch"), { github: { event_name, ref, event }, steps: { leg: { outputs: { install: "true" } }, store: { outputs: { "cache-hit": hit } } } });
+    const prefix = key(restore, "key").replace(/\$\{\{ hashFiles\('pnpm-lock\.yaml'\) \}\}$/, "");
+    assert.notEqual(prefix, key(restore, "key"), "the key ends with the lockfile hash");
+    const savesStore = /^ {6}SAVES_STORE: (.*)$/m.exec(ciNode)?.[1] ?? "";
+    const runner = { os: "Linux", arch: "X64" };
+    const store = (event_name: string, ref: string, hit = "") => {
+      const github = { event_name, ref, event: event_name === "schedule" ? {} : { repository: { default_branch: "main" } } };
+      const scope = { github, runner, env: { SAVES_STORE: evaluate(savesStore, { github }) === true ? "true" : "false" }, steps: { leg: { outputs: { install: "true" } }, store: { outputs: { "cache-hit": hit } } } };
+      return { saves: evaluate(condition("Save the pnpm store from the default branch"), scope), fallback: evaluate(key(restore, "restore-keys"), scope) };
     };
-    assert.equal(saves("push", "refs/heads/main"), true);
-    assert.equal(saves("schedule", "refs/heads/main"), true, "a schedule payload names no repository, and it runs on the default branch");
-    assert.equal(saves("workflow_dispatch", "refs/heads/main"), true);
-    assert.equal(saves("push", "refs/heads/main", "true"), false, "the store of this lockfile is already saved");
-    assert.equal(saves("pull_request", "refs/pull/7/merge"), false, "a pull request's store would serve that pull request alone");
-    assert.equal(saves("merge_group", "refs/heads/gh-readonly-queue/main/pr-7-abc"), false);
-    assert.equal(saves("workflow_dispatch", "refs/heads/feature"), false);
+    const fresh = { saves: true, fallback: "" };
+    const borrowed = { saves: false, fallback: interpolate(prefix, { runner }) };
+    assert.equal(borrowed.fallback, "node-cache-Linux-x64-pnpm-", "setup-node's key, so the stores it saved keep serving");
+    assert.deepEqual(store("push", "refs/heads/main"), fresh, "a saved store holds one lockfile's packages, so it never grows");
+    assert.deepEqual(store("schedule", "refs/heads/main"), fresh, "a schedule payload names no repository, and it runs on the default branch");
+    assert.deepEqual(store("workflow_dispatch", "refs/heads/main"), fresh);
+    assert.equal(store("push", "refs/heads/main", "true").saves, false, "the store of this lockfile is already saved");
+    assert.deepEqual(store("pull_request", "refs/pull/7/merge"), borrowed, "a pull request's store would serve that pull request alone");
+    assert.deepEqual(store("merge_group", "refs/heads/gh-readonly-queue/main/pr-7-abc"), borrowed);
+    assert.deepEqual(store("workflow_dispatch", "refs/heads/feature"), borrowed);
+  });
+
+  test("the seeding leg only looks the store up, and a leg with work downloads it", () => {
+    const lookup = /^ {10}lookup-only: (.*)$/m.exec(restore)?.[1] ?? "";
+    assert.equal(evaluate(lookup, { steps: { leg: { outputs: { work: "false" } } } }), true, "a push that leaves the lockfile alone downloads nothing");
+    assert.equal(evaluate(lookup, { steps: { leg: { outputs: { work: "true" } } } }), false);
   });
 });
 
