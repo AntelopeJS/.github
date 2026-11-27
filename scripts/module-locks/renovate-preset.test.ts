@@ -22,6 +22,7 @@ interface Config {
   rangeStrategy?: string;
   minimumReleaseAge?: string | null;
   packageName?: string;
+  branchName?: string;
 }
 interface CustomManager {
   managerFilePatterns: string[];
@@ -54,6 +55,7 @@ const { massageConfig } = await load<{ massageConfig: (config: Config) => Config
 const { mergeChildConfig } = await load<{ mergeChildConfig: (parent: Config, child: Config) => Config }>("renovate/dist/config/utils.js");
 const { getConfig } = await load<{ getConfig: () => Config }>("renovate/dist/config/defaults.js");
 const { applyPackageRules } = await load<{ applyPackageRules: (config: Config, stage: string) => Promise<Config> }>("renovate/dist/util/package-rules/index.js");
+const { generateBranchName } = await load<{ generateBranchName: (update: Config) => void }>("renovate/dist/workers/repository/updates/branch-name.js");
 
 const preset = JSON5.parse(readText(new URL("../../renovate.json5", import.meta.url)));
 const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolveConfigPresets(preset)).config));
@@ -96,6 +98,12 @@ test("a patch or minor bump of a test stack module merges through the queue in o
   });
 });
 
+async function branch(upgrade: Upgrade): Promise<string | undefined> {
+  const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
+  generateBranchName(result);
+  return result.branchName;
+}
+
 test("core, the modules and the interfaces the resolver couples arrive in one pull request, whatever their update type", async () => {
   const npm = { repository: "AntelopeJS/checkout-com", manager: "npm", packageFile: "package.json" };
   const bumps = [
@@ -105,11 +113,14 @@ test("core, the modules and the interfaces the resolver couples arrive in one pu
     { depName: "@antelopejs/interface-core", currentVersion: "0.5.1", updateType: "minor" },
     { depName: "@antelopejs/core", currentVersion: "1.24.8", updateType: "major" },
   ];
-  for (const bump of bumps) {
-    const result = await applyPackageRules({ ...config, ...npm, ...bump, packageName: bump.depName }, "pre-lookup");
-    assert.equal(result.groupName, "AntelopeJS packages", bump.depName);
-    assert.equal(result.separateMajorMinor, false, bump.depName);
-  }
+  for (const bump of bumps) assert.equal(await branch({ ...npm, ...bump }), "renovate/antelopejs-packages", `${bump.depName} ${bump.updateType}`);
+  assert.equal(await branch({ ...testStack, updateType: "major" }), "renovate/antelopejs-packages");
+});
+
+test("a tooling configs major arrives with the linter majors it pins", async () => {
+  const npm = { repository: "AntelopeJS/interface-core", manager: "npm", currentVersion: "1.0.0", updateType: "major", packageFile: "package.json" };
+  for (const depName of ["@antelopejs/tooling-configs", "oxfmt", "oxlint", "@oxlint/plugins"]) assert.equal(await branch({ ...npm, depName }), "renovate/antelopejs-tooling-configs", depName);
+  assert.equal(await branch({ ...npm, manager: "github-actions", depName: "AntelopeJS/tooling-configs", packageFile: ".github/workflows/ci.yml" }), "renovate/antelopejs-tooling-configs");
 });
 
 test("every update type merges on its own, majors and third-party 0.x minors included", async () => {

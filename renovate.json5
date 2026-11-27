@@ -60,6 +60,7 @@
       // The pack pins oxfmt and oxlint as peers and runs on @oxlint/plugins, so they move with it.
       matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs', 'oxfmt', 'oxlint', '@oxlint/plugins'],
       groupName: 'AntelopeJS tooling configs',
+      separateMajorMinor: false,
     },
     {
       description: '@types/node follows the Node.js major each package runs on, so it never moves to another major; a lockfile-only update rewrites every workspace importer to one version, so the range is bumped in the package that declares it instead',

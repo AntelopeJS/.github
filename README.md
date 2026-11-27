@@ -1063,8 +1063,8 @@ The preset:
   `antelope-compliance` stays manual, since they have no merge queue. A
   third-party patch, minor or major waits three days before it opens; an
   `@antelopejs` one, a pin and a digest do not;
-- bumps every `@antelopejs` package of a repository in one
-  `AntelopeJS packages` pull request, majors included, since the interface
+- bumps every `@antelopejs` package of a repository but the tooling configs in
+  one `AntelopeJS packages` pull request, majors included, since the interface
   resolver couples core, the modules and the interfaces they declare. It
   reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
   `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin into
@@ -1074,7 +1074,7 @@ The preset:
   in that package's `package.json`, since a lockfile-only update moves every
   workspace importer to one version;
 - groups GitHub Actions updates, and `@antelopejs/tooling-configs` with the
-  linters it pins;
+  linters it pins, majors included;
 - updates nothing in template-dms-adonis's `demo/src`, `demo/content` and
   `demo/frontend-vue`, copies of template-dms-demo that the
   [template demo sync](#template-demo-sync) keeps in step;
