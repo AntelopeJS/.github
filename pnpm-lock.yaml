@@ -187,7 +187,7 @@ importers:
     devDependencies:
       '@antelopejs/tooling-configs':
         specifier: ^0.10.7
-        version: 0.10.7(oxlint@1.95.0(oxlint-tsgolint@7.0.2008))
+        version: 0.10.10(oxlint@1.95.0(oxlint-tsgolint@7.0.2008))
       '@types/node':
         specifier: 26.6.11
         version: 26.6.11
@@ -203,8 +203,8 @@ importers:
 
 packages:
 
-  '@antelopejs/tooling-configs@0.10.7':
-    resolution: {integrity: sha512-13abD0BhsR9RF6LQoYYKa+XBknlmcrZVB6iW3BwdfHKu6pPG4ClhAQCLJSSPYtbTMuvNU4imI+dVFSB78TdTnQ==}
+  '@antelopejs/tooling-configs@0.10.10':
+    resolution: {integrity: sha512-pANsSnTFe1rCbgxEEdWQO7HBY8dO6i8e8nDYTiZY9Ef0m/7vtV7BWNZ1STfEeyBFti9PrRRb9/3Y+epPgZuvkA==}
     engines: {node: '>=22.18.0'}
     hasBin: true
     peerDependencies:
@@ -212,8 +212,8 @@ packages:
       eslint-plugin-perfectionist: '>=5.0.0'
       knip: '>=6.0.0'
       mongodb-memory-server: '>=10.0.0'
-      oxfmt: ^0.66.0 || ^0.77.0 || ^0.79.0
-      oxlint: 1.81.0 || 1.94.0
+      oxfmt: ^0.66.0 || ^0.77.0 || ^0.79.0 || ^0.80.0
+      oxlint: 1.81.0 || 1.94.0 || 1.95.0
       pixelmatch: '>=7.0.0'
       playwright-core: '>=1.56.0'
       sharp: '>=0.34.0'
@@ -389,8 +389,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@oxlint/plugins@1.94.0':
-    resolution: {integrity: sha512-YT6htikBOBQ00XDxZpRZLZ0anEDo7h9s4+YvjRU0/Ng/cLd0D6SZQ3tsms4g/GDer/z8UKlegC5iptEfyRXJcw==}
+  '@oxlint/plugins@1.95.0':
+    resolution: {integrity: sha512-wb81nObfxWVASxtMQknyL4A387XDVuSIgpL1/wlhWzGpWLAGMzEvI+xWXJ242Bk8qqAmgDwG6ejetKnLISTGGw==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
 
   '@types/node@26.6.11':
@@ -632,9 +632,9 @@ packages:
 
 snapshots:
 
-  '@antelopejs/tooling-configs@0.10.7(oxlint@1.95.0(oxlint-tsgolint@7.0.2008))':
+  '@antelopejs/tooling-configs@0.10.10(oxlint@1.95.0(oxlint-tsgolint@7.0.2008))':
     dependencies:
-      '@oxlint/plugins': 1.94.0
+      '@oxlint/plugins': 1.95.0
       dts-bundle-generator: 9.5.1
       minimatch: 10.2.6
       semver: 7.8.6
@@ -738,7 +738,7 @@ snapshots:
   '@oxlint/binding-win32-x64-msvc@1.95.0':
     optional: true
 
-  '@oxlint/plugins@1.94.0': {}
+  '@oxlint/plugins@1.95.0': {}
 
   '@types/node@26.6.11':
     dependencies:
