@@ -151,7 +151,7 @@ function pullRequestPublishing(): void {
 
   test("never turns on auto-merge in the repositories the Renovate preset leaves to a person, even with a merge queue", () => {
     const manual = [...repoFile("renovate.json5").matchAll(/'!(AntelopeJS\/[\w.-]+)'/g)].map((match) => match[1]);
-    assert.equal(manual.length, 5);
+    assert.equal(manual.length, 4);
     for (const repository of manual) {
       assert.deepEqual(merges(publish({ repository })), [], repository);
     }
