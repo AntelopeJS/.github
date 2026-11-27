@@ -4,7 +4,7 @@ import { describe, test } from "node:test";
 import { isList, isObject, isText } from "../ci-metrics/json.ts";
 import { pageOf } from "./github.ts";
 import { read } from "./helpers/read.ts";
-import { jobsOf, parseYaml, problemsOf, verdictOf, type RequiredCheck } from "./verdict.ts";
+import { SHARED_CI_VERDICT_JOB, jobsOf, parseYaml, problemsOf, verdictOf, type RequiredCheck } from "./verdict.ts";
 
 const ciNode = read(".github/workflows/ci-node.yml");
 
@@ -14,45 +14,80 @@ const workflow = (...jobs: string[]): string => `on: pull_request\njobs:\n${jobs
 const verdictJob = (needs: string, condition = "${{ !cancelled() }}"): string => `  verdict:\n    needs: ${needs}\n    if: ${condition}\n    runs-on: ubuntu-latest\n`;
 const required = (...contexts: string[]): RequiredCheck[] => contexts.map((context) => ({ context, ruleset: `the ruleset "R" (1)` }));
 
-function verdictRun(workflow: string): string {
+/** The script of the step named `name` of the job `id` of `workflow`. */
+function stepRun(workflow: string, id: string, name: string): string {
   const parsed = parseYaml(workflow);
   const jobs = isObject(parsed) ? parsed.jobs : undefined;
-  const verdict = isObject(jobs) ? jobs.verdict : undefined;
-  const steps = isObject(verdict) && isList(verdict.steps) ? verdict.steps : [];
-  const [step] = steps;
+  const job = isObject(jobs) ? jobs[id] : undefined;
+  const steps = isObject(job) && isList(job.steps) ? job.steps : [];
+  const step = steps.find((candidate) => isObject(candidate) && candidate.name === name);
   const run = isObject(step) ? step.run : undefined;
-  assert.ok(isText(run), "the verdict job runs one script");
+  assert.ok(isText(run), `the ${id} job has a step ${name} that runs a script`);
   return run;
 }
 
+const runScript = (run: string, needs: Record<string, { result: string; outputs: Record<string, string> }>) => {
+  const { status, stdout } = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", run], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, NEEDS: JSON.stringify(needs) },
+  });
+  return { status, stdout };
+};
+const results = (entries: Record<string, string>, tier = "fast"): Record<string, { result: string; outputs: Record<string, string> }> =>
+  Object.fromEntries(
+    Object.entries(entries).map(([job, result]) => {
+      const outputs: Record<string, string> = job === "node" ? { tier } : {};
+      return [job, { result, outputs }];
+    }),
+  );
+
+/** The caller example of the README's "The verdict of a caller". */
+function readmeExample(): string {
+  const readme = read("README.md");
+  return /```yaml\n([\s\S]*?)```/.exec(readme.slice(readme.indexOf("### The verdict of a caller")))?.[1] ?? "";
+}
+
 describe("the verdict of ci-node.yml", () => {
-  test("needs every job of the workflow and runs even when one of them failed", () => {
-    assert.deepEqual(verdictOf(jobsOf(ciNode)), { check: "verdict", problems: [] });
+  test("is its checks job, the one reporting job: it needs every other job and runs unless the run was cancelled", () => {
+    assert.equal(SHARED_CI_VERDICT_JOB, "checks", "the check every ruleset requires is ci / checks");
+    assert.deepEqual(verdictOf(jobsOf(ciNode), SHARED_CI_VERDICT_JOB), { check: "checks", problems: [] });
+    assert.ok(!jobsOf(ciNode).some((job) => job.id === "verdict"), "no second reporting job: each is a queue hop on the pool");
   });
 
-  const run = verdictRun(ciNode);
-  const verdict = (results: Record<string, string>) => {
-    const needs = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: {} }]));
-    const { status, stdout } = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", run], {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH, NEEDS: JSON.stringify(needs) },
+  const run = stepRun(ciNode, "checks", "Fail when a job failed, was cancelled or did not run");
+  test("its failing step names each job that failed or was cancelled, then the tier and the node and Stress results", () => {
+    assert.deepEqual(runScript(run, results({ windows: "skipped", shards: "skipped", node: "failure", stress: "skipped" })), {
+      status: 1,
+      stdout: "node: failure\n::error::Tier fast: node failure, stress skipped.\n",
     });
-    return { status, stdout };
-  };
+    assert.deepEqual(runScript(run, results({ windows: "success", shards: "skipped", node: "success", stress: "cancelled" }, "nightly")), {
+      status: 1,
+      stdout: "stress: cancelled\n::error::Tier nightly: node success, stress cancelled.\n",
+    });
+    assert.deepEqual(runScript(run, results({ windows: "skipped", shards: "skipped", node: "skipped", stress: "skipped" })), {
+      status: 1,
+      stdout: "::error::Tier fast: node skipped, stress skipped.\n",
+    });
+  });
+});
+
+describe("the verdict of a caller", () => {
+  const run = stepRun(readmeExample(), "verdict", "Fail when a job failed or was cancelled");
+  const verdict = (entries: Record<string, string>) => runScript(run, results(entries));
 
   test("passes when every job succeeded or was skipped", () => {
-    assert.deepEqual(verdict({ windows: "skipped", shards: "skipped", node: "success", stress: "skipped", checks: "success" }), { status: 0, stdout: "" });
+    assert.deepEqual(verdict({ ci: "success", "renovate-sync": "skipped" }), { status: 0, stdout: "" });
   });
 
   test("fails naming each job that failed or was cancelled", () => {
-    assert.deepEqual(verdict({ windows: "skipped", shards: "skipped", node: "failure", stress: "skipped", checks: "failure" }), { status: 1, stdout: "node: failure\nchecks: failure\n" });
-    assert.deepEqual(verdict({ windows: "success", shards: "skipped", node: "success", stress: "cancelled", checks: "success" }), { status: 1, stdout: "stress: cancelled\n" });
+    assert.deepEqual(verdict({ ci: "failure", "renovate-sync": "failure" }), { status: 1, stdout: "ci: failure\nrenovate-sync: failure\n" });
+    assert.deepEqual(verdict({ ci: "success", "renovate-sync": "cancelled" }), { status: 1, stdout: "renovate-sync: cancelled\n" });
   });
 });
 
 describe("a repository's conformance", () => {
-  test("a ci.yml that is one ci-node.yml call conforms when its rulesets require ci / verdict alone", () => {
-    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL), required: required("ci / verdict") }), []);
+  test("a ci.yml that is one ci-node.yml call conforms when its rulesets require ci / checks alone", () => {
+    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL), required: required("ci / checks") }), []);
   });
 
   test("a job beside the ci-node.yml call needs a verdict job of the repository", () => {
@@ -87,18 +122,15 @@ describe("a repository's conformance", () => {
   });
 
   test("each required check other than the verdict is named, and a verdict no ruleset requires is reported", () => {
-    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL), required: required("ci / checks", "hub-build") }), [
-      `the ruleset "R" (1) requires ci / checks, not ci / verdict`,
-      `the ruleset "R" (1) requires hub-build, not ci / verdict`,
-      "no ruleset requires ci / verdict",
+    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL), required: required("ci / verdict", "hub-build") }), [
+      `the ruleset "R" (1) requires ci / verdict, not ci / checks`,
+      `the ruleset "R" (1) requires hub-build, not ci / checks`,
+      "no ruleset requires ci / checks",
     ]);
   });
 
-  test("the caller example of the README conforms, with the verdict script of ci-node.yml", () => {
-    const readme = read("README.md");
-    const example = /```yaml\n([\s\S]*?)```/.exec(readme.slice(readme.indexOf("### The verdict of a caller")))?.[1] ?? "";
-    assert.deepEqual(verdictOf(jobsOf(example)), { check: "verdict", problems: [] });
-    assert.equal(verdictRun(example), verdictRun(ciNode));
+  test("the caller example of the README conforms", () => {
+    assert.deepEqual(verdictOf(jobsOf(readmeExample())), { check: "verdict", problems: [] });
   });
 });
 

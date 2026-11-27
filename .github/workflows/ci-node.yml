@@ -673,8 +673,12 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   checks:
-    # Not always(): a cancelled run ends this job cancelled without a runner, and a cancelled required check
-    # blocks the merge as a failed one does. A leg that timed out or failed still runs and fails this job.
+    # The one result a caller's rulesets require, `ci / checks`, and the one the merge queue waits for: it needs every
+    # other job, runs unless the run was cancelled, and fails, naming them, when any of them failed or was cancelled,
+    # when node did not succeed, when Stress did not succeed in the nightly tier, or when a pull request's title is not
+    # Conventional Commits. Not always(): a cancelled run ends it cancelled without a runner, and a cancelled required
+    # check blocks a merge as a failed one does; a leg that timed out or failed in a run that goes on still fails it.
+    # One reporting job, not two: each is a queue hop on the pool before a caller's own gate.
     if: ${{ !cancelled() }}
     needs: [windows, shards, node, stress]
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
@@ -698,31 +702,9 @@ jobs:
       - name: Fail when a job failed, was cancelled or did not run
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.node.result != 'success' || (needs.node.outputs.tier == 'nightly' && needs.stress.result != 'success')
         env:
-          TIER: ${{ needs.node.outputs.tier }}
-          NODE: ${{ needs.node.result }}
-          STRESS: ${{ needs.stress.result }}
-        run: |
-          echo "::error::Tier ${TIER:-unknown}: node ${NODE}, stress ${STRESS}."
-          exit 1
-
-  verdict:
-    needs: [windows, shards, node, stress, checks]
-    # As checks: it runs and fails after any failed or cancelled job of a run that goes on, and in a run that
-    # was cancelled it ends cancelled without waiting for a runner, which still blocks a merge.
-    if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
-    timeout-minutes: 5
-    permissions: {}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Fail when a job failed or was cancelled
-        env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<< "$NEEDS")
-          if [ -n "$failed" ]; then
-            echo "$failed"
-            exit 1
-          fi
+          jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          tier=$(jq -r '.node.outputs.tier // ""' <<< "$NEEDS")
+          echo "::error::Tier ${tier:-unknown}: node $(jq -r .node.result <<< "$NEEDS"), stress $(jq -r .stress.result <<< "$NEEDS")."
+          exit 1

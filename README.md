@@ -711,22 +711,21 @@ ignored. The workflow no longer writes to Notion. The secret stays declared
 because callers still pass it and a reusable workflow rejects a secret it does
 not declare.
 
-The `verdict` job is the result the merge queue waits for. It needs every other
-job, `checks` included, runs with `if: ${{ !cancelled() }}` whatever they ended
-with, and fails, naming them, when any of them failed or was cancelled. A
-required check that is skipped passes, so a gate that a failed job would skip
-gates nothing. `!cancelled()` never skips it in a run that goes on, and in a run
-that was cancelled it ends cancelled without a runner, which blocks a merge as a
-failure does. `always()` would run it there too, so each cancelled run would
-wait for a runner of the pool only to fail.
-
-The `checks` job checks that the pull request title uses Conventional Commits. It fails when the `node` job did not
-succeed, when any job it waits for failed or was cancelled, and in the
-`nightly` tier when `Stress` did not succeed. A newer run of the same pull
-request cancels the older one whole. On any event, the `checks` of a cancelled
-run, whether a newer run or someone cancelled it, ends cancelled without a
-runner instead of failing. In a run that was not cancelled, a cancelled job,
-such as a leg that timed out, still fails `checks`.
+The `checks` job is the one reporting job of the run, the check `ci / checks`
+that every ruleset requires and the result the merge queue waits for. It needs
+every other job, runs with `if: ${{ !cancelled() }}` whatever they ended with,
+checks that a pull request's title uses Conventional Commits, and fails, naming
+them, when any job failed or was cancelled, when `node` did not succeed, and in
+the `nightly` tier when `Stress` did not succeed. A required check that is
+skipped passes, so a gate that a failed job would skip gates nothing:
+`!cancelled()` never skips it in a run that goes on, and in a run that was
+cancelled, whether a newer run of the same pull request or someone cancelled it,
+it ends cancelled without a runner, which blocks a merge as a failure does.
+`always()` would run it there too, so each cancelled run would wait for a
+runner of the pool only to fail. In a run that was not cancelled, a cancelled
+job, such as a leg that timed out, still fails `checks`. There is no second
+reporting job: each one is a queue hop on the pool, after `node` and before a
+caller's own gate, for a run that is already decided.
 
 In the merge queue, a group the queue rebuilds or drops loses its
 `gh-readonly-queue/…` branch, or the branch moves to the new group when the
@@ -774,7 +773,7 @@ one more result the queue would merge past. Such a caller adds a job named
 `verdict` that needs every job of the file, runs with `if: ${{ !cancelled() }}`,
 and fails when any of them failed or was cancelled, and its rulesets require `verdict`
 alone. A caller whose `ci.yml` is the `ci-node.yml` call alone needs no job of
-its own: its rulesets require `ci / verdict`. The
+its own: its rulesets require `ci / checks`. The
 [verdict conformance](#verdict-conformance) workflow lists every repository that
 does neither.
 
