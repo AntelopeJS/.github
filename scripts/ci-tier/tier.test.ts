@@ -141,7 +141,8 @@ describe("a merge group the queue dropped", () => {
   });
 
   test("runs the queue tier when either API call fails, as before", () => {
-    for (const answers of [{}, { FAKE_GH_REFS: "" }]) {
+    const failures: Record<string, string>[] = [{}, { FAKE_GH_REFS: "" }];
+    for (const answers of failures) {
       const { cwd, base, env } = group(answers);
       assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base }, JSON.stringify(answers));
     }
