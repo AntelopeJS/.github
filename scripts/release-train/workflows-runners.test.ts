@@ -93,7 +93,7 @@ describe("runners", () => {
   });
 
   test("every job that runs repository code exports the UTF-8 locale and a TERM that is not dumb, as GitHub's hosted runners do, but on Windows", () => {
-    const jobs: [string, string][] = [["ci-node.yml", "node"], ["ci-node.yml", "stress"], ["release-npm.yml", "release"], ["module-locks-refresh.yml", "refresh"]];
+    const jobs: [string, string][] = [["ci-node.yml", "node"], ["ci-node.yml", "stress"], ["ci-node.yml", "formal"], ["release-npm.yml", "release"], ["module-locks-refresh.yml", "refresh"]];
     const expected = { LANG: "C.UTF-8", TERM: "xterm-256color" };
     for (const [file, job] of jobs) {
       const workflow = readJson(JSON.stringify(parse(workflowText(file))));

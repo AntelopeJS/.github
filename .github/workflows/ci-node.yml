@@ -79,6 +79,10 @@ on:
         description: On a workflow_dispatch run, run the nightly tier instead of full, with the Windows jobs and Stress, so a fix to a nightly failure can be proven on a branch; the caller forwards the nightly input of its own workflow_dispatch trigger
         default: false
         type: boolean
+      formal-checks:
+        description: 'JSON array of the formal checks to run, one Formal job each, such as [{"skill": "formal-billing-lease", "paths": ["src/engine.ts"]}]. skill names the folder under .agents/skills, whose check.mjs runs unless run gives the commands. paths lists the git pathspecs the check models: a pull request in the fast tier runs the check only when they or the skill folder changed, and every other tier runs it. Empty runs none'
+        default: ""
+        type: string
     secrets:
       NOTION_TOKEN:
         description: Deprecated and ignored; kept only because callers still pass it and a reusable workflow rejects a secret it does not declare
@@ -144,7 +148,7 @@ jobs:
   node:
     needs: [windows, shards]
     if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
-    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'checks' || format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
+    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'checks' || format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
     # Linux legs on Blacksmith's 4 vCPU Ubuntu 24.04 runner, Windows legs on its 4 vCPU Windows Server 2025
     # runner, unless the CALLING repository's variable RUNNER_CI (Linux) or RUNNER_CI_WINDOWS (Windows) names
     # another label. Windows legs run only for a calling repository the API reports public, and a schedule
@@ -684,10 +688,109 @@ jobs:
           FILE: ${{ inputs.services-compose-file }}
         run: docker compose -f "$FILE" down -v
 
+  formal:
+    name: Formal ${{ matrix.skill }}
+    if: inputs.formal-checks != ''
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.formal-checks) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      LANG: C.UTF-8
+      TERM: xterm-256color
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Pick the tier
+        id: tier
+        uses: AntelopeJS/.github/.github/actions/ci-tier@v2
+        with:
+          selection: ${{ vars.CI_SELECTION }}
+
+      - name: Pick the work of this check from the tier and the files it models
+        id: check
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+          BASE: ${{ steps.tier.outputs.base }}
+          SKILL: ${{ matrix.skill }}
+          PATHS: ${{ toJSON(matrix.paths) }}
+        run: |
+          if [[ ! "$SKILL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::Each formal-checks entry needs a skill, the name of a folder under .agents/skills, not '${SKILL}'."
+            exit 1
+          fi
+          if ! specs=$(jq -r 'if . == null then empty elif type == "array" and length > 0 and all(type == "string") then .[] else error("") end' <<< "$PATHS" 2> /dev/null); then
+            echo "::error::The paths of formal check ${SKILL} must be a non-empty list of git pathspecs."
+            exit 1
+          fi
+          work=true
+          if [[ "$TIER" == none ]]; then
+            work=false
+          elif [[ "$TIER" == fast && -n "$specs" ]]; then
+            mapfile -t pathspecs <<< "$specs"
+            changed=$(git -c core.quotepath=off diff --name-only --no-renames "$BASE" HEAD -- ".agents/skills/${SKILL}" "${pathspecs[@]}")
+            if [[ -z "$changed" ]]; then
+              work=false
+              echo "\`${SKILL}\`: skipped, the pull request changes no file it models" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "work=${work}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        if: steps.check.outputs.work == 'true'
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.check.outputs.work == 'true'
+        with:
+          node-version: ${{ fromJSON(inputs.node-versions || '[""]')[0] }}
+          node-version-file: ${{ fromJSON(inputs.node-versions || '[""]')[0] == '' && '.nvmrc' || '' }}
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.check.outputs.work == 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        if: steps.check.outputs.work == 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Restore the model checker
+        if: steps.check.outputs.work == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/antelopejs-formal
+          key: antelopejs-formal-${{ runner.os }}-${{ matrix.skill }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            antelopejs-formal-${{ runner.os }}-
+
+      - name: Run the formal check
+        if: steps.check.outputs.work == 'true'
+        env:
+          SKILL: ${{ matrix.skill }}
+          COMMANDS: ${{ matrix.run || format('node .agents/skills/{0}/check.mjs', matrix.skill) }}
+        run: |
+          start=$SECONDS
+          status=0
+          bash -euo pipefail -c "$COMMANDS" || status=$?
+          echo "\`${SKILL}\`: exit ${status} in $((SECONDS - start)) s" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
   gate:
-    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'gate' || 'checks' }}
-    if: ${{ !cancelled() && !(needs.windows.result == 'skipped' && inputs.single-job && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly)) }}
-    needs: [windows, shards, node, stress]
+    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'gate' || 'checks' }}
+    if: ${{ !cancelled() && !(needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly)) }}
+    needs: [windows, shards, node, stress, formal]
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}

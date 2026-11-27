@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { readText } from "./helpers/read.ts";
 import type { JsonObject } from "./json.ts";
-import { evaluate, evaluateRules, evaluateStrings, interpolate, root, runStep, stepOf, workflowText } from "./workflows-helpers.ts";
+import { commitFiles, evaluate, evaluateRules, evaluateStrings, interpolate, repository, root, runStep, stepOf, workflowText } from "./workflows-helpers.ts";
 import type { Evaluated } from "./workflows-helpers.ts";
 
 describe("next-sync.yml", () => {
@@ -59,7 +59,7 @@ describe("ci-node.yml verdict", () => {
   test("the gate needs every other job, runs unless the run was cancelled, and there is no verdict job after it", () => {
     assert.doesNotMatch(ciNode, /^ {2}verdict:$/m, "a second reporting job is a second queue hop on the pool for a run that is already decided");
     assert.doesNotMatch(ciNode, /^ {2}checks:$/m, "a skipped job whose id is checks would report a passing ci / checks");
-    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress\]$/m, "the gate waits for every other job");
+    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress, formal\]$/m, "the gate waits for every other job");
     assert.match(key("gate", "if"), /^\$\{\{ !cancelled\(\) && /, "not always(): a job that runs after a cancel waits for a runner of the pool");
     const scope = { github: { event_name: "pull_request" }, inputs: { "single-job": false, "node-versions": "" }, needs: { windows: { result: "skipped" } } };
     assert.equal(evaluate(key("gate", "if").replace(/\bcancelled\(\)/g, "true"), scope), false, "a cancelled run's checks end cancelled, a conclusion that blocks a merge");
@@ -77,6 +77,7 @@ describe("ci-node.yml verdict", () => {
       [[false, ""], [false, "x"], [true, ""], [true, "x"]].map(([extraJob, extra]) => ({ "extra-commands-job": extraJob, "extra-commands": extra })),
       ["", "[24]", "[22, 24]"].map((versions) => ({ "node-versions": versions })),
       [false, true].map((nightly) => ({ nightly })),
+      ["", "[]", '[{"skill": "formal-a"}]'].map((formal) => ({ "formal-checks": formal })),
     ];
     const scenarios = axes.reduce<JsonObject[]>((partial, axis) => partial.flatMap((scenario) => axis.map((value) => ({ ...scenario, ...value }))), [{}]);
     let folded = 0;
@@ -97,6 +98,7 @@ describe("ci-node.yml verdict", () => {
       assert.notEqual(gateName, "checks", `${label}: a skipped check named checks passes`);
       assert.deepEqual(legs, ["checks"], `${label}: the fold needs one leg`);
       assert.ok(event !== "schedule" && !(event === "workflow_dispatch" && inputs.nightly === true), `${label}: the nightly tier has a Stress job for the gate to judge`);
+      assert.equal(evaluate(key("formal", "if"), scope), false, `${label}: the gate judges the Formal jobs`);
     }
     assert.ok(folded > 0, "a small module's run folds the gate into its leg");
   });
@@ -147,7 +149,7 @@ describe("ci-node.yml", () => {
 
   test("a failed Windows gate fails the run instead of dropping the Windows legs", () => {
     assert.match(jobText("node"), /^ {4}needs: \[windows, shards\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.windows\.result != 'failure' && needs\.shards\.result != 'failure' \}\}$/m);
-    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress\]$/m);
+    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress, formal\]$/m);
   });
 
   test("a newer run of the same pull request cancels the older run whole, and any cancelled run's checks end cancelled instead of failing", () => {
@@ -166,7 +168,7 @@ describe("ci-node.yml", () => {
     const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
     const twoParts = { "single-job": false, "services-compose-file": "", "extra-commands-job": false, "extra-commands": "", "node-versions": "", nightly: false };
     const checks = (event: string, runCancelled: boolean, node: string): string => {
-      const results = { windows: "skipped", shards: "skipped", node, stress: "skipped" };
+      const results = { windows: "skipped", shards: "skipped", node, stress: "skipped", formal: "skipped" };
       const status = (expression: string): string => expression.replace(/\bcancelled\(\)/g, String(runCancelled)).replaceAll("needs.*.result", JSON.stringify(Object.values(results)));
       const needs = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: { tier: "fast" } }]));
       if (evaluate(status(gate), { github: { event_name: event }, inputs: twoParts, needs }) !== true) return "cancelled";
@@ -219,6 +221,84 @@ describe("ci-node.yml", () => {
     assert.deepEqual(legs({ "extra-commands-shards": 2, "single-job": false }), ["Node .nvmrc", "Test .nvmrc", "Extra .nvmrc 1/2: shard 1/2", "Extra .nvmrc 2/2: shard 2/2"]);
     assert.deepEqual(legs({ "extra-commands-shards": 3, "extra-commands-job": false }), ["checks: shard unset"], "one leg alone reports ci / checks");
     assert.notEqual(runStep(ciNode, "List the extra-commands shards", root, { SHARDS: "2.5" }).status, 0);
+  });
+});
+
+describe("ci-node.yml formal checks", () => {
+  const formal = jobText("formal");
+  const pick = "Pick the work of this check from the tier and the files it models";
+  const summary = join(root, "formal-summary.md");
+  const checkout = repository("formal-checkout", { ".agents/skills/formal-a/check.mjs": "a\n", "src/a.ts": "a\n", "src/b.ts": "b\n" });
+
+  const work = (tier: string, base: string, paths?: string[]): string => {
+    writeFileSync(summary, "");
+    const result = runStep(ciNode, pick, checkout.directory, { TIER: tier, BASE: base, SKILL: "formal-a", PATHS: JSON.stringify(paths ?? null), GITHUB_STEP_SUMMARY: summary });
+    assert.equal(result.status, 0, result.stderr);
+    return result.outputs;
+  };
+
+  test("a caller that passes no formal-checks gets no Formal job, and each entry is one Formal leg", () => {
+    const gate = /^ {4}if: (.*)$/m.exec(formal)?.[1] ?? "";
+    assert.equal(evaluate(gate, { inputs: { "formal-checks": "" } }), false, "the frozen callers pass nothing and run as before");
+    const inputs = { "formal-checks": '[{"skill": "formal-a"}, {"skill": "formal-b", "paths": ["src/b.ts"], "run": "node b.mjs"}]' };
+    assert.equal(evaluate(gate, { inputs }), true);
+    const include = /^ {8}include: (.*)$/m.exec(formal)?.[1] ?? "";
+    const name = /^ {4}name: (.*)$/m.exec(formal)?.[1] ?? "";
+    assert.deepEqual(
+      evaluateRules(include, { inputs }).map((matrix) => interpolate(name, { matrix })),
+      ["Formal formal-a", "Formal formal-b"],
+    );
+  });
+
+  test("a fast-tier pull request runs a check only when its skill folder or a file it models changed, and every other tier runs it", () => {
+    const base = checkout.sha;
+    commitFiles(checkout.directory, "fix: b", { "src/b.ts": "b2\n" });
+    assert.equal(work("fast", base, ["src/a.ts"]), "work=false\n");
+    assert.equal(readText(summary), "`formal-a`: skipped, the pull request changes no file it models\n");
+    assert.equal(work("fast", base, ["src/a.ts", "src/b.ts"]), "work=true\n");
+    assert.equal(work("fast", base, [":(glob)src/**/*.ts"]), "work=true\n", "paths are git pathspecs");
+    assert.equal(work("fast", base), "work=true\n", "a check that names no paths runs on every pull request");
+    for (const tier of ["full", "queue", "nightly"]) assert.equal(work(tier, base, ["src/a.ts"]), "work=true\n", tier);
+    assert.equal(work("none", "", ["src/a.ts"]), "work=false\n");
+
+    const skillBase = commitFiles(checkout.directory, "docs: readme", { "README.md": "x\n" });
+    commitFiles(checkout.directory, "fix: model", { ".agents/skills/formal-a/check.mjs": "a2\n" });
+    assert.equal(work("fast", skillBase, ["src/a.ts"]), "work=true\n", "a change to the model runs its check");
+  });
+
+  test("an entry without a valid skill, or whose paths are not a non-empty list of strings, fails its leg", () => {
+    const status = (skill: string, paths: string): number => runStep(ciNode, pick, checkout.directory, { TIER: "full", BASE: "", SKILL: skill, PATHS: paths, GITHUB_STEP_SUMMARY: summary }).status;
+    assert.equal(status("formal-a", '["src/a.ts"]'), 0);
+    for (const skill of ["", "../formal-a", "formal a", "-x"]) assert.notEqual(status(skill, "null"), 0, skill);
+    for (const paths of ['"src/a.ts"', "[]", "[1]", '{"src": "a.ts"}']) assert.notEqual(status("formal-a", paths), 0, paths);
+  });
+
+  test("a check runs the skill's check.mjs unless run gives the commands, fails on the first failing command, and reports its exit and time", () => {
+    const step = stepOf(ciNode, "Run the formal check");
+    const commands = /^ {10}COMMANDS: (.*)$/m.exec(step)?.[1] ?? "";
+    assert.equal(interpolate(commands, { matrix: { skill: "formal-a" } }), "node .agents/skills/formal-a/check.mjs");
+    assert.equal(interpolate(commands, { matrix: { skill: "formal-a", run: "node --test a.test.mjs\nnode a.mjs" } }), "node --test a.test.mjs\nnode a.mjs");
+    const run = (lines: string): [number, string] => {
+      writeFileSync(summary, "");
+      const result = runStep(ciNode, "Run the formal check", root, { SKILL: "formal-a", COMMANDS: lines, GITHUB_STEP_SUMMARY: summary });
+      return [result.status, readText(summary)];
+    };
+    assert.deepEqual(run("true"), [0, "`formal-a`: exit 0 in 0 s\n"]);
+    assert.deepEqual(run("echo BROKEN OneChargePerPeriod\nexit 1"), [1, "`formal-a`: exit 1 in 0 s\n"]);
+    assert.deepEqual(run("false\ntrue"), [1, "`formal-a`: exit 1 in 0 s\n"]);
+  });
+
+  test("checks needs every Formal leg, so a failing formal check blocks the merge", () => {
+    const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
+    const fails = (result: string): boolean => {
+      const results = { windows: "skipped", shards: "skipped", node: "success", stress: "skipped", formal: result };
+      const needs = Object.fromEntries(Object.entries(results).map(([job, value]) => [job, { result: value, outputs: { tier: "queue" } }]));
+      return evaluate(fail.replaceAll("needs.*.result", JSON.stringify(Object.values(results))), { needs }) === true;
+    };
+    assert.equal(fails("failure"), true);
+    assert.equal(fails("cancelled"), true, "a check that hung past its timeout");
+    assert.equal(fails("success"), false);
+    assert.equal(fails("skipped"), false, "a caller that passes no formal-checks");
   });
 });
 
