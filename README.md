@@ -559,7 +559,7 @@ compared with.
 | Pull request with the `ci:full` label, from a repository whose `CI_SELECTION` variable is `full`, or that changes a root file | `full` | the pull request base | the Node.js jobs and the tests |
 | Any other pull request, draft or ready, into any branch | `fast` | the pull request base | the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
 | `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
-| Push to the default branch | `none` | none | none; `checks` succeeds |
+| Push to the default branch | `none` | none | none; `ci / checks` succeeds |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
 | `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
 | Any other `workflow_dispatch`, and any other event | `full` | none | as `full` |
@@ -572,8 +572,9 @@ so a `ci:full` label added later counts from the next push.
 The `node` job runs one job per runner, Node.js version and part:
 
 - By default, with `single-job`, one `Node <version>` job per runner runs the
-  checks, then the tests. A pull request on `.nvmrc` shows `Node .nvmrc` and
-  `checks`.
+  checks, then the tests. When that is the run's only job, it takes the name
+  `checks` instead: a pull request of a small module on `.nvmrc` shows one
+  job, `ci / checks`.
 - With `single-job: false`, or with `services-compose-file`, `Node <version>`
   runs the checks and `Test <version>` runs the tests, in parallel. A caller
   whose tests take minutes passes `single-job: false`.
@@ -660,7 +661,7 @@ diff base. On a pull request and in the merge queue, it fetches the diff base
 when the checkout lacks it. On a pull request, it reads the changed files from
 the checkout. Without a checkout, a pull request gets `fast` unless the label or
 `selection` asks for `full`. In a merge group the queue has dropped, it fails
-instead, before any work (see the `checks` job below), so the jobs that need a
+instead, before any work (see the gate below), so the jobs that need a
 caller's own tier job are skipped too:
 
 ```yaml
@@ -698,7 +699,7 @@ It accepts these optional inputs:
 | `single-job` | `true` | Run the checks and the tests in one job per runner. Pass `false` to run the tests in a job of their own, in parallel with the checks, when they take minutes. A caller with `services-compose-file` always gets separate jobs. |
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
-| `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. `checks` needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
+| `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. The gate needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
 | `windows` | `true` | Also run the jobs on Windows, in parallel with Linux, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
@@ -711,19 +712,29 @@ ignored. The workflow no longer writes to Notion. The secret stays declared
 because callers still pass it and a reusable workflow rejects a secret it does
 not declare.
 
-The `checks` job is the one reporting job of the run, the check `ci / checks`
-that every ruleset requires and the result the merge queue waits for. It needs
-every other job, runs with `if: ${{ !cancelled() }}` whatever they ended with,
-checks that a pull request's title uses Conventional Commits, and fails, naming
-them, when any job failed or was cancelled, when `node` did not succeed, and in
-the `nightly` tier when `Stress` did not succeed. A required check that is
+The check `ci / checks` is the one result every ruleset requires and the merge
+queue waits for. A run with one job alone, `Node <version>` with `single-job`,
+no services, no `extra-commands-job`, at most one `node-versions` entry, no
+Windows job and no `nightly` tier, gives that job the name `checks`: its own
+result is the check, and a small module pays one runner and one queue hop per
+run, not two. Any other run reports it from the `gate` job. The leg that runs
+the checks on the first `node-versions` entry, on Linux, checks that a pull
+request's title uses Conventional Commits.
+
+The `gate` job takes the name `checks` in a run with more than one job. It
+needs every other job, runs with `if: ${{ !cancelled() }}` whatever they ended
+with, and fails, naming them, when any job failed or was cancelled, when `node`
+did not succeed, and in the `nightly` tier when `Stress` did not succeed. In a
+run with one job, it skips. GitHub names a skipped job after its unevaluated
+`name` expression, so the skipped gate shows as `ci / needs.windows.result ==
+…`, never as a second `ci / checks` that would pass beside a failed leg. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
 `!cancelled()` never skips it in a run that goes on, and in a run that was
 cancelled, whether a newer run of the same pull request or someone cancelled it,
 it ends cancelled without a runner, which blocks a merge as a failure does.
 `always()` would run it there too, so each cancelled run would wait for a
 runner of the pool only to fail. In a run that was not cancelled, a cancelled
-job, such as a leg that timed out, still fails `checks`. There is no second
+job, such as a leg that timed out, still fails the gate. There is no second
 reporting job: each one is a queue hop on the pool, after `node` and before a
 caller's own gate, for a run that is already decided.
 
@@ -737,14 +748,14 @@ points at its head and whose head is not on the base branch: it fails with a
 `Superseded merge group` error, before the install or the tests. A group that
 merged also loses its branch, but its head is then on the base branch, so a late
 job of it runs as before. When either API call fails, the job runs as before.
-The run's `checks` then fails in seconds, on a commit no queue
+The run's `ci / checks` then fails in seconds, on a commit no queue
 waits for.
 
 The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
 `blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
 variable names another runner label. A reusable workflow reads the caller's
 variables, so one variable switches a repository to another runner. The three
-small jobs, `Windows eligibility`, `Extra shards` and `checks`, run a few
+small jobs, `Windows eligibility`, `Extra shards` and the gate, run a few
 seconds of shell and install nothing: they go to the label the caller's
 `RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
 own gate and tier jobs can read the same variables. The Windows legs run only
@@ -909,7 +920,7 @@ head whose sync output was not applied fails `ci / checks`, and a pushed head
 whose dispatched result was not reported has no `ci / checks` the ruleset
 counts.
 
-The status check context of the `checks` job of `ci-node.yml` is `ci / checks`
+The status check context of `ci-node.yml`'s reporting job is `ci / checks`
 when the caller job id is `ci`.
 
 ## Module locks

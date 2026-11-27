@@ -176,14 +176,14 @@ describe("the fast tier", () => {
   });
 });
 
-test("ci-node.yml calls the ci-tier action at v2, keeps the checks gate with the title check, and has no gitleaks job", () => {
+test("ci-node.yml calls the ci-tier action at v2, keeps the gate, checks the title in a leg, and has no gitleaks job", () => {
   const uses = ciNode.filter((line) => line.includes("ci-tier"));
   assert.notEqual(uses.length, 0);
   for (const line of uses) assert.equal(line.trim(), "uses: AntelopeJS/.github/.github/actions/ci-tier@v2");
   const jobs = keys(keyed(ciNode, "jobs"));
-  assert.ok(jobs.includes("checks"), "the required check is ci / checks");
+  assert.ok(jobs.includes("gate"), "the gate reports ci / checks when a run has more than one leg");
   assert.ok(!jobs.includes("gitleaks"));
-  assert.ok(block(ciNode, ciNode.indexOf("  checks:")).some((line) => line.trim().startsWith("pattern='")), "the checks job checks the pull request title");
+  assert.ok(block(ciNode, ciNode.indexOf("  node:")).some((line) => line.trim().startsWith("pattern='")), "the primary leg checks the pull request title");
 });
 
 describe("the base branch fetch", () => {
