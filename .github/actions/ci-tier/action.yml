@@ -43,17 +43,18 @@ runs:
           merge_group)
             base="$MERGE_GROUP_BASE"
             tier=queue
-            # A merge queue that rebuilds or drops a group deletes the group's branch but leaves its runs queued,
-            # and nothing in an expression can name the pull request to cancel them by. Such a run stops here,
-            # failed, before its tests take a runner. A group that merged also loses its branch, but its head is
-            # then on the base branch, so a job of it that starts late runs as before, and so does any job whose
-            # API call fails. contents: read is enough for both calls.
+            # A merge queue that rebuilds or drops a group deletes the group's branch, or points it at the new
+            # group when it rebuilds on the same parent, but leaves the old group's runs queued, and nothing in an
+            # expression can name the pull request to cancel them by. Such a run stops here, failed, before its
+            # tests take a runner. A group that merged also loses its branch, but its head is then on the base
+            # branch, so a job of it that starts late runs as before, and so does any job whose API call fails.
+            # contents: read is enough for both calls.
             if [[ -n "$MERGE_GROUP_HEAD_REF" && -n "$MERGE_GROUP_HEAD_SHA" ]] \
-              && refs=$(GH_TOKEN="$TOKEN" gh api "repos/${REPOSITORY}/git/matching-refs/${MERGE_GROUP_HEAD_REF#refs/}" --jq '.[].ref' 2> /dev/null) \
-              && ! grep -Fxq -- "$MERGE_GROUP_HEAD_REF" <<< "$refs" \
+              && refs=$(GH_TOKEN="$TOKEN" gh api "repos/${REPOSITORY}/git/matching-refs/${MERGE_GROUP_HEAD_REF#refs/}" --jq '.[] | "\(.ref) \(.object.sha)"' 2> /dev/null) \
+              && ! grep -Fxq -- "${MERGE_GROUP_HEAD_REF} ${MERGE_GROUP_HEAD_SHA}" <<< "$refs" \
               && against_base=$(GH_TOKEN="$TOKEN" gh api "repos/${REPOSITORY}/compare/${MERGE_GROUP_BASE_REF#refs/heads/}...${MERGE_GROUP_HEAD_SHA}" --jq .status 2> /dev/null) \
               && [[ "$against_base" == ahead || "$against_base" == diverged ]]; then
-              message="The merge queue dropped this group: ${MERGE_GROUP_HEAD_REF#refs/heads/} no longer exists and its head ${MERGE_GROUP_HEAD_SHA} is not on ${MERGE_GROUP_BASE_REF#refs/heads/}. The queue tests the pull request in a newer group, so this run tests nothing."
+              message="The merge queue dropped this group: ${MERGE_GROUP_HEAD_REF#refs/heads/} no longer points at its head ${MERGE_GROUP_HEAD_SHA}, which is not on ${MERGE_GROUP_BASE_REF#refs/heads/}. The queue tests the pull request in a newer group, so this run tests nothing."
               echo "::error title=Superseded merge group::${message}"
               echo "Superseded merge group: ${message}" >> "$GITHUB_STEP_SUMMARY"
               exit 1

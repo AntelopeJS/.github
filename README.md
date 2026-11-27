@@ -729,15 +729,17 @@ runner instead of failing. In a run that was not cancelled, a cancelled job,
 such as a leg that timed out, still fails `checks`.
 
 In the merge queue, a group the queue rebuilds or drops loses its
-`gh-readonly-queue/…` branch, but GitHub leaves the group's runs queued, and no
-expression can name the pull request of a group to cancel them by: the payload
-names it only inside the branch name. So the `ci-tier` action, which each job
-calls first, ends a `merge_group` job whose branch no longer exists and whose
-head is not on the base branch: it fails with a `Superseded merge group` error,
-before the install or the tests. A group that merged also loses its branch, but
-its head is then on the base branch, so a late job of it runs as before. When
-either API call fails, the job runs as before. The run's `checks` and `verdict`
-then fail in seconds, on a commit no queue waits for.
+`gh-readonly-queue/…` branch, or the branch moves to the new group when the
+queue rebuilds it on the same parent, but GitHub leaves the old group's runs
+queued, and no expression can name the pull request of a group to cancel them
+by: the payload names it only inside the branch name. So the `ci-tier` action,
+which each job calls first, ends a `merge_group` job whose branch no longer
+points at its head and whose head is not on the base branch: it fails with a
+`Superseded merge group` error, before the install or the tests. A group that
+merged also loses its branch, but its head is then on the base branch, so a late
+job of it runs as before. When either API call fails, the job runs as before.
+The run's `checks` and `verdict` then fail in seconds, on a commit no queue
+waits for.
 
 The Linux jobs run on the runner named by the calling repository's `RUNNER_CI`
 variable when it is set, and on `ubuntu-latest` when it is empty or unset. A

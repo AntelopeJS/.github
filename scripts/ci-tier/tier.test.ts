@@ -91,8 +91,9 @@ describe("the tier contract", () => {
 
 describe("a merge group the queue dropped", () => {
   const HEAD = "1111111111111111111111111111111111111111";
+  const NEWER = "2222222222222222222222222222222222222222";
   const REF = "refs/heads/gh-readonly-queue/main/pr-1-abc";
-  const MATCHING_REFS = "api repos/AntelopeJS/example/git/matching-refs/heads/gh-readonly-queue/main/pr-1-abc --jq .[].ref token=token";
+  const MATCHING_REFS = String.raw`api repos/AntelopeJS/example/git/matching-refs/heads/gh-readonly-queue/main/pr-1-abc --jq .[] | "\(.ref) \(.object.sha)" token=token`;
   const COMPARE = `api repos/AntelopeJS/example/compare/main...${HEAD} --jq .status token=token`;
   let groups = 0;
   const group = (answers: Record<string, string>) => {
@@ -105,30 +106,36 @@ describe("a merge group the queue dropped", () => {
     return { cwd, base, env, calls };
   };
 
-  test("fails before any tier when its branch is gone and its head is not on the base branch", () => {
-    for (const [refs, status] of [["", "diverged"], ["", "ahead"], [`${REF}0`, "diverged"]]) {
+  test("fails before any tier when its branch is gone, or holds a newer group, and its head is not on the base branch", () => {
+    const cases = [
+      { refs: "", status: "diverged", why: "branch deleted" },
+      { refs: "", status: "ahead", why: "branch deleted, head one commit past the base" },
+      { refs: `${REF} ${NEWER}`, status: "diverged", why: "the queue rebuilt the group on the same parent, under the same branch name" },
+      { refs: `${REF}0 ${HEAD}`, status: "diverged", why: "only a longer branch name matches the prefix" },
+    ];
+    for (const { refs, status, why } of cases) {
       const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: status });
       const run = runAction(mergeGroupAt(base, HEAD), {}, cwd, env);
-      assert.equal(run.status, 1, `${refs} ${status}`);
-      assert.match(run.stdout, /^::error title=Superseded merge group::The merge queue dropped this group: gh-readonly-queue\/main\/pr-1-abc no longer exists and its head 1{40} is not on main\./m);
-      assert.match(run.summary, /^Superseded merge group: The merge queue dropped this group: /);
-      assert.deepEqual(run.outputs, {}, "no tier, so no job reads one");
-      assert.deepEqual(calls(), [MATCHING_REFS, COMPARE], "both calls use the job token, contents: read");
+      assert.equal(run.status, 1, why);
+      assert.match(run.stdout, /^::error title=Superseded merge group::The merge queue dropped this group: gh-readonly-queue\/main\/pr-1-abc no longer points at its head 1{40}, which is not on main\./m, why);
+      assert.match(run.summary, /^Superseded merge group: The merge queue dropped this group: /, why);
+      assert.deepEqual(run.outputs, {}, `${why}: no tier, so no job reads one`);
+      assert.deepEqual(calls(), [MATCHING_REFS, COMPARE], `${why}: both calls use the job token, contents: read`);
     }
   });
 
-  test("runs the queue tier while its branch exists, without asking where its head is", () => {
-    for (const refs of [REF, `${REF}\n${REF}0`]) {
+  test("runs the queue tier while its branch still points at its head, without asking where the head is", () => {
+    for (const refs of [`${REF} ${HEAD}`, `${REF} ${HEAD}\n${REF}0 ${NEWER}`]) {
       const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: "diverged" });
       assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base });
       assert.deepEqual(calls(), [MATCHING_REFS]);
     }
   });
 
-  test("runs the queue tier in a group that merged, whose branch is gone but whose head is on the base branch", () => {
-    for (const status of ["identical", "behind"]) {
-      const { cwd, base, env, calls } = group({ FAKE_GH_REFS: "", FAKE_GH_COMPARE: status });
-      assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base }, status);
+  test("runs the queue tier in a group that merged, whose branch is gone or moved but whose head is on the base branch", () => {
+    for (const [refs, status] of [["", "identical"], ["", "behind"], [`${REF} ${NEWER}`, "behind"]]) {
+      const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: status });
+      assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base }, `${refs} ${status}`);
       assert.deepEqual(calls(), [MATCHING_REFS, COMPARE]);
     }
   });
