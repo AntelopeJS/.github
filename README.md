@@ -735,12 +735,13 @@ Linux, checks that a pull request's title uses Conventional Commits.
 
 Every job that a run can skip has a constant `name`: GitHub never evaluates the
 name of a skipped job and shows its expression as is, such as
-`Formal ${{ matrix.skill }}`. So the gate cannot take another name in a run whose only leg
-would report `ci / checks` itself, and it always runs. A matrix job with a
-constant name gets its matrix values appended, as in `Formal (formal-a)`. The
-`node` legs keep their `Node <version>` names, an expression, because a leg
-skips only after `Windows eligibility` or `Extra shards` failed, in a run that
-already fails. A required check that is
+`Formal ${{ matrix.skill }}`. No name can read `checks` when the gate runs and
+something else when it skips, so the gate runs in every run that is not
+cancelled. A matrix job with a constant name gets its matrix values appended,
+as in `Formal (formal-a)`. The `node` legs keep their `Node <version>` names,
+an expression, because a leg skips only after `Windows eligibility` or
+`Extra shards` failed, or in a run that was cancelled before it started, and
+the gate then fails or ends cancelled. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
 `!cancelled()` never skips it in a run that goes on, and in a run that was
 cancelled, whether a newer run of the same pull request or someone cancelled it,
@@ -798,7 +799,7 @@ fails `ci / checks` and blocks the merge. Each entry of the JSON array takes:
 
 | Key | Required | Description |
 | --- | -------- | ----------- |
-| `skill` | yes | The folder under `.agents/skills/`, such as `formal-billing-lease`. The job is named `Formal (<skill>, …)`: GitHub appends the entry's values to the constant name. |
+| `skill` | yes | The folder under `.agents/skills/`, such as `formal-billing-lease`. The job is named `Formal (<skill>, …)`: GitHub appends every value of the entry, `paths` and `run` included, to the constant name. |
 | `run` | no | Multiline shell commands run with `bash -euo pipefail` instead of `node .agents/skills/<skill>/check.mjs`, such as a `node --test` of the skill's own tests before its `check.mjs`. |
 | `paths` | no | The git pathspecs of the files the check models, the files of its SKILL.md coverage record. A pull request in the `fast` tier runs the check only when one of them or the skill folder changed, and the job summary says when it skipped. Without `paths`, every pull request runs it. |
 

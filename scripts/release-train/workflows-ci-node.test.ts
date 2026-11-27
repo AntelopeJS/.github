@@ -70,7 +70,7 @@ describe("ci-node.yml verdict", () => {
       assert.doesNotMatch(key(job, "name"), /\$\{\{/, `${job}: GitHub never evaluates the name of a skipped job, and shows its expression`);
       assert.ok(job === "gate" || key(job, "name") !== "checks", `${job} would report a second ci / checks`);
     }
-    assert.equal(key("node", "if"), "${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}", "a leg skips only in a run a failed job already fails");
+    assert.equal(key("node", "if"), "${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}", "a leg skips only in a run that a failed need already fails, or in a cancelled run");
     const names = ["ubuntu-latest", "windows-latest"].flatMap((os) => ["", "24"].flatMap((version) => ["all", "checks", "test", "extra"].flatMap((part) => ["", "1/2"].map((shard) =>
       evaluate(key("node", "name"), { matrix: { os, "node-version": version, part, shard } })))));
     assert.ok(names.includes("Node .nvmrc") && names.includes("Test 24 on Windows") && names.includes("Extra .nvmrc 1/2"), JSON.stringify(names));

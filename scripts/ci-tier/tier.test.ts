@@ -181,7 +181,7 @@ test("ci-node.yml calls the ci-tier action at v2, keeps the gate, checks the tit
   assert.notEqual(uses.length, 0);
   for (const line of uses) assert.equal(line.trim(), "uses: AntelopeJS/.github/.github/actions/ci-tier@v2");
   const jobs = keys(keyed(ciNode, "jobs"));
-  assert.ok(jobs.includes("gate"), "the gate reports ci / checks when a run has more than one leg");
+  assert.ok(jobs.includes("gate"), "the gate reports ci / checks");
   assert.ok(!jobs.includes("gitleaks"));
   assert.ok(block(ciNode, ciNode.indexOf("  node:")).some((line) => line.trim().startsWith("pattern='")), "the primary leg checks the pull request title");
 });
