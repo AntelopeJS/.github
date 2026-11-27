@@ -50,6 +50,9 @@ jobs:
     concurrency:
       group: npm-release-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ inputs.package-directory }}-${{ inputs.preview }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      LANG: C.UTF-8
+      TERM: xterm-256color
     steps:
       - name: Resolve release mode
         id: mode
