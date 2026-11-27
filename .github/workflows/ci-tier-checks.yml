@@ -8,11 +8,9 @@ permissions:
 
 jobs:
   checks:
-    # Our runners when the CALLING repository's variable RUNNER_CI names a scale set (the private
-    # repositories: antelope-ci); GitHub's when it is empty or unset, which is the case for every public
-    # repository. Set RUNNER_CI per repository, never at organisation level: the runner group refuses
-    # public repositories, and their jobs would wait for a runner forever.
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    # Blacksmith's 4 vCPU Ubuntu 24.04 runner, unless the CALLING repository's variable RUNNER_CI names
+    # another runner label: one variable switches a repository to another runner.
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     permissions:
       contents: read
     timeout-minutes: 10

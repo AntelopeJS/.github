@@ -666,7 +666,7 @@ caller's own tier job are skipped too:
 ```yaml
 jobs:
   tier:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     permissions:
       contents: read
     outputs:
@@ -699,7 +699,7 @@ It accepts these optional inputs:
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. `checks` needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
-| `windows` | `true` | Also run the jobs on `windows-latest`, in parallel with `ubuntu-latest`, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it: we have no Windows runner of our own, and GitHub bills their hosted minutes. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the jobs on Windows, in parallel with Linux, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
@@ -737,26 +737,26 @@ points at its head and whose head is not on the base branch: it fails with a
 `Superseded merge group` error, before the install or the tests. A group that
 merged also loses its branch, but its head is then on the base branch, so a late
 job of it runs as before. When either API call fails, the job runs as before.
-The run's `checks` and `verdict` then fail in seconds, on a commit no queue
+The run's `checks` then fails in seconds, on a commit no queue
 waits for.
 
-The Linux jobs run on the runner named by the calling repository's `RUNNER_CI`
-variable when it is set, and on `ubuntu-latest` when it is empty or unset. A
-reusable workflow reads the caller's variables, so each private repository sets
-`RUNNER_CI` to its self-hosted runner scale set, and a public repository sets
-nothing. Set it per repository, never at the organisation level: a runner group
-limited to the private repositories would leave a public repository's jobs
-waiting. The four small jobs, `Windows eligibility`, `Extra shards`, `checks`
-and `verdict`, run a few seconds of shell and install nothing: they go to the
-scale set the caller's `RUNNER_CI_SMALL` variable names when it is set, before
-`RUNNER_CI`, so a small lane with a warm runner answers them at once instead of
-queueing each behind the full-size legs of other runs. A caller's own gate and
-tier jobs can read the same variable. The Windows legs run only for a public
-repository, on `windows-latest`.
-The npm release workflows follow `RUNNER_CI` for a private or internal
-repository, and a public repository's release stays on `ubuntu-latest`, because
-npm provenance needs a GitHub-hosted runner. The renovate-sync, next-sync and
-tier-checks jobs follow the same variable.
+The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
+`blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
+variable names another runner label. A reusable workflow reads the caller's
+variables, so one variable switches a repository to another runner. The three
+small jobs, `Windows eligibility`, `Extra shards` and `checks`, run a few
+seconds of shell and install nothing: they go to the label the caller's
+`RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
+own gate and tier jobs can read the same variables. The Windows legs run only
+for a public repository, on Blacksmith's 4 vCPU Windows Server 2025 runner,
+`blacksmith-4vcpu-windows-2025`, unless `RUNNER_CI_WINDOWS` names another
+label.
+The npm release workflows follow the same default and `RUNNER_CI` for a
+private or internal repository, and a public repository's release stays on
+`ubuntu-latest`, because npm trusted publishing and provenance refuse
+self-hosted runners, Blacksmith's included. Every other workflow here follows
+the Linux default and `RUNNER_CI`, and `workflows-runners.test.ts` fails on a
+`runs-on` that resolves to any other label when no variable is set.
 
 Services start with `docker compose up -d --wait` in the `Test` and `Extra`
 jobs, and in a `Node <version>` job only when it runs `extra-commands`. After a
@@ -822,7 +822,7 @@ jobs:
   verdict:
     needs: [ci, renovate-sync]
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
     steps:
