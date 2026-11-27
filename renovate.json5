@@ -7,6 +7,7 @@
     'schedule:daily',
   ],
   timezone: 'Europe/Brussels',
+  dependencyDashboard: { enabled: false },
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   rebaseWhen: 'conflicted',
   ignorePaths: ['**/node_modules/**', '**/bower_components/**', '**/vendor/**', '**/examples/**', '**/__tests__/**', '**/tests/**', '**/__fixtures__/**', 'workflow-templates/**'],
@@ -49,33 +50,35 @@
       groupName: 'GitHub Actions',
     },
     {
+      description: "The interface resolver couples core, every module and the interfaces they declare, and a project's test stack runs the same modules, so every AntelopeJS package moves in one pull request, majors included, and CI records their locks once",
+      matchPackageNames: ['@antelopejs/**'],
+      groupName: 'AntelopeJS packages',
+      separateMajorMinor: false,
+    },
+    {
       // The npm package and docs action share a release tag; keep them together.
       // The pack pins oxfmt and oxlint as peers and runs on @oxlint/plugins, so they move with it.
       matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs', 'oxfmt', 'oxlint', '@oxlint/plugins'],
       groupName: 'AntelopeJS tooling configs',
     },
     {
-      description: 'One pull request per bump of the modules a project or a test stack runs, so CI records their locks once',
-      matchManagers: ['custom.regex'],
-      matchPackageNames: ['@antelopejs/**'],
-      groupName: 'AntelopeJS modules',
+      description: '@types/node follows the Node.js major each package runs on, so it never moves to another major; a lockfile-only update rewrites every workspace importer to one version, so the range is bumped in the package that declares it instead',
+      matchPackageNames: ['@types/node'],
+      rangeStrategy: 'bump',
     },
     {
-      description: "GitHub's auto-merge puts a green pull request in the merge queue; these repositories have no merge queue, so a person merges there",
-      matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
+      matchPackageNames: ['@types/node'],
+      matchUpdateTypes: ['major'],
+      enabled: false,
+    },
+    {
+      description: "Every update merges on green. GitHub's auto-merge puts a green pull request in the merge queue; these repositories have no merge queue, so a person merges there",
       matchRepositories: ['!AntelopeJS/cloud', '!AntelopeJS/k8s-gitops-infra', '!AntelopeJS/antelope-hardening', '!AntelopeJS/antelope-compliance'],
       automerge: true,
     },
     {
-      description: 'A third-party 0.x minor can break, so it stays manual; 1.x and later keep auto-merge. Our own packages and the tooling configs group merge on green, since their checks cover the bump',
-      matchUpdateTypes: ['minor'],
-      matchCurrentVersion: '/^v?0\\./',
-      matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**', '!oxfmt', '!oxlint', '!@oxlint/plugins'],
-      automerge: false,
-    },
-    {
       description: 'A third-party release waits three days before it can auto-merge, so a compromised version is found and pulled first; a pin or a digest has no release date, so it does not wait',
-      matchUpdateTypes: ['patch', 'minor'],
+      matchUpdateTypes: ['patch', 'minor', 'major'],
       matchPackageNames: ['!@antelopejs/**', '!AntelopeJS/**'],
       minimumReleaseAge: '3 days',
     },

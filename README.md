@@ -1056,19 +1056,23 @@ The preset:
 
 - runs daily before 4:00 in Europe/Brussels, and rebases a branch only when it
   conflicts, since the merge queue tests the merged result;
-- enables GitHub's auto-merge on pin, digest, patch and minor updates, so a
-  green one enters the merge queue. Majors stay manual, and so do third-party
-  0.x minors, which can break; a minor from 1.x on keeps auto-merge, and so
-  does a 0.x minor of an `@antelopejs` package, an `AntelopeJS/*` action or
-  the tooling configs group, whose checks cover the bump; `oxfmt` and `oxlint`
-  still wait out the three days of a third-party release. Every update in
+- opens no Dependency Dashboard issue;
+- enables GitHub's auto-merge on every update, majors and 0.x minors
+  included, so a green one enters the merge queue. Every update in
   `cloud`, `k8s-gitops-infra`, `antelope-hardening` and
-  `antelope-compliance` stays manual, since they have no merge queue. A third-party release waits
-  three days before such an update opens; an `@antelopejs` one does not;
-- reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
-  `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin, and
-  bumps them in one `AntelopeJS modules` pull request, whose locks the
+  `antelope-compliance` stays manual, since they have no merge queue. A
+  third-party patch, minor or major waits three days before it opens; an
+  `@antelopejs` one, a pin and a digest do not;
+- bumps every `@antelopejs` package of a repository in one
+  `AntelopeJS packages` pull request, majors included, since the interface
+  resolver couples core, the modules and the interfaces they declare. It
+  reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
+  `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin into
+  the same pull request, whose locks the
   [Renovate lock job](#module-locks-of-a-renovate-pull-request) commits;
+- keeps `@types/node` in the major each package declares, and bumps the range
+  in that package's `package.json`, since a lockfile-only update moves every
+  workspace importer to one version;
 - groups GitHub Actions updates, and `@antelopejs/tooling-configs` with the
   linters it pins;
 - updates nothing in template-dms-adonis's `demo/src`, `demo/content` and
