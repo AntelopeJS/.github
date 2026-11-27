@@ -50,7 +50,7 @@ export function runStep({ run }: Step, cwd: string, env: Record<string, string>)
   const result = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", file], {
     cwd,
     encoding: "utf8",
-    env: { PATH: process.env.PATH, GIT_CEILING_DIRECTORIES: root, ...files, ...env },
+    env: { PATH: `${ghBin}:${process.env.PATH}`, GIT_CEILING_DIRECTORIES: root, ...files, ...env },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, outputs: keyValues(files.GITHUB_OUTPUT), env: keyValues(files.GITHUB_ENV), summary: readText(files.GITHUB_STEP_SUMMARY) };
 }
@@ -61,14 +61,22 @@ export function succeeded(run: Run): Run {
   return run;
 }
 
-/** The outputs of the ci-tier action for the `github` context and the `inputs` set on it. */
-export function actionOutputs(github: Context, inputs: Record<string, string>, cwd: string): Record<string, string> {
+const pickName = "Pick the tier and the diff base from the event, the label and the changed files";
+
+/** The run of the ci-tier action for the `github` context and the `inputs` set on it, with `env` added, such as the answers of the fake `gh`. */
+export function runAction(github: Context, inputs: Record<string, string>, cwd: string, env: Record<string, string> = {}): Run {
   assert.equal(field(keyed(action, "runs"), "using"), "composite");
-  const pick = step(action, "Pick the tier and the diff base from the event, the label and the changed files");
+  const pick = step(action, pickName);
   assert.equal(pick.shell, "bash");
   const declaredInputs = keyed(action, "inputs");
   const defaults = Object.fromEntries(keys(declaredInputs).map((name) => [name, interpolate(field(keyed(declaredInputs, name), "default") ?? "", {})]));
-  const { outputs } = succeeded(runStep(pick, cwd, interpolateAll(pick.env, { ...github, ...scope("inputs", { ...defaults, ...inputs }) })));
+  return runStep(pick, cwd, { ...interpolateAll(pick.env, { ...github, ...scope("inputs", { ...defaults, ...inputs }) }), ...env });
+}
+
+/** The outputs of the ci-tier action for the `github` context and the `inputs` set on it. */
+export function actionOutputs(github: Context, inputs: Record<string, string>, cwd: string, env: Record<string, string> = {}): Record<string, string> {
+  const pick = step(action, pickName);
+  const { outputs } = succeeded(runAction(github, inputs, cwd, env));
   const declaredOutputs = keyed(action, "outputs");
   const steps = stepOutputs(pick, outputs);
   return Object.fromEntries(keys(declaredOutputs).map((name) => [name, interpolate(field(keyed(declaredOutputs, name), "value") ?? "", steps)]));
@@ -202,6 +210,33 @@ writeFileSync(
   ].join("\n"),
   { mode: 0o755 },
 );
+
+/**
+ * A fake `gh`, first on the `PATH` of every step, so no test calls GitHub. It logs each call and its token to
+ * `FAKE_GH_LOG`, and answers `gh api …/git/matching-refs/…` with `FAKE_GH_REFS` and `gh api …/compare/…` with
+ * `FAKE_GH_COMPARE`, as their `--jq` would print them. An unset answer fails the call, as a failed API call does.
+ */
+const ghBin = join(root, "gh-bin");
+mkdirSync(ghBin);
+writeFileSync(
+  join(ghBin, "gh"),
+  [
+    "#!/usr/bin/env bash",
+    'printf "%s token=%s\\n" "$*" "${GH_TOKEN:-none}" >> "${FAKE_GH_LOG:-/dev/null}"',
+    'case "$1 $2" in',
+    '  "api "*/git/matching-refs/*) [ -n "${FAKE_GH_REFS+set}" ] || exit 1; [ -z "$FAKE_GH_REFS" ] || printf "%s\\n" "$FAKE_GH_REFS" ;;',
+    '  "api "*/compare/*) [ -n "${FAKE_GH_COMPARE+set}" ] || exit 1; printf "%s\\n" "$FAKE_GH_COMPARE" ;;',
+    "  *) exit 1 ;;",
+    "esac",
+  ].join("\n"),
+  { mode: 0o755 },
+);
+
+/** The `github` context of a merge group on `main` whose branch is `gh-readonly-queue/main/pr-1-<parent>` and whose head is `head`. */
+export const mergeGroupAt = (base: string, head: string): Context => ({
+  ...mergeGroup(base),
+  ...scope("github", { "event.merge_group.head_ref": "refs/heads/gh-readonly-queue/main/pr-1-abc", "event.merge_group.head_sha": head }),
+});
 
 /** The environment of a fake `pnpm` that prints a failure and exits with each code of `FAKE_CODES` in turn, counting its calls in `dir`. */
 export const fakeEnv = (dir: string, extra: Record<string, string>) => ({

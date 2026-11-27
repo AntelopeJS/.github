@@ -83,7 +83,7 @@ describe("ci-node.yml", () => {
     assert.match(jobText("checks"), /^ {4}needs: \[windows, shards, node, stress\]$/m);
   });
 
-  test("a newer run of the same pull request cancels the older run whole, whose checks end cancelled instead of failing", () => {
+  test("a newer run of the same pull request cancels the older run whole, and any cancelled run's checks end cancelled instead of failing", () => {
     const [, group = "", cancel = ""] = /^concurrency:\n {2}group: (.*)\n {2}cancel-in-progress: (.*)$/m.exec(ciNode) ?? [];
     assert.doesNotMatch(jobText("node"), /concurrency:/, "a leg holds no group of its own, so a newer run cancels the older run whole");
     const pullRequest = (number: number | undefined): JsonObject => (number === undefined ? {} : { number });
@@ -109,9 +109,19 @@ describe("ci-node.yml", () => {
     assert.equal(checks("pull_request", false, "failure"), "failure");
     assert.equal(checks("pull_request", false, "cancelled"), "failure", "a leg that timed out is cancelled in a run that was not");
     for (const event of ["push", "merge_group", "schedule", "workflow_dispatch"]) {
-      assert.equal(checks(event, true, "cancelled"), "failure", event);
+      assert.equal(checks(event, true, "cancelled"), "cancelled", `${event}: a cancelled run takes no runner for its checks`);
       assert.equal(checks(event, false, "failure"), "failure", event);
+      assert.equal(checks(event, false, "cancelled"), "failure", `${event}: a leg that timed out is cancelled in a run that was not`);
     }
+  });
+
+  test("verdict runs after a failed or cancelled job of a run that goes on, and ends cancelled without a runner in a cancelled run", () => {
+    assert.match(jobText("verdict"), /^ {4}needs: \[windows, shards, node, stress, checks\]$/m, "verdict waits for every other job");
+    const gate = /^ {4}if: (.*)$/m.exec(jobText("verdict"))?.[1] ?? "";
+    assert.equal(gate, "${{ !cancelled() }}", "not always(): a job that runs after a cancel waits for a runner of the pool");
+    const runs = (runCancelled: boolean): boolean => evaluate(gate.replace(/\bcancelled\(\)/g, String(runCancelled)), {}) === true;
+    assert.equal(runs(false), true, "a run that was not cancelled always gets its verdict, whatever its jobs ended with");
+    assert.equal(runs(true), false, "a cancelled run's verdict ends cancelled, a conclusion that blocks a merge");
   });
 
   test("extra-commands-shards splits the extra-commands job into one job per shard, and the default keeps one", () => {

@@ -55,10 +55,15 @@ export function jobsOf(workflow: string): Job[] {
   });
 }
 
+/** `if: ${{ !cancelled() }}`, with or without the `${{ }}`, and nothing else. */
+const NOT_CANCELLED = /^(\$\{\{\s*)?!\s*cancelled\(\)(\s*\}\})?$/;
+
 /**
  * The verdict of a workflow: its `verdict` job, or the `verdict` of ci-node.yml when the workflow is one
  * ci-node.yml call. Any other job needs a `verdict` job of the workflow's own that needs it and runs with
- * `if: always()`, since a failed need skips a job without it and a skipped required check passes.
+ * `if: ${{ !cancelled() }}`: a failed need skips a job without a status function, and a skipped required check
+ * passes, while `always()` also runs it in a cancelled run, which then waits for a runner of the pool only to
+ * fail. Under `!cancelled()`, a cancelled run's verdict ends cancelled without a runner, and that blocks a merge.
  */
 export function verdictOf(jobs: readonly Job[]): Verdict {
   const verdict = jobs.find((job) => job.id === "verdict");
@@ -72,8 +77,11 @@ export function verdictOf(jobs: readonly Job[]): Verdict {
   }
   const missing = jobs.filter((job) => job !== verdict && !verdict.needs.includes(job.id)).map((job) => job.id);
   const problems = missing.length === 0 ? [] : [`its verdict job does not need ${missing.join(", ")}`];
-  if (!/\balways\(\)/.test(verdict.condition ?? "")) {
-    problems.push("its verdict job does not run with if: always(), so a failed job skips it and the skipped check passes");
+  const condition = (verdict.condition ?? "").trim();
+  if (/\balways\(\)/.test(condition)) {
+    problems.push("its verdict job runs with if: always(), so a cancelled run still waits for a runner to fail it; use if: ${{ !cancelled() }}");
+  } else if (!NOT_CANCELLED.test(condition)) {
+    problems.push("its verdict job does not run with if: ${{ !cancelled() }}, so a failed job skips it and the skipped check passes");
   }
   return { check: verdict.check, problems };
 }
