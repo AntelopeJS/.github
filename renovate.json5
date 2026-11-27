@@ -38,6 +38,12 @@
       enabled: false,
     },
     {
+      description: "template-dms-adonis's demo/src, demo/content and demo/frontend-vue are copies of template-dms-demo that template-demo-sync.yml keeps in step, so Renovate updates them there and never here; demo/package.json is the template's own",
+      matchRepositories: ['AntelopeJS/template-dms-adonis'],
+      matchFileNames: ['demo/src/**', 'demo/content/**', 'demo/frontend-vue/**'],
+      enabled: false,
+    },
+    {
       matchManagers: ['github-actions'],
       matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
       groupName: 'GitHub Actions',

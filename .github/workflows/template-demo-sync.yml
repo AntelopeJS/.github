@@ -1,0 +1,245 @@
+name: Template demo sync
+
+on:
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/template-demo-sync.yml
+
+permissions: {}
+
+env:
+  SOURCE: AntelopeJS/template-dms-demo
+  TARGET: AntelopeJS/template-dms-adonis
+  BRANCH: antelopejs/demo-sync
+  TITLE: "chore(demo): sync demo/ with template-dms-demo"
+
+jobs:
+  # Runs template-dms-adonis's own scripts/sync-demo.sh against template-dms-demo's main, with no write token, and
+  # hands the result to the publish job as a patch.
+  sync:
+    name: Sync demo/ from template-dms-demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: template-demo-sync-${{ github.event_name == 'pull_request' && github.ref || 'default' }}
+      cancel-in-progress: false
+    outputs:
+      state: ${{ steps.describe.outputs.state }}
+      source: ${{ steps.source.outputs.sha }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: workflows
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.TARGET }}
+          path: target
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE }}
+          ref: main
+          path: source
+          persist-credentials: false
+
+      - name: Read the template-dms-demo commit
+        id: source
+        run: echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: target/package.json
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: target/.nvmrc
+
+      - name: Run template-dms-adonis's demo sync
+        run: target/scripts/sync-demo.sh "$GITHUB_WORKSPACE/source"
+
+      - name: Raise the template's own ranges to the synced demo's, so the workspace keeps one range per package
+        run: |
+          mkdir -p "$RUNNER_TEMP/demo-sync"
+          node workflows/scripts/module-locks/demo-sync-ranges-main.ts target > "$RUNNER_TEMP/demo-sync/ranges.md"
+
+      - name: Update the root lockfile when a manifest moved
+        working-directory: target
+        run: |
+          if ! git diff --quiet -- package.json demo/package.json demo/frontend-vue/package.json; then
+            pnpm install --lockfile-only --ignore-scripts --reporter=silent >&2
+          fi
+
+      - name: Describe the sync
+        id: describe
+        working-directory: target
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          out="$RUNNER_TEMP/demo-sync"
+          mkdir -p "$out"
+          git add -A -- demo package.json pnpm-lock.yaml
+          git diff --cached --binary > "$out/sync.patch"
+
+          if git diff --cached --quiet; then
+            echo "state=current" >> "$GITHUB_OUTPUT"
+            echo "\`demo/\` already matches ${SOURCE}@${SOURCE_SHA:0:7}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "Syncs \`demo/\` with [${SOURCE}@${SOURCE_SHA:0:7}](https://github.com/${SOURCE}/commit/${SOURCE_SHA}): the output of \`scripts/sync-demo.sh\`, which the \`demo-drift\` job of \`ci.yml\` compares with \`demo/\`."
+            if [ -s "$out/ranges.md" ]; then
+              echo
+              echo "The synced \`demo/frontend-vue/package.json\` declares these packages at a higher version than the template's own manifests did, so the sync raised them there too: the workspace keeps one range per package, as \`dependency:one-range\` requires. Check each one before you merge:"
+              echo
+              cat "$out/ranges.md"
+            fi
+            if ! git diff --cached --quiet -- pnpm-lock.yaml; then
+              echo
+              echo "A manifest moved, so \`pnpm install --lockfile-only\` updated \`pnpm-lock.yaml\` too."
+            fi
+            echo
+            echo "\`\`\`"
+            git diff --cached --stat
+            echo "\`\`\`"
+          } > "$out/body.md"
+          cat "$out/body.md" >> "$GITHUB_STEP_SUMMARY"
+
+          state=changed
+          if git fetch -q origin "refs/heads/${BRANCH}" 2> /dev/null &&
+            git merge-base --is-ancestor HEAD FETCH_HEAD &&
+            [ "$(git write-tree)" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+            state=proposed
+          fi
+          echo "state=${state}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.describe.outputs.state != 'current'
+        with:
+          name: demo-sync
+          path: ${{ runner.temp }}/demo-sync
+          retention-days: 1
+
+  # The only job with a write token: the release app's, limited to template-dms-adonis, so that the pull request's
+  # checks start. It never runs on a pull request of this repository.
+  publish:
+    name: Open, update or close the pull request
+    needs: sync
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: template-demo-sync-publish
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      STATE: ${{ needs.sync.outputs.state }}
+      SOURCE_SHA: ${{ needs.sync.outputs.source }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Create the push token
+        id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: AntelopeJS
+          repositories: template-dms-adonis
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.STATE == 'changed'
+        with:
+          repository: ${{ env.TARGET }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.STATE != 'current'
+        with:
+          name: demo-sync
+          path: ${{ runner.temp }}/demo-sync
+
+      - name: Check the sync patch
+        if: env.STATE == 'changed'
+        run: |
+          out="$RUNNER_TEMP/demo-sync"
+          export GIT_INDEX_FILE="$out/check.index"
+          git read-tree HEAD
+          git apply --cached "$out/sync.patch" || {
+            echo "::error::The sync patch does not apply to $(git rev-parse HEAD). Nothing was pushed."
+            exit 1
+          }
+          git diff --cached --no-renames --raw -z HEAD > "$out/check.raw"
+          refused=0
+          while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+            read -r _ mode _ <<< "$meta"
+            case "$path" in
+              demo/* | package.json | pnpm-lock.yaml) ;;
+              *)
+                printf '::error::The sync patch changes %q, outside demo/, package.json and pnpm-lock.yaml. Nothing was pushed.\n' "$path"
+                refused=1
+                continue
+                ;;
+            esac
+            case "$mode" in
+              120000 | 160000)
+                printf '::error::The sync patch makes %q a symlink or a submodule. Nothing was pushed.\n' "$path"
+                refused=1
+                ;;
+            esac
+          done < "$out/check.raw"
+          exit "$refused"
+
+      - name: Push the synced demo
+        if: env.STATE == 'changed'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          git apply --index "$RUNNER_TEMP/demo-sync/sync.patch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --no-verify -q -m "$TITLE" -m "template-dms-demo ${SOURCE_SHA}"
+          git push --no-verify -q --force "https://x-access-token:${GH_TOKEN}@github.com/${TARGET}.git" "HEAD:refs/heads/${BRANCH}"
+
+      - name: Open, update or close the pull request, and turn on its auto-merge
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          number=$(gh pr list -R "$TARGET" --head "$BRANCH" --base main --state open --json number,isCrossRepository --jq 'map(select(.isCrossRepository | not))[0].number // empty')
+          if [ "$STATE" = current ]; then
+            if [ -n "$number" ]; then
+              gh pr close -R "$TARGET" "$number" --delete-branch --comment "\`demo/\` on \`main\` already matches ${SOURCE}@${SOURCE_SHA:0:7}." > /dev/null
+            fi
+            exit 0
+          fi
+          echo -e "\nOpened by the [template demo sync](${RUN_URL}) of AntelopeJS/.github." >> "$RUNNER_TEMP/demo-sync/body.md"
+          if [ -n "$number" ]; then
+            gh pr edit -R "$TARGET" "$number" --body-file "$RUNNER_TEMP/demo-sync/body.md" > /dev/null
+          else
+            url=$(gh pr create -R "$TARGET" --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/demo-sync/body.md")
+            number=${url##*/}
+          fi
+          # shellcheck disable=SC2016
+          enable=$(gh api graphql \
+            -f query='query($owner: String!, $name: String!, $branch: String!, $number: Int!) { repository(owner: $owner, name: $name) { mergeQueue(branch: $branch) { id } pullRequest(number: $number) { autoMergeRequest { enabledAt } isInMergeQueue } } }' \
+            -f owner="${TARGET%/*}" -f name="${TARGET#*/}" -f branch=main -F number="$number" \
+            --jq '.data.repository | .mergeQueue != null and .pullRequest.autoMergeRequest == null and (.pullRequest.isInMergeQueue | not)')
+          if [ "$enable" = true ]; then
+            gh pr merge -R "$TARGET" "$number" --squash --auto > /dev/null
+          fi
