@@ -706,7 +706,7 @@ It accepts these optional inputs:
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 | `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress`, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
-| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal <skill>` job that `checks` needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
+| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal <skill>` job that the `gate` job needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
 ignored. The workflow no longer writes to Notion. The secret stays declared
@@ -715,8 +715,8 @@ not declare.
 
 The check `ci / checks` is the one result every ruleset requires and the merge
 queue waits for. A run with one job alone, `Node <version>` with `single-job`,
-no services, no `extra-commands-job`, at most one `node-versions` entry, no
-`Windows eligibility` job and no `nightly` tier, gives that job the name `checks`: its own
+no services, no `extra-commands-job`, no `formal-checks`, at most one
+`node-versions` entry, no `Windows eligibility` job and no `nightly` tier, gives that job the name `checks`: its own
 result is the check, and a small module pays one runner and one queue hop per
 run, not two. Any other run reports it from the `gate` job. The leg that runs
 the checks on the first `node-versions` entry, on Linux, checks that a pull
@@ -781,8 +781,9 @@ examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 
 The `formal-checks` input runs a repository's formal checks, the `formal-*`
 skills under `.agents/skills/`, as one `Formal <skill>` job each, in parallel
-with the Node.js jobs. `checks` needs them, so a failing formal check fails
-`ci / checks` and blocks the merge. Each entry of the JSON array takes:
+with the Node.js jobs. The `gate` job needs them, so a failing formal check
+fails `ci / checks` and blocks the merge. A run with formal checks never folds
+the gate into its leg. Each entry of the JSON array takes:
 
 | Key | Required | Description |
 | --- | -------- | ----------- |

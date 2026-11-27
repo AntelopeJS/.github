@@ -192,7 +192,7 @@ describe("ci-node.yml", () => {
     const extraIf = /^ {8}if: (.*)$/m.exec(extra)?.[1] ?? "";
     const extraShard = /^ {10}ANTELOPEJS_CI_SHARD: (.*)$/m.exec(extra)?.[1] ?? "";
     const legs = (overrides: JsonObject): string[] => {
-      const inputs = { "node-versions": "", "single-job": true, "services-compose-file": "", "extra-commands": "pnpm run e2e", "extra-commands-job": true, "extra-commands-shards": 1, ...overrides };
+      const inputs = { "node-versions": "", "single-job": true, "services-compose-file": "", "extra-commands": "pnpm run e2e", "extra-commands-job": true, "extra-commands-shards": 1, "formal-checks": "", ...overrides };
       const ran = evaluate(/^ {4}if: (.*)$/m.exec(jobText("shards"))?.[1] ?? "", { inputs }) === true;
       const listed = ran ? runStep(ciNode, "List the extra-commands shards", root, { SHARDS: String(inputs["extra-commands-shards"]) }) : undefined;
       assert.equal(listed?.status ?? 0, 0, listed?.stderr);
