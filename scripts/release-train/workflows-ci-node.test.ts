@@ -53,54 +53,28 @@ describe("ci-node.yml runners", () => {
 
 describe("ci-node.yml verdict", () => {
   const key = (job: string, name: string): string => new RegExp(`^ {4}${name}: (.*)$`, "m").exec(jobText(job))?.[1] ?? "";
-  const matrixKey = (name: string): string => new RegExp(`^ {8}${name}: (.*)$`, "m").exec(jobText("node"))?.[1] ?? "";
-  const notCancelled = (expression: string): string => expression.replace(/\bcancelled\(\)/g, "false");
 
-  test("the gate needs every other job, runs unless the run was cancelled, and there is no verdict job after it", () => {
+  test("the gate is the job named checks: it needs every other job, runs unless the run was cancelled, and there is no verdict job after it", () => {
     assert.doesNotMatch(ciNode, /^ {2}verdict:$/m, "a second reporting job is a second queue hop on the pool for a run that is already decided");
-    assert.doesNotMatch(ciNode, /^ {2}checks:$/m, "a skipped job whose id is checks would report a passing ci / checks");
+    assert.equal(key("gate", "name"), "checks", "every ruleset requires ci / checks");
     assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress, formal\]$/m, "the gate waits for every other job");
-    assert.match(key("gate", "if"), /^\$\{\{ !cancelled\(\) && /, "not always(): a job that runs after a cancel waits for a runner of the pool");
-    const scope = { github: { event_name: "pull_request" }, inputs: { "single-job": false, "node-versions": "" }, needs: { windows: { result: "skipped" } } };
-    assert.equal(evaluate(key("gate", "if").replace(/\bcancelled\(\)/g, "true"), scope), false, "a cancelled run's checks end cancelled, a conclusion that blocks a merge");
+    assert.equal(key("gate", "if"), "${{ !cancelled() }}", "not always(): a job that runs after a cancel waits for a runner of the pool");
     const fail = stepOf(ciNode, "Fail when a job failed, was cancelled or did not run");
     assert.match(fail, /NEEDS: \$\{\{ toJSON\(needs\) \}\}/, "the step reads every need's result and names the failed ones");
   });
 
-  test("exactly one job that runs is named checks: the gate, or the run's only leg when nothing else runs beside it", () => {
-    const axes: JsonObject[][] = [
-      ["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"].map((event) => ({ event })),
-      [["skipped", ""], ["success", "public"], ["success", "private"], ["failure", ""]].map(([windows, visibility]) => ({ windows, visibility })),
-      ["skipped", "success"].map((shards) => ({ shards })),
-      [true, false].map((singleJob) => ({ "single-job": singleJob })),
-      ["", "compose.yml"].map((services) => ({ "services-compose-file": services })),
-      [[false, ""], [false, "x"], [true, ""], [true, "x"]].map(([extraJob, extra]) => ({ "extra-commands-job": extraJob, "extra-commands": extra })),
-      ["", "[24]", "[22, 24]"].map((versions) => ({ "node-versions": versions })),
-      [false, true].map((nightly) => ({ nightly })),
-      ["", "[]", '[{"skill": "formal-a"}]'].map((formal) => ({ "formal-checks": formal })),
-    ];
-    const scenarios = axes.reduce<JsonObject[]>((partial, axis) => partial.flatMap((scenario) => axis.map((value) => ({ ...scenario, ...value }))), [{}]);
-    let folded = 0;
-    for (const { event, windows, visibility, shards, ...inputs } of scenarios) {
-      const scope = { github: { event_name: event }, inputs, needs: { windows: { result: windows, outputs: { visibility } }, shards: { result: shards, outputs: {} } } };
-      const versions = evaluate(matrixKey("node-version"), scope);
-      assert.ok(Array.isArray(versions));
-      const legsRun = evaluate(notCancelled(key("node", "if")), scope) === true;
-      const legs = !legsRun ? [] : evaluateStrings(matrixKey("os"), scope).flatMap((os) =>
-        versions.flatMap((version) => evaluateStrings(matrixKey("part"), scope).map((part) => evaluate(key("node", "name"), { ...scope, matrix: { os, "node-version": version, part, shard: "" } }))));
-      const gateRuns = evaluate(notCancelled(key("gate", "if")), scope) === true;
-      const gateName = evaluate(key("gate", "name"), scope);
-      const reporting = [...legs.filter((name) => name === "checks"), ...(gateRuns && gateName === "checks" ? ["gate"] : [])];
-      const label = JSON.stringify({ event, windows, visibility, ...inputs });
-      assert.equal(reporting.length, 1, `${label}: ${JSON.stringify({ legs, gateRuns, gateName })}`);
-      if (gateRuns) continue;
-      folded += 1;
-      assert.notEqual(gateName, "checks", `${label}: a skipped check named checks passes`);
-      assert.deepEqual(legs, ["checks"], `${label}: the fold needs one leg`);
-      assert.ok(event !== "schedule" && !(event === "workflow_dispatch" && inputs.nightly === true), `${label}: the nightly tier has a Stress job for the gate to judge`);
-      assert.equal(evaluate(key("formal", "if"), scope), false, `${label}: the gate judges the Formal jobs`);
+  test("a job that a run can skip has a constant name, which GitHub shows as is, and only the gate is named checks", () => {
+    const jobs = [...ciNode.slice(ciNode.indexOf("\njobs:\n")).matchAll(/^ {2}([\w-]+):$/gm)].map(([, id]) => id ?? "");
+    assert.deepEqual(jobs, ["windows", "shards", "node", "stress", "formal", "gate"]);
+    for (const job of jobs.filter((id) => id !== "node")) {
+      assert.doesNotMatch(key(job, "name"), /\$\{\{/, `${job}: GitHub never evaluates the name of a skipped job, and shows its expression`);
+      assert.ok(job === "gate" || key(job, "name") !== "checks", `${job} would report a second ci / checks`);
     }
-    assert.ok(folded > 0, "a small module's run folds the gate into its leg");
+    assert.equal(key("node", "if"), "${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}", "a leg skips only in a run a failed job already fails");
+    const names = ["ubuntu-latest", "windows-latest"].flatMap((os) => ["", "24"].flatMap((version) => ["all", "checks", "test", "extra"].flatMap((part) => ["", "1/2"].map((shard) =>
+      evaluate(key("node", "name"), { matrix: { os, "node-version": version, part, shard } })))));
+    assert.ok(names.includes("Node .nvmrc") && names.includes("Test 24 on Windows") && names.includes("Extra .nvmrc 1/2"), JSON.stringify(names));
+    assert.ok(!names.includes("checks"), "a leg never reports ci / checks");
   });
 });
 
@@ -166,12 +140,11 @@ describe("ci-node.yml", () => {
 
     const gate = /^ {4}if: (.*)$/m.exec(jobText("gate"))?.[1] ?? "";
     const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
-    const twoParts = { "single-job": false, "services-compose-file": "", "extra-commands-job": false, "extra-commands": "", "node-versions": "", nightly: false };
     const checks = (event: string, runCancelled: boolean, node: string): string => {
       const results = { windows: "skipped", shards: "skipped", node, stress: "skipped", formal: "skipped" };
       const status = (expression: string): string => expression.replace(/\bcancelled\(\)/g, String(runCancelled)).replaceAll("needs.*.result", JSON.stringify(Object.values(results)));
       const needs = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: { tier: "fast" } }]));
-      if (evaluate(status(gate), { github: { event_name: event }, inputs: twoParts, needs }) !== true) return "cancelled";
+      if (evaluate(status(gate), { github: { event_name: event } }) !== true) return "cancelled";
       return evaluate(status(fail), { needs }) === true ? "failure" : "success";
     };
     assert.equal(checks("pull_request", true, "cancelled"), "cancelled", "a newer run superseded this one");
@@ -207,7 +180,7 @@ describe("ci-node.yml", () => {
         .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => evaluateStrings(line(key), scope).map((value) => ({ ...matrix, [key]: value }))), [{}])
         .filter((matrix) => !exclude.some((rule) => Object.entries(rule).every(([key, value]) => matrix[key] === value)));
       return combinations.map((matrix) => {
-        const name = interpolate(line("name"), { matrix, inputs, github: { event_name: "pull_request" }, needs: { windows: { result: "skipped" } } });
+        const name = interpolate(line("name"), { matrix });
         if (evaluate(extraIf, { matrix, inputs, steps: { leg: { outputs: { work: "true" } } } }) !== true) return name;
         const shard = interpolate(extraShard, { matrix });
         const result = runStep(ciNode, "Run extra commands", root, { ANTELOPEJS_CI_TIER: "full", EXTRA_COMMANDS: 'echo "shard ${ANTELOPEJS_CI_SHARD-unset}"', ANTELOPEJS_CI_SHARD: shard });
@@ -219,7 +192,7 @@ describe("ci-node.yml", () => {
     assert.deepEqual(legs({}), ["Node .nvmrc", "Extra .nvmrc: shard unset"]);
     assert.deepEqual(legs({ "extra-commands-shards": 3 }), ["Node .nvmrc", "Extra .nvmrc 1/3: shard 1/3", "Extra .nvmrc 2/3: shard 2/3", "Extra .nvmrc 3/3: shard 3/3"]);
     assert.deepEqual(legs({ "extra-commands-shards": 2, "single-job": false }), ["Node .nvmrc", "Test .nvmrc", "Extra .nvmrc 1/2: shard 1/2", "Extra .nvmrc 2/2: shard 2/2"]);
-    assert.deepEqual(legs({ "extra-commands-shards": 3, "extra-commands-job": false }), ["checks: shard unset"], "one leg alone reports ci / checks");
+    assert.deepEqual(legs({ "extra-commands-shards": 3, "extra-commands-job": false }), ["Node .nvmrc: shard unset"]);
     assert.notEqual(runStep(ciNode, "List the extra-commands shards", root, { SHARDS: "2.5" }).status, 0);
   });
 });
@@ -244,11 +217,8 @@ describe("ci-node.yml formal checks", () => {
     const inputs = { "formal-checks": '[{"skill": "formal-a"}, {"skill": "formal-b", "paths": ["src/b.ts"], "run": "node b.mjs"}]' };
     assert.equal(evaluate(gate, { inputs }), true);
     const include = /^ {8}include: (.*)$/m.exec(formal)?.[1] ?? "";
-    const name = /^ {4}name: (.*)$/m.exec(formal)?.[1] ?? "";
-    assert.deepEqual(
-      evaluateRules(include, { inputs }).map((matrix) => interpolate(name, { matrix })),
-      ["Formal formal-a", "Formal formal-b"],
-    );
+    assert.equal(/^ {4}name: (.*)$/m.exec(formal)?.[1], "Formal", "GitHub appends each leg's matrix values, as in Formal (formal-a), and shows a skipped Formal as is");
+    assert.deepEqual(evaluateRules(include, { inputs }).map((matrix) => matrix.skill), ["formal-a", "formal-b"]);
   });
 
   test("a fast-tier pull request runs a check only when its skill folder or a file it models changed, and every other tier runs it", () => {

@@ -48,7 +48,7 @@ function readmeExample(): string {
 }
 
 describe("the verdict of ci-node.yml", () => {
-  test("is the check checks, which its gate job or its only leg reports, and it has no second reporting job", () => {
+  test("is the check checks, which its gate job reports, and it has no second reporting job", () => {
     assert.equal(SHARED_CI_VERDICT_JOB, "checks", "the check every ruleset requires is ci / checks");
     assert.ok(!jobsOf(ciNode).some((job) => job.id === "verdict"), "no second reporting job: each is a queue hop on the pool");
   });
