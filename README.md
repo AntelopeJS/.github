@@ -1147,6 +1147,18 @@ uploads it with the JSON report and dataset as the `nightly-report` artifact.
 It reads the organization with the run's `GITHUB_TOKEN`, so it sees the public
 repositories only.
 
+Its `issue` job then keeps one issue of this repository, titled `Nightly CI
+report`, in step with the latest nightly of each of those repositories, through
+[`scripts/ci-metrics/nightly-issue-main.ts`](scripts/ci-metrics/README.md#the-nightly-ci-report-issue).
+While a latest nightly is red, the issue is open and lists each red repository
+with a link to that run and its failed jobs. A night that changes that list
+rewrites the issue and comments with the new list, so whoever watches this
+repository gets one notification for it. Once every latest nightly passes, the
+job comments and closes the issue. The job writes with the run's
+`GITHUB_TOKEN` and `issues: write` on this repository only, and does not run
+on a pull request: a pull request run prints the issue it would write to its
+job summary instead.
+
 ## Verdict conformance
 
 `verdict-conformance.yml` runs every day at 06:11 UTC in this repository, on

@@ -122,6 +122,31 @@ through the same client as `main.ts`. It fails when it finds no repository with
 a merge queue, and when a repository lists more merge queue runs than the 1,000
 the API returns.
 
+## The Nightly CI report issue
+
+`nightly-issue-main.ts` reads a dataset that `nightly-main.ts --save` wrote,
+computes the same report, and keeps one issue of a repository in step with it:
+
+```sh
+GH_TOKEN=... node scripts/ci-metrics/nightly-issue-main.ts --load nightly-dataset.json \
+  --repo AntelopeJS/.github --run-url <url of the report run>
+```
+
+The issue is the open one titled `Nightly CI report` that `github-actions[bot]`
+opened. A repository is red when its latest nightly of the window failed, as in
+the report's "Latest nightly" section.
+
+| the night | no open issue | the open issue |
+| --- | --- | --- |
+| a repository is red | opens it | rewrites its body and comments with the new table, unless the table is already in the body |
+| every latest nightly passed | nothing | comments and closes it |
+
+The table has one row per red repository: a link to its latest nightly and its
+failed jobs, each marked when the same job failed the nightly 12 to 36 hours
+before. Job names come out as code spans, so the issue mentions or links no one.
+`--dry-run` prints the issue and makes no call. `GH_TOKEN` needs `issues: write`
+on `--repo`.
+
 ## Checks
 
 ```sh

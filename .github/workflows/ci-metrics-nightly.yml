@@ -37,6 +37,14 @@ jobs:
             > "$RUNNER_TEMP/nightly-report.md"
           cat "$RUNNER_TEMP/nightly-report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Show the issue a scheduled run would write
+        if: github.event_name == 'pull_request'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/ci-metrics/nightly-issue-main.ts --load "$RUNNER_TEMP/nightly-dataset.json" \
+            --run-url "$RUN_URL" --dry-run >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -47,3 +55,37 @@ jobs:
             ${{ runner.temp }}/nightly-report.json
             ${{ runner.temp }}/nightly-dataset.json
           retention-days: 90
+
+  # The only job that writes: it opens, updates or closes the "Nightly CI report" issue of this repository with
+  # the run's GITHUB_TOKEN, and never runs on a pull request, whose code would hold that token.
+  issue:
+    needs: report
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-report
+          path: ${{ runner.temp }}/nightly-report
+
+      - name: Open, update or close the Nightly CI report issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          result=$(node scripts/ci-metrics/nightly-issue-main.ts --load "$RUNNER_TEMP/nightly-report/nightly-dataset.json" \
+            --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL")
+          echo "$result"
+          echo "$result" >> "$GITHUB_STEP_SUMMARY"

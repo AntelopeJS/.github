@@ -213,6 +213,11 @@ export function nightlyReport(dataset: NightlyDataset): NightlyReport {
   };
 }
 
+/** The repositories whose latest nightly of the window failed, in the order of the report. */
+export function failedLatest(result: NightlyReport): RepoNightlyReport[] {
+  return result.repos.filter((repo) => repo.latest !== null && failed(repo.latest.nightly.conclusion));
+}
+
 const short = (sha: string): string => sha.slice(0, 7);
 const cell = (text: string): string => text.replaceAll("|", "\\|").replaceAll("\n", " ");
 
@@ -233,7 +238,7 @@ export function formatNightlyMarkdown(result: NightlyReport): string {
   const header = ["repo", "nightlies", "failed", ...verdicts];
   const row = (name: string, nightlies: number, failedNightlies: number, values: Counts): string =>
     `| ${[name, nightlies, failedNightlies, ...verdicts.map((verdict) => values[verdict])].join(" | ")} |`;
-  const red = repos.filter((repo) => repo.latest !== null && failed(repo.latest.nightly.conclusion));
+  const red = failedLatest(result);
   const lines = [
     `# Nightly failures the merge queue missed, ${window.from.slice(0, 10)}..${window.to.slice(0, 10)} (${window.days} d)`,
     "",
