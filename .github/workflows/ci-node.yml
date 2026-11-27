@@ -669,7 +669,9 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   checks:
-    if: ${{ github.event_name != 'pull_request' || !cancelled() }}
+    # Not always(): a cancelled run ends this job cancelled without a runner, and a cancelled required check
+    # blocks the merge as a failed one does. A leg that timed out or failed still runs and fails this job.
+    if: ${{ !cancelled() }}
     needs: [windows, shards, node, stress]
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
@@ -701,7 +703,9 @@ jobs:
 
   verdict:
     needs: [windows, shards, node, stress, checks]
-    if: ${{ always() }}
+    # As checks: it runs and fails after any failed or cancelled job of a run that goes on, and in a run that
+    # was cancelled it ends cancelled without waiting for a runner, which still blocks a merge.
+    if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}

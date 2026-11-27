@@ -13,11 +13,13 @@ import {
   git,
   leg,
   mergeGroup,
+  mergeGroupAt,
   nodeJob,
   other,
   pullRequest,
   repo,
   root,
+  runAction,
   runStep,
   shallowCheckout,
   succeeded,
@@ -84,6 +86,74 @@ describe("the tier contract", () => {
     mkdirSync(empty);
     const base = "0123456789abcdef0123456789abcdef01234567";
     assert.deepEqual(actionOutputs(pullRequest("main", "feat/x")(base), {}, empty), { tier: "fast", base });
+  });
+});
+
+describe("a merge group the queue dropped", () => {
+  const HEAD = "1111111111111111111111111111111111111111";
+  const NEWER = "2222222222222222222222222222222222222222";
+  const REF = "refs/heads/gh-readonly-queue/main/pr-1-abc";
+  const MATCHING_REFS = String.raw`api repos/AntelopeJS/example/git/matching-refs/heads/gh-readonly-queue/main/pr-1-abc --jq .[] | "\(.ref) \(.object.sha)" token=token`;
+  const COMPARE = `api repos/AntelopeJS/example/compare/main...${HEAD} --jq .status token=token`;
+  let groups = 0;
+  const group = (answers: Record<string, string>) => {
+    groups += 1;
+    const { cwd, base } = checkout(`dropped-${groups}`, ["src/index.ts"]);
+    const log = join(root, `dropped-${groups}.log`);
+    writeFileSync(log, "");
+    const env = { FAKE_GH_LOG: log, ...answers };
+    const calls = (): string[] => readText(log).split("\n").filter(Boolean);
+    return { cwd, base, env, calls };
+  };
+
+  test("fails before any tier when its branch is gone, or holds a newer group, and its head is not on the base branch", () => {
+    const cases = [
+      { refs: "", status: "diverged", why: "branch deleted" },
+      { refs: "", status: "ahead", why: "branch deleted, head one commit past the base" },
+      { refs: `${REF} ${NEWER}`, status: "diverged", why: "the queue rebuilt the group on the same parent, under the same branch name" },
+      { refs: `${REF}0 ${HEAD}`, status: "diverged", why: "only a longer branch name matches the prefix" },
+    ];
+    for (const { refs, status, why } of cases) {
+      const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: status });
+      const run = runAction(mergeGroupAt(base, HEAD), {}, cwd, env);
+      assert.equal(run.status, 1, why);
+      assert.match(run.stdout, /^::error title=Superseded merge group::The merge queue dropped this group: gh-readonly-queue\/main\/pr-1-abc no longer points at its head 1{40}, which is not on main\./m, why);
+      assert.match(run.summary, /^Superseded merge group: The merge queue dropped this group: /, why);
+      assert.deepEqual(run.outputs, {}, `${why}: no tier, so no job reads one`);
+      assert.deepEqual(calls(), [MATCHING_REFS, COMPARE], `${why}: both calls use the job token, contents: read`);
+    }
+  });
+
+  test("runs the queue tier while its branch still points at its head, without asking where the head is", () => {
+    for (const refs of [`${REF} ${HEAD}`, `${REF} ${HEAD}\n${REF}0 ${NEWER}`]) {
+      const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: "diverged" });
+      assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base });
+      assert.deepEqual(calls(), [MATCHING_REFS]);
+    }
+  });
+
+  test("runs the queue tier in a group that merged, whose branch is gone or moved but whose head is on the base branch", () => {
+    for (const [refs, status] of [["", "identical"], ["", "behind"], [`${REF} ${NEWER}`, "behind"]]) {
+      const { cwd, base, env, calls } = group({ FAKE_GH_REFS: refs, FAKE_GH_COMPARE: status });
+      assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base }, `${refs} ${status}`);
+      assert.deepEqual(calls(), [MATCHING_REFS, COMPARE]);
+    }
+  });
+
+  test("runs the queue tier when either API call fails, as before", () => {
+    const failures: Record<string, string>[] = [{}, { FAKE_GH_REFS: "" }];
+    for (const answers of failures) {
+      const { cwd, base, env } = group(answers);
+      assert.deepEqual(actionOutputs(mergeGroupAt(base, HEAD), {}, cwd, env), { tier: "queue", base }, JSON.stringify(answers));
+    }
+  });
+
+  test("asks nothing on any other event", () => {
+    const { cwd, base, env, calls } = group({ FAKE_GH_REFS: "", FAKE_GH_COMPARE: "diverged" });
+    assert.equal(actionOutputs(pullRequest("main", "feat/x")(base), {}, cwd, env).tier, "fast");
+    assert.equal(actionOutputs(other("push", "next")(), {}, cwd, env).tier, "full");
+    assert.equal(actionOutputs(other("schedule", "main")(), {}, cwd, env).tier, "nightly");
+    assert.deepEqual(calls(), []);
   });
 });
 

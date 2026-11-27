@@ -11,7 +11,7 @@ const ciNode = read(".github/workflows/ci-node.yml");
 const CALL = "  ci:\n    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2\n";
 const RENOVATE = "  renovate-sync:\n    uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2\n";
 const workflow = (...jobs: string[]): string => `on: pull_request\njobs:\n${jobs.join("")}`;
-const verdictJob = (needs: string, condition = "${{ always() }}"): string => `  verdict:\n    needs: ${needs}\n    if: ${condition}\n    runs-on: ubuntu-latest\n`;
+const verdictJob = (needs: string, condition = "${{ !cancelled() }}"): string => `  verdict:\n    needs: ${needs}\n    if: ${condition}\n    runs-on: ubuntu-latest\n`;
 const required = (...contexts: string[]): RequiredCheck[] => contexts.map((context) => ({ context, ruleset: `the ruleset "R" (1)` }));
 
 function verdictRun(workflow: string): string {
@@ -61,8 +61,9 @@ describe("a repository's conformance", () => {
     ]);
   });
 
-  test("a verdict job conforms when it needs every other job and runs with if: always()", () => {
+  test("a verdict job conforms when it needs every other job and runs with if: ${{ !cancelled() }}", () => {
     assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL, RENOVATE, verdictJob("[ci, renovate-sync]")), required: required("verdict") }), []);
+    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL, RENOVATE, verdictJob("[ci, renovate-sync]", "'!cancelled()'")), required: required("verdict") }), []);
   });
 
   test("a verdict job names each job it does not need", () => {
@@ -70,9 +71,19 @@ describe("a repository's conformance", () => {
   });
 
   test("a verdict job that a failed job would skip is reported", () => {
-    assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL, RENOVATE, verdictJob("[ci, renovate-sync]", "${{ !cancelled() }}")), required: required("verdict") }), [
-      "its verdict job does not run with if: always(), so a failed job skips it and the skipped check passes",
-    ]);
+    for (const condition of ["${{ success() }}", "${{ !cancelled() && github.event_name == 'merge_group' }}", "github.event_name != 'push'"]) {
+      assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL, RENOVATE, verdictJob("[ci, renovate-sync]", condition)), required: required("verdict") }), [
+        "its verdict job does not run with if: ${{ !cancelled() }}, so a failed job skips it and the skipped check passes",
+      ], condition);
+    }
+  });
+
+  test("a verdict job that runs in a cancelled run is reported, since it waits for a runner only to fail", () => {
+    for (const condition of ["${{ always() }}", "always()"]) {
+      assert.deepEqual(problemsOf({ name: "x", workflow: workflow(CALL, RENOVATE, verdictJob("[ci, renovate-sync]", condition)), required: required("verdict") }), [
+        "its verdict job runs with if: always(), so a cancelled run still waits for a runner to fail it; use if: ${{ !cancelled() }}",
+      ], condition);
+    }
   });
 
   test("each required check other than the verdict is named, and a verdict no ruleset requires is reported", () => {

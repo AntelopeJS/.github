@@ -659,7 +659,9 @@ on a pull request. Its `tier` output holds the tier and its `base` output the
 diff base. On a pull request and in the merge queue, it fetches the diff base
 when the checkout lacks it. On a pull request, it reads the changed files from
 the checkout. Without a checkout, a pull request gets `fast` unless the label or
-`selection` asks for `full`:
+`selection` asks for `full`. In a merge group the queue has dropped, it fails
+instead, before any work (see the `checks` job below), so the jobs that need a
+caller's own tier job are skipped too:
 
 ```yaml
 jobs:
@@ -710,16 +712,34 @@ because callers still pass it and a reusable workflow rejects a secret it does
 not declare.
 
 The `verdict` job is the result the merge queue waits for. It needs every other
-job, `checks` included, runs with `if: always()` whatever they ended with, and
-fails, naming them, when any of them failed or was cancelled. A required check
-that is skipped passes, so a gate that a failed job would skip gates nothing.
+job, `checks` included, runs with `if: ${{ !cancelled() }}` whatever they ended
+with, and fails, naming them, when any of them failed or was cancelled. A
+required check that is skipped passes, so a gate that a failed job would skip
+gates nothing. `!cancelled()` never skips it in a run that goes on, and in a run
+that was cancelled it ends cancelled without a runner, which blocks a merge as a
+failure does. `always()` would run it there too, so each cancelled run would
+wait for a runner of the pool only to fail.
 
 The `checks` job checks that the pull request title uses Conventional Commits. It fails when the `node` job did not
 succeed, when any job it waits for failed or was cancelled, and in the
 `nightly` tier when `Stress` did not succeed. A newer run of the same pull
-request cancels the older one whole, and the older run's `checks` then ends
-cancelled instead of failing. On any other event, and in a pull request run
-that was not cancelled, a cancelled job still fails `checks`.
+request cancels the older one whole. On any event, the `checks` of a cancelled
+run, whether a newer run or someone cancelled it, ends cancelled without a
+runner instead of failing. In a run that was not cancelled, a cancelled job,
+such as a leg that timed out, still fails `checks`.
+
+In the merge queue, a group the queue rebuilds or drops loses its
+`gh-readonly-queue/…` branch, or the branch moves to the new group when the
+queue rebuilds it on the same parent, but GitHub leaves the old group's runs
+queued, and no expression can name the pull request of a group to cancel them
+by: the payload names it only inside the branch name. So the `ci-tier` action,
+which each job calls first, ends a `merge_group` job whose branch no longer
+points at its head and whose head is not on the base branch: it fails with a
+`Superseded merge group` error, before the install or the tests. A group that
+merged also loses its branch, but its head is then on the base branch, so a late
+job of it runs as before. When either API call fails, the job runs as before.
+The run's `checks` and `verdict` then fail in seconds, on a commit no queue
+waits for.
 
 The Linux jobs run on the runner named by the calling repository's `RUNNER_CI`
 variable when it is set, and on `ubuntu-latest` when it is empty or unset. A
@@ -745,8 +765,8 @@ examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 The merge queue waits only for the checks the rulesets of the default branch
 require. A job of the caller's own `ci.yml`, beside the `ci-node.yml` call, is
 one more result the queue would merge past. Such a caller adds a job named
-`verdict` that needs every job of the file, runs with `if: always()`, and fails
-when any of them failed or was cancelled, and its rulesets require `verdict`
+`verdict` that needs every job of the file, runs with `if: ${{ !cancelled() }}`,
+and fails when any of them failed or was cancelled, and its rulesets require `verdict`
 alone. A caller whose `ci.yml` is the `ci-node.yml` call alone needs no job of
 its own: its rulesets require `ci / verdict`. The
 [verdict conformance](#verdict-conformance) workflow lists every repository that
@@ -796,7 +816,7 @@ jobs:
     uses: AntelopeJS/.github/.github/workflows/ci-renovate-sync.yml@v2
   verdict:
     needs: [ci, renovate-sync]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
@@ -1209,8 +1229,9 @@ job summary, when the merge queue of its default branch does not wait on
 [its verdict](#the-verdict-of-a-caller) alone:
 
 - `ci.yml` is not one `ci-node.yml` call and has no `verdict` job;
-- its `verdict` job does not need a job of the file, or runs without
-  `if: always()`;
+- its `verdict` job does not need a job of the file, or runs with anything but
+  `if: ${{ !cancelled() }}`: without a status function a failed job skips it,
+  and with `always()` a cancelled run waits for a runner only to fail it;
 - a ruleset of the default branch requires a check other than the verdict, or
   none requires the verdict.
 
