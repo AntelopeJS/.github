@@ -54,7 +54,7 @@ jobs:
         if: steps.bump.outputs.bumped == 'true'
         run: pnpm install --frozen-lockfile --reporter=silent
 
-      - name: Run antelopejs-sync
+      - name: Run antelopejs-sync and the format script
         id: sync
         if: steps.bump.outputs.bumped == 'true'
         run: |
@@ -62,21 +62,25 @@ jobs:
             echo "$out"
             exit 1
           fi
+          if ! git diff --quiet -- package.json; then
+            pnpm install --lockfile-only --reporter=silent
+          fi
+          if ! out=$(pnpm run --silent --if-present format 2>&1); then
+            echo "$out"
+            exit 1
+          fi
           if git status --porcelain --untracked-files=all -- .github/workflows .github/actions | grep -q .; then
             {
               echo "### Renovate sync: One-tap"
               echo
-              echo "\`antelopejs-sync\` changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: a pull request touching workflow paths needs a human tap."
+              echo "\`antelopejs-sync\` or the \`format\` script changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: a pull request touching workflow paths needs a human tap."
               echo
               echo "Changed paths:"
               echo
               git status --porcelain --untracked-files=all -- .github/workflows .github/actions | sed 's/^/- /'
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::antelopejs-sync changes workflow paths; nothing pushed, this pull request stays One-tap."
+            echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
             exit 1
-          fi
-          if ! git diff --quiet -- package.json; then
-            pnpm install --lockfile-only --reporter=silent
           fi
           if git status --porcelain --untracked-files=all | grep -q .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -91,7 +95,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit --no-verify -q -m "chore(deps): apply antelopejs-sync output"
+          git commit --no-verify -q -m "chore(deps): apply the antelopejs-sync and format output"
           if ! git push --no-verify -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${HEAD_REF}"; then
             echo "::error::The sync commit could not be pushed. The job that calls ci-renovate-sync.yml must grant contents: write."
             exit 1

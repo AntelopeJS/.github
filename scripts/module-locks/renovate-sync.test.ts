@@ -7,7 +7,7 @@ import { git, repoFile, runStep, write } from "./helpers/workflow.ts";
 
 const renovateSync = repoFile(".github/workflows/ci-renovate-sync.yml");
 const DETECT = "Detect a dependency bump";
-const SYNC = "Run antelopejs-sync";
+const SYNC = "Run antelopejs-sync and the format script";
 
 describe("ci-renovate-sync.yml", () => {
   const renovateBranch = (dir: string, files: Record<string, string>): void => {
