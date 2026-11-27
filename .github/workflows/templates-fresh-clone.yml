@@ -50,7 +50,7 @@ jobs:
         template: ${{ fromJSON(needs.templates.outputs.templates) }}
     services:
       mongo:
-        image: mongo:8
+        image: mongo:9
         ports:
           - 27017:27017
     env:
