@@ -33,7 +33,11 @@ case "$1 $2" in
   "pr list") response=$GH_OPEN ;;
   "pr create") echo "https://github.com/$GITHUB_REPOSITORY/pull/7"; exit 0 ;;
   "api graphql") response=$GH_GRAPHQL ;;
+  "api -X") exit "\${GH_DELETE_STATUS:-0}" ;;
   "api repos/"*"/git/matching-refs/"*) response=\${GH_REFS:-[]} ;;
+  "api repos/"*"/rules/branches/"*) response=\${GH_RULES:-[]} ;;
+  "api repos/"*"/branches/"*) response=\${GH_BRANCH:-'{"protected":false}'} ;;
+  "api repos/"*"/pulls?"*) response=\${GH_PULLS:-[]} ;;
   *) exit 0 ;;
 esac
 while [ "$#" -gt 0 ] && [ "$1" != --jq ]; do shift; done

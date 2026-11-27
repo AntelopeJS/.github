@@ -180,6 +180,11 @@ runs the `module-locks-committed` action after its own install), and commits the
 locks of a Renovate bump with `module-locks-renovate.yml`. See [module
 locks](README.md#module-locks) for the caller jobs.
 
+A repository whose bots open pull requests that a person may close unmerged
+calls `bot-branch-cleanup.yml` on the `closed` type of `pull_request`, so the
+head branch goes with the pull request instead of staying behind. See [bot
+branch cleanup](README.md#bot-branch-cleanup) for the caller.
+
 ## Release channels
 
 Work reaches the npm `next` dist-tag when a maintainer dispatches a preview,
