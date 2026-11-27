@@ -99,13 +99,22 @@ describe("runners", () => {
       const workflow = readJson(JSON.stringify(parse(workflowText(file))));
       assert.ok(isJsonObject(workflow) && isJsonObject(workflow.jobs) && isJsonObject(workflow.jobs[job]), `${file} has no job ${job}`);
       const env = workflow.jobs[job].env;
+      if (file === "ci-node.yml" && job === "node") {
+        assert.ok(!isJsonObject(env) || (!("LANG" in env) && !("TERM" in env)), "the node job env must not set LANG or TERM, which would blank them on Windows");
+        const steps = workflow.jobs[job].steps;
+        assert.ok(Array.isArray(steps));
+        const step = steps.find((candidate) => isJsonObject(candidate) && isString(candidate.run) && candidate.run.includes("GITHUB_ENV") && candidate.run.includes("TERM="));
+        assert.ok(isJsonObject(step) && step.if === "runner.os == 'Linux'", "the node job exports LANG and TERM to GITHUB_ENV on Linux only");
+        const run = isString(step.run) ? step.run : "";
+        for (const [name, value] of Object.entries(expected)) assert.ok(run.includes(`${name}=${value}`), `${name} on Linux`);
+        continue;
+      }
       assert.ok(isJsonObject(env), `${file} ${job} has no env`);
       for (const [name, value] of Object.entries(expected)) {
         const raw = env[name];
         assert.ok(isString(raw), `${file} ${job} sets no ${name}`);
         const at = (os: string): ReturnType<typeof evaluate> => (raw.startsWith("${{") ? evaluate(raw, { vars: {}, matrix: { os } }) : raw);
         assert.equal(at("ubuntu-latest"), value, `${file} ${job} ${name}`);
-        if (file === "ci-node.yml" && job === "node") assert.equal(at("windows-latest"), "", `${file} ${job} ${name} on Windows`);
       }
     }
   });
