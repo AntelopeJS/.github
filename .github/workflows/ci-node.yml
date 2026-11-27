@@ -166,6 +166,8 @@ jobs:
     outputs:
       tier: ${{ steps.leg.outputs.tier }}
     env:
+      LANG: ${{ matrix.os == 'ubuntu-latest' && 'C.UTF-8' || '' }}
+      TERM: ${{ matrix.os == 'ubuntu-latest' && 'xterm-256color' || '' }}
       PRIMARY_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == fromJSON(inputs.node-versions || '[""]')[0] }}
       START_SERVICES: ${{ inputs.services-compose-file != '' && matrix.os != 'windows-latest' && (matrix.part == 'test' || matrix.part == 'extra' || (matrix.part == 'checks' && inputs.extra-commands != '' && !inputs.extra-commands-job)) }}
       CACHE_PREFIX: ${{ matrix.part == 'extra' && 'ci-node-extra' || 'ci-node' }}
@@ -558,6 +560,8 @@ jobs:
       run:
         shell: bash
     env:
+      LANG: C.UTF-8
+      TERM: xterm-256color
       ANTELOPEJS_CI_TIER: nightly
       START_SERVICES: ${{ inputs.services-compose-file != '' }}
       STRESS_RUNS: 3

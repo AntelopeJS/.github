@@ -91,4 +91,22 @@ describe("runners", () => {
     assert.equal(evaluate(node, { vars: {}, matrix: { os: "ubuntu-latest" } }), linux);
     assert.equal(evaluate(node, { vars: { RUNNER_CI: "other" }, matrix: { os: "windows-latest" } }), windows, "RUNNER_CI names a Linux label");
   });
+
+  test("every job that runs repository code exports the UTF-8 locale and a TERM that is not dumb, as GitHub's hosted runners do, but on Windows", () => {
+    const jobs: [string, string][] = [["ci-node.yml", "node"], ["ci-node.yml", "stress"], ["release-npm.yml", "release"], ["module-locks-refresh.yml", "refresh"]];
+    const expected = { LANG: "C.UTF-8", TERM: "xterm-256color" };
+    for (const [file, job] of jobs) {
+      const workflow = readJson(JSON.stringify(parse(workflowText(file))));
+      assert.ok(isJsonObject(workflow) && isJsonObject(workflow.jobs) && isJsonObject(workflow.jobs[job]), `${file} has no job ${job}`);
+      const env = workflow.jobs[job].env;
+      assert.ok(isJsonObject(env), `${file} ${job} has no env`);
+      for (const [name, value] of Object.entries(expected)) {
+        const raw = env[name];
+        assert.ok(isString(raw), `${file} ${job} sets no ${name}`);
+        const at = (os: string): ReturnType<typeof evaluate> => (raw.startsWith("${{") ? evaluate(raw, { vars: {}, matrix: { os } }) : raw);
+        assert.equal(at("ubuntu-latest"), value, `${file} ${job} ${name}`);
+        if (file === "ci-node.yml" && job === "node") assert.equal(at("windows-latest"), "", `${file} ${job} ${name} on Windows`);
+      }
+    }
+  });
 });
