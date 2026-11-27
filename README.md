@@ -604,7 +604,7 @@ store when its lockfile has none yet: the push that merges a lockfile change,
 the nightly run and a manual run of `main`. It never starts from an older
 store, so a saved store holds one lockfile's packages and stays that size. The
 push's leg only looks the key up, so a push that leaves the lockfile alone
-downloads nothing. `Stress` keeps `setup-node`'s own cache. The key,
+downloads nothing. `Stress` and `formal` keep `setup-node`'s own cache. The key,
 `node-cache-<os>-<arch>-pnpm-<lockfile hash>`, is the one `setup-node` used, so
 the stores saved before this rule still serve.
 
