@@ -1082,6 +1082,32 @@ The preset:
 
 A repository's own `renovate.json` keeps only what is specific to it.
 
+## Renovate sweep
+
+`renovate-sweep.yml` runs every hour at minute 29 in this repository, and on
+demand by `workflow_dispatch`. It runs `scripts/module-locks/renovate-sweep-main.ts`
+with the release app's token over every open Renovate pull request of the
+organization, from a `renovate/*` branch of its own repository:
+
+- a green one whose last merge-queue or auto-merge event is its removal from
+  the queue gets auto-merge armed again, when its base is the default branch
+  and has a merge queue, it does not conflict, and its repository is not
+  `cloud`, `k8s-gitops-infra`, `antelope-hardening` or `antelope-compliance`.
+  A removal turns auto-merge off. When someone turned auto-merge off, the
+  pull request stays as it is;
+- a red one whose head lacks commits of its base gets Renovate's rebase
+  checkbox ticked. Renovate rebases it on the current base, and its checks run
+  again against it. Once rebased, the head holds the base, so the pull request
+  gets no second request before the base moves again, and none while a
+  request is waiting for Renovate.
+
+The preset keeps `rebaseWhen: 'conflicted'`: `behind-base-branch` would rebase
+every open Renovate pull request on every merge, green ones included.
+
+A pull request that changes the workflow or its script runs the sweep as a
+dry run, with a read-only token, and lists the moves it would make in the job
+summary.
+
 ## Bot branch cleanup
 
 GitHub deletes the head branch of a merged pull request and leaves the branch

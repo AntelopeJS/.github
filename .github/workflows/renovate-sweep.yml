@@ -1,0 +1,71 @@
+name: Renovate sweep
+
+on:
+  schedule:
+    - cron: "29 * * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/module-locks/renovate-sweep*.ts
+      - .github/workflows/renovate-sweep.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Re-arm dropped and rebase stale-red Renovate pull requests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    concurrency:
+      group: renovate-sweep-${{ github.event_name == 'pull_request' && github.ref || 'org' }}
+      cancel-in-progress: false
+    env:
+      DRY_RUN: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Create the sweep token
+        id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: ${{ env.DRY_RUN == 'true' && 'read' || 'write' }}
+          permission-pull-requests: ${{ env.DRY_RUN == 'true' && 'read' || 'write' }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 26
+
+      - name: Sweep the open Renovate pull requests
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          ORG: ${{ github.repository_owner }}
+        run: |
+          args=("$ORG")
+          if [ "$DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          fi
+          status=0
+          node scripts/module-locks/renovate-sweep-main.ts "${args[@]}" > "$RUNNER_TEMP/sweep.md" || status=$?
+          {
+            if [ "$DRY_RUN" = true ]; then
+              echo "## Renovate sweep (dry run: nothing changed)"
+            else
+              echo "## Renovate sweep"
+            fi
+            echo
+            if [ -s "$RUNNER_TEMP/sweep.md" ]; then
+              cat "$RUNNER_TEMP/sweep.md"
+            else
+              echo "No Renovate pull request to re-arm or rebase."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep '^::error::' "$RUNNER_TEMP/sweep.md" || true
+          exit "$status"
