@@ -117,6 +117,22 @@ test("core, the modules and the interfaces the resolver couples arrive in one pu
   assert.equal(await branch({ ...testStack, updateType: "major" }), "renovate/antelopejs-packages");
 });
 
+test("every third-party patch and minor of a repository arrives in one pull request, so no sibling edits its lockfile in the merge queue", async () => {
+  const npm = { repository: "AntelopeJS/brevo-private", manager: "npm", updateType: "patch" };
+  const bumps = [
+    { depName: "rimraf", currentVersion: "6.1.3", packageFile: "package.json" },
+    { depName: "oxlint-tsgolint", currentVersion: "7.0.2007", packageFile: "package.json" },
+    { depName: "dotenv-cli", currentVersion: "11.0.0", updateType: "minor", packageFile: "package.json" },
+    { depName: "@types/node", currentVersion: "22.20.4", packageFile: "playground/package.json" },
+    { depName: "vue", currentVersion: "0.4.0", updateType: "minor", packageFile: "frontend/package.json" },
+  ];
+  for (const bump of bumps) assert.equal(await branch({ ...npm, ...bump }), "renovate/non-major-dependencies", bump.depName);
+});
+
+test("a third-party major keeps its own pull request, so a breaking one holds back no patch", async () => {
+  assert.equal((await rules({ repository: "AntelopeJS/brevo-private", manager: "npm", depName: "rimraf", currentVersion: "6.1.3", updateType: "major", packageFile: "package.json" })).groupName, undefined);
+});
+
 test("a tooling configs major arrives with the linter majors it pins", async () => {
   const npm = { repository: "AntelopeJS/interface-core", manager: "npm", currentVersion: "1.0.0", updateType: "major", packageFile: "package.json" };
   for (const depName of ["@antelopejs/tooling-configs", "oxfmt", "oxlint", "@oxlint/plugins"]) assert.equal(await branch({ ...npm, depName }), "renovate/antelopejs-tooling-configs", depName);
@@ -167,7 +183,7 @@ test("a repository without a merge queue never merges on its own", async () => {
 
 test("a third-party release waits three days before it can merge on its own, a major included", async () => {
   const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", packageFile: "package.json" };
-  assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: "3 days" });
+  assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: "non-major dependencies", automerge: true, minimumReleaseAge: "3 days" });
   assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, "3 days");
   assert.equal((await rules({ ...vue, updateType: "pin" })).minimumReleaseAge, undefined);
   assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);

@@ -50,6 +50,12 @@
       groupName: 'GitHub Actions',
     },
     {
+      description: "Every third-party patch and minor of a repository edits its pnpm-lock.yaml, and the merge queue removes with merge_conflict a pull request whose lockfile change meets a sibling's, so they arrive in one pull request; the AntelopeJS rules below keep their own groups, and a major keeps its own pull request so a breaking one holds back nothing else",
+      matchManagers: ['npm'],
+      matchUpdateTypes: ['patch', 'minor'],
+      groupName: 'non-major dependencies',
+    },
+    {
       description: "The interface resolver couples core, every module and the interfaces they declare, and a project's test stack runs the same modules, so every AntelopeJS package moves in one pull request, majors included, and CI records their locks once",
       matchPackageNames: ['@antelopejs/**'],
       groupName: 'AntelopeJS packages',

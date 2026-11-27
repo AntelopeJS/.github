@@ -1070,6 +1070,11 @@ The preset:
   `src/test/antelope-modules.ts` and `src/test/stack-modules.json` pin into
   the same pull request, whose locks the
   [Renovate lock job](#module-locks-of-a-renovate-pull-request) commits;
+- bumps every other npm patch and minor of a repository in one
+  `non-major dependencies` pull request, since the merge queue removes with
+  `merge_conflict` a pull request whose `pnpm-lock.yaml` change meets a
+  sibling's. A third-party major keeps its own pull request, so a breaking
+  one holds back no patch;
 - keeps `@types/node` in the major each package declares, and bumps the range
   in that package's `package.json`, since a lockfile-only update moves every
   workspace importer to one version;
