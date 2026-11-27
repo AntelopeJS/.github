@@ -706,7 +706,7 @@ It accepts these optional inputs:
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 | `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress`, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
-| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal <skill>` job that `checks` needs. See [Formal checks](#formal-checks). Empty runs none. |
+| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal <skill>` job that `checks` needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
 ignored. The workflow no longer writes to Notion. The secret stays declared
@@ -791,13 +791,14 @@ with the Node.js jobs. `checks` needs them, so a failing formal check fails
 | `paths` | no | The git pathspecs of the files the check models, the files of its SKILL.md coverage record. A pull request in the `fast` tier runs the check only when one of them or the skill folder changed, and the job summary says when it skipped. Without `paths`, every pull request runs it. |
 
 The `full`, `queue` and `nightly` tiers run every check, and the `none` tier
-none. A job installs with `pnpm install --frozen-lockfile --ignore-scripts`,
+none. A pull request that changes a root file, such as `pnpm-lock.yaml`, is in
+the `full` tier, so it runs every check whatever its `paths`. A job installs with `pnpm install --frozen-lockfile --ignore-scripts`,
 sets up Temurin Java 21, and restores `~/.cache/antelopejs-formal`, the cache
 where `@antelopejs/tooling-configs/formal` keeps the TLC model checker, under a
 key of the skill and `pnpm-lock.yaml`, falling back to any skill's cache. It
 runs on the `RUNNER_CI` label, Blacksmith 4 vCPU by default, with a 60-minute
 timeout against a hung checker. No time budget fails a check: the job summary
-gives each check's exit code and time in seconds.
+gives the exit code and time in seconds of each check that exits.
 
 A repository adopts it by moving each hand-written formal job of its `ci.yml`
 into the input of its `ci` job, then deleting those jobs and dropping them from

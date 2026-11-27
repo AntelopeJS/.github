@@ -80,7 +80,7 @@ on:
         default: false
         type: boolean
       formal-checks:
-        description: 'JSON array of the formal checks to run, one Formal job each, such as [{"skill": "formal-billing-lease", "paths": ["src/engine.ts"]}]. skill names the folder under .agents/skills, whose check.mjs runs unless run gives the commands. paths lists the git pathspecs the check models: a pull request in the fast tier runs the check only when they or the skill folder changed, and every other tier runs it. Empty runs none'
+        description: 'JSON array of the formal checks to run, one Formal job each, such as [{"skill": "formal-billing-lease", "paths": ["src/engine.ts"]}]. skill names the folder under .agents/skills, whose check.mjs runs unless run gives the commands. paths lists the git pathspecs the check models: a pull request in the fast tier runs the check only when they or the skill folder changed, and every other tier runs it. Empty or [] runs none'
         default: ""
         type: string
     secrets:
@@ -690,7 +690,7 @@ jobs:
 
   formal:
     name: Formal ${{ matrix.skill }}
-    if: inputs.formal-checks != ''
+    if: inputs.formal-checks != '' && inputs.formal-checks != '[]'
     runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 60
     permissions:
@@ -729,8 +729,8 @@ jobs:
             echo "::error::Each formal-checks entry needs a skill, the name of a folder under .agents/skills, not '${SKILL}'."
             exit 1
           fi
-          if ! specs=$(jq -r 'if . == null then empty elif type == "array" and length > 0 and all(type == "string") then .[] else error("") end' <<< "$PATHS" 2> /dev/null); then
-            echo "::error::The paths of formal check ${SKILL} must be a non-empty list of git pathspecs."
+          if ! specs=$(jq -r 'if . == null then empty elif type == "array" and length > 0 and all(type == "string" and length > 0 and (contains("\n") | not)) then .[] else error("") end' <<< "$PATHS" 2> /dev/null); then
+            echo "::error::The paths of formal check ${SKILL} must be a non-empty list of git pathspecs, each on one line."
             exit 1
           fi
           work=true

@@ -240,6 +240,7 @@ describe("ci-node.yml formal checks", () => {
   test("a caller that passes no formal-checks gets no Formal job, and each entry is one Formal leg", () => {
     const gate = /^ {4}if: (.*)$/m.exec(formal)?.[1] ?? "";
     assert.equal(evaluate(gate, { inputs: { "formal-checks": "" } }), false, "the frozen callers pass nothing and run as before");
+    assert.equal(evaluate(gate, { inputs: { "formal-checks": "[]" } }), false, "an empty matrix would fail the run");
     const inputs = { "formal-checks": '[{"skill": "formal-a"}, {"skill": "formal-b", "paths": ["src/b.ts"], "run": "node b.mjs"}]' };
     assert.equal(evaluate(gate, { inputs }), true);
     const include = /^ {8}include: (.*)$/m.exec(formal)?.[1] ?? "";
@@ -270,7 +271,7 @@ describe("ci-node.yml formal checks", () => {
     const status = (skill: string, paths: string): number => runStep(ciNode, pick, checkout.directory, { TIER: "full", BASE: "", SKILL: skill, PATHS: paths, GITHUB_STEP_SUMMARY: summary }).status;
     assert.equal(status("formal-a", '["src/a.ts"]'), 0);
     for (const skill of ["", "../formal-a", "formal a", "-x"]) assert.notEqual(status(skill, "null"), 0, skill);
-    for (const paths of ['"src/a.ts"', "[]", "[1]", '{"src": "a.ts"}']) assert.notEqual(status("formal-a", paths), 0, paths);
+    for (const paths of ['"src/a.ts"', "[]", "[1]", '[""]', '["src/a.ts\\nsrc/b.ts"]', '{"src": "a.ts"}']) assert.notEqual(status("formal-a", paths), 0, paths);
   });
 
   test("a check runs the skill's check.mjs unless run gives the commands, fails on the first failing command, and reports its exit and time", () => {
