@@ -13,11 +13,16 @@ interface Config {
   schedule?: string[];
   timezone?: string;
   rebaseWhen?: string;
+  dependencyDashboard?: { enabled?: boolean };
+  dependencyDashboardApproval?: boolean;
   enabled?: boolean;
   automerge?: boolean;
   groupName?: string | null;
+  separateMajorMinor?: boolean;
+  rangeStrategy?: string;
   minimumReleaseAge?: string | null;
   packageName?: string;
+  branchName?: string;
 }
 interface CustomManager {
   managerFilePatterns: string[];
@@ -50,6 +55,7 @@ const { massageConfig } = await load<{ massageConfig: (config: Config) => Config
 const { mergeChildConfig } = await load<{ mergeChildConfig: (parent: Config, child: Config) => Config }>("renovate/dist/config/utils.js");
 const { getConfig } = await load<{ getConfig: () => Config }>("renovate/dist/config/defaults.js");
 const { applyPackageRules } = await load<{ applyPackageRules: (config: Config, stage: string) => Promise<Config> }>("renovate/dist/util/package-rules/index.js");
+const { generateBranchName } = await load<{ generateBranchName: (update: Config) => void }>("renovate/dist/workers/repository/updates/branch-name.js");
 
 const preset = JSON5.parse(readText(new URL("../../renovate.json5", import.meta.url)));
 const config: Config = massageConfig(mergeChildConfig(getConfig(), (await resolveConfigPresets(preset)).config));
@@ -77,37 +83,72 @@ test("Renovate runs daily in the Brussels night and rebases a branch only on a c
   assert.equal(config.rebaseWhen, "conflicted");
 });
 
-test("a patch or minor bump of a test stack module merges through the queue in one AntelopeJS modules pull request", async () => {
-  assert.deepEqual(await rules({ ...testStack, updateType: "minor" }), { enabled: true, groupName: "AntelopeJS modules", automerge: true, minimumReleaseAge: undefined });
+test("Renovate opens no Dependency Dashboard and holds no update for an approval on it", () => {
+  assert.equal(config.dependencyDashboard?.enabled, false);
+  assert.equal(config.dependencyDashboardApproval, false);
+});
+
+test("a patch or minor bump of a test stack module merges through the queue in one AntelopeJS packages pull request", async () => {
+  assert.deepEqual(await rules({ ...testStack, updateType: "minor" }), { enabled: true, groupName: "AntelopeJS packages", automerge: true, minimumReleaseAge: undefined });
   assert.deepEqual(await rules({ ...testStack, updateType: "patch", repository: "AntelopeJS/template-dms-demo", packageFile: "antelope.config.ts" }), {
     enabled: true,
-    groupName: "AntelopeJS modules",
+    groupName: "AntelopeJS packages",
     automerge: true,
     minimumReleaseAge: undefined,
   });
 });
 
-test("a major bump stays manual", async () => {
-  assert.equal((await rules({ ...testStack, updateType: "major" })).automerge, false);
-  assert.equal((await rules({ repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "major", packageFile: "package.json" })).automerge, false);
+async function branch(upgrade: Upgrade): Promise<string | undefined> {
+  const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
+  generateBranchName(result);
+  return result.branchName;
+}
+
+test("core, the modules and the interfaces the resolver couples arrive in one pull request, whatever their update type", async () => {
+  const npm = { repository: "AntelopeJS/checkout-com", manager: "npm", packageFile: "package.json" };
+  const bumps = [
+    { depName: "@antelopejs/mongodb", currentVersion: "1.8.4", updateType: "patch" },
+    { depName: "@antelopejs/interface-database", currentVersion: "0.4.1", updateType: "patch" },
+    { depName: "@antelopejs/core", currentVersion: "1.23.3", updateType: "minor" },
+    { depName: "@antelopejs/interface-core", currentVersion: "0.5.1", updateType: "minor" },
+    { depName: "@antelopejs/core", currentVersion: "1.24.8", updateType: "major" },
+  ];
+  for (const bump of bumps) assert.equal(await branch({ ...npm, ...bump }), "renovate/antelopejs-packages", `${bump.depName} ${bump.updateType}`);
+  assert.equal(await branch({ ...testStack, updateType: "major" }), "renovate/antelopejs-packages");
 });
 
-test("a third-party 0.x minor stays manual, while a 0.x patch and a minor from 1.x on merge on their own", async () => {
+test("a tooling configs major arrives with the linter majors it pins", async () => {
+  const npm = { repository: "AntelopeJS/interface-core", manager: "npm", currentVersion: "1.0.0", updateType: "major", packageFile: "package.json" };
+  for (const depName of ["@antelopejs/tooling-configs", "oxfmt", "oxlint", "@oxlint/plugins"]) assert.equal(await branch({ ...npm, depName }), "renovate/antelopejs-tooling-configs", depName);
+  assert.equal(await branch({ ...npm, manager: "github-actions", depName: "AntelopeJS/tooling-configs", packageFile: ".github/workflows/ci.yml" }), "renovate/antelopejs-tooling-configs");
+});
+
+test("every update type merges on its own, majors and third-party 0.x minors included", async () => {
   const action = { repository: "AntelopeJS/dms-media", manager: "github-actions", depName: "pnpm/action-setup", packageFile: ".github/workflows/ci.yml" };
   const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", packageFile: "package.json" };
-  for (const currentVersion of ["0.4.0", "0.0.3"]) {
-    assert.equal((await rules({ ...vue, currentVersion, updateType: "minor" })).automerge, false, currentVersion);
+  assert.equal((await rules({ ...testStack, updateType: "major" })).automerge, true);
+  assert.equal((await rules({ ...vue, currentVersion: "3.4.0", updateType: "major" })).automerge, true);
+  assert.equal((await rules({ ...action, depName: "actions/checkout", currentVersion: "v4", updateType: "major" })).automerge, true);
+  for (const currentVersion of ["0.4.0", "0.0.3", "1.0.0", "10.2.0"]) {
+    assert.equal((await rules({ ...vue, currentVersion, updateType: "minor" })).automerge, true, currentVersion);
     assert.equal((await rules({ ...vue, currentVersion, updateType: "patch" })).automerge, true, currentVersion);
   }
-  assert.equal((await rules({ ...action, currentVersion: "v0.4.0", updateType: "minor" })).automerge, false);
-  for (const currentVersion of ["1.0.0", "10.2.0"]) assert.equal((await rules({ ...vue, currentVersion, updateType: "minor" })).automerge, true, currentVersion);
-  assert.equal((await rules({ ...action, currentVersion: "v4.1.0", updateType: "minor" })).automerge, true);
+  assert.equal((await rules({ ...action, currentVersion: "v0.4.0", updateType: "minor" })).automerge, true);
+});
+
+test("an @types/node update stays in the major each package declares and bumps that package's own range", async () => {
+  const types = { repository: "AntelopeJS/api", manager: "npm", depName: "@types/node", currentVersion: "20.17.30", packageFile: "playground/package.json" };
+  const bump = { ...types, updateType: "minor" };
+  const minor = await applyPackageRules({ ...config, ...bump, packageName: bump.depName }, "pre-lookup");
+  assert.equal(minor.enabled, true);
+  assert.equal(minor.rangeStrategy, "bump");
+  assert.equal((await rules({ ...types, updateType: "major" })).enabled, false);
 });
 
 test("a 0.x minor of an AntelopeJS package or of the tooling configs group merges on its own", async () => {
   assert.equal((await rules({ ...testStack, currentVersion: "0.4.0", updateType: "minor" })).automerge, true);
   const npm = { repository: "AntelopeJS/interface-core", manager: "npm", currentVersion: "0.10.6", updateType: "minor", packageFile: "package.json" };
-  assert.deepEqual(await rules({ ...npm, depName: "@antelopejs/interface-dms" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: undefined });
+  assert.deepEqual(await rules({ ...npm, depName: "@antelopejs/interface-dms" }), { enabled: true, groupName: "AntelopeJS packages", automerge: true, minimumReleaseAge: undefined });
   for (const depName of ["@antelopejs/tooling-configs", "oxfmt", "oxlint", "@oxlint/plugins"]) {
     assert.equal((await rules({ ...npm, depName })).groupName, "AntelopeJS tooling configs", depName);
     assert.equal((await rules({ ...npm, depName })).automerge, true, depName);
@@ -120,13 +161,14 @@ test("a repository without a merge queue never merges on its own", async () => {
   for (const repository of ["AntelopeJS/cloud", "AntelopeJS/k8s-gitops-infra", "AntelopeJS/antelope-hardening", "AntelopeJS/antelope-compliance"]) {
     assert.equal((await rules({ ...testStack, repository, updateType: "patch", packageFile: "antelope.config.ts" })).automerge, false, repository);
     assert.equal((await rules({ repository, manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "minor", packageFile: "package.json" })).automerge, false, repository);
+    assert.equal((await rules({ repository, manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "major", packageFile: "package.json" })).automerge, false, repository);
   }
 });
 
-test("a third-party release waits three days before it can merge on its own", async () => {
+test("a third-party release waits three days before it can merge on its own, a major included", async () => {
   const vue = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", packageFile: "package.json" };
   assert.deepEqual(await rules({ ...vue, updateType: "minor" }), { enabled: true, groupName: undefined, automerge: true, minimumReleaseAge: "3 days" });
-  assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, undefined);
+  assert.equal((await rules({ ...vue, updateType: "major" })).minimumReleaseAge, "3 days");
   assert.equal((await rules({ ...vue, updateType: "pin" })).minimumReleaseAge, undefined);
   assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);
 });
