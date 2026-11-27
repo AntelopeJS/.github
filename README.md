@@ -1105,7 +1105,7 @@ The preset keeps `rebaseWhen: 'conflicted'`: `behind-base-branch` would rebase
 every open Renovate pull request on every merge, green ones included.
 
 A pull request that changes the workflow or its script runs the sweep as a
-dry run, with a read-only token, and lists the moves it would make in the job
+dry run, which changes nothing, and lists the moves it would make in the job
 summary.
 
 ## Bot branch cleanup

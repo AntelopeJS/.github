@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { isList, isNumber, isObject, isText, parseJson, type Json } from "../ci-metrics/json.ts";
 import { moveOf, parsePull, tickRebase, type RenovatePull } from "./renovate-sweep.ts";
 
@@ -28,13 +28,31 @@ const SEARCH = `query($search: String!, $cursor: String) {
 
 const gh = (args: string[], input?: string): string => execFileSync("gh", args, { encoding: "utf8", input });
 
+/**
+ * The answer of a GraphQL query. A field the token may not read comes back null with an error, and `gh` then exits
+ * nonzero; each such error is printed as a warning, and the pull request it hides is left alone.
+ */
+function graphql(args: string[]): Json {
+  const result = spawnSync("gh", ["api", "graphql", ...args], { encoding: "utf8" });
+  if (!result.stdout.startsWith("{")) throw new Error(`gh api graphql failed: ${result.stderr}`);
+  const answer = parseJson(result.stdout);
+  if (isObject(answer) && isList(answer.errors)) {
+    for (const entry of answer.errors) {
+      const path = isObject(entry) && isList(entry.path) ? entry.path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") : "?";
+      const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
+      process.stdout.write(`::warning::${path}: ${message}\n`);
+    }
+  }
+  return answer;
+}
+
 function searchPulls(org: string): RenovatePull[] {
   const pulls: RenovatePull[] = [];
   let cursor: string | null = null;
   do {
-    const args = ["api", "graphql", "-f", `query=${SEARCH}`, "-f", `search=org:${org} is:pr is:open archived:false author:app/renovate`];
+    const args = ["-f", `query=${SEARCH}`, "-f", `search=org:${org} is:pr is:open archived:false author:app/renovate`];
     if (cursor !== null) args.push("-f", `cursor=${cursor}`);
-    const page: Json = parseJson(gh(args));
+    const page = graphql(args);
     const search = isObject(page) && isObject(page.data) ? page.data.search : undefined;
     if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error("The pull request search answered no search result.");
     pulls.push(...search.nodes.flatMap((node) => parsePull(node) ?? []));
