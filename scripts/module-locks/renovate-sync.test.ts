@@ -7,7 +7,7 @@ import { git, repoFile, runStep, write } from "./helpers/workflow.ts";
 
 const renovateSync = repoFile(".github/workflows/ci-renovate-sync.yml");
 const DETECT = "Detect a dependency bump";
-const SYNC = "Run antelopejs-sync";
+const SYNC = "Run antelopejs-sync and the format script";
 
 describe("ci-renovate-sync.yml", () => {
   const renovateBranch = (dir: string, files: Record<string, string>): void => {
@@ -45,6 +45,30 @@ describe("ci-renovate-sync.yml", () => {
     }
   });
 
+  test("formats the repository after the sync, so a bump of oxfmt lands with the files it formats", () => {
+    const dir = syncRepository("antelopejs-sync", "AGENTS.md");
+    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { sync: "antelopejs-sync", format: "cat AGENTS.md > src/index.ts" } })}\n`, "src/index.ts": "unformatted\n" });
+    git(dir, "commit", "-qam", "format script");
+
+    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+    assert.equal(sync.status, 0, sync.stdout);
+    assert.equal(sync.outputs.changed, "true");
+    assert.equal(readText(join(dir, "src/index.ts")), "synced \n");
+  });
+
+  test("pushes nothing when the format script touches a workflow", () => {
+    const dir = syncRepository(undefined, "AGENTS.md");
+    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { format: "mkdir -p .github/workflows && echo x > .github/workflows/ci.yml" } })}\n` });
+    git(dir, "commit", "-qam", "format script");
+
+    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+    assert.notEqual(sync.status, 0);
+    assert.match(sync.stdout, /::error::The sync output changes workflow paths/);
+    assert.equal(sync.outputs.changed, undefined);
+  });
+
   test("changes nothing in a repository without a sync script", () => {
     const sync = runStep(renovateSync, SYNC, syncRepository(undefined, "AGENTS.md"), SYNC_PATH);
 
@@ -56,7 +80,7 @@ describe("ci-renovate-sync.yml", () => {
     const sync = runStep(renovateSync, SYNC, syncRepository("antelopejs-sync", ".github/workflows/release.yml"), SYNC_PATH);
 
     assert.notEqual(sync.status, 0);
-    assert.match(sync.stdout, /::error::antelopejs-sync changes workflow paths/);
+    assert.match(sync.stdout, /::error::The sync output changes workflow paths/);
     assert.equal(sync.outputs.changed, undefined);
   });
 });

@@ -109,7 +109,7 @@ function pullRequestPublishing(): void {
   const QUEUED = { mergeQueue: { id: "MQ_1" }, pullRequest: { autoMergeRequest: null, isInMergeQueue: false } };
   const OPEN = JSON.stringify([{ number: 5, isCrossRepository: false }]);
 
-  function publish(env: { repository?: string; state?: string; open?: string; repo?: object }): string[] {
+  function publish(env: { repository?: string; state?: string; open?: string; repo?: object; refs?: string }): string[] {
     const temp = mkdtempSync(join(root, "publish-"));
     write(join(temp, "module-locks"), { "body.md": "body\n" });
     const log = join(temp, "gh.log");
@@ -124,6 +124,7 @@ function pullRequestPublishing(): void {
       STATE: env.state ?? "changed",
       GH_OPEN: env.open ?? "[]",
       GH_GRAPHQL: JSON.stringify({ data: { repository: env.repo ?? QUEUED } }),
+      GH_REFS: env.refs ?? "[]",
     });
     assert.equal(step.status, 0, step.stderr);
     return existsSync(log) ? readText(log).trimEnd().split("\n") : [];
@@ -161,6 +162,18 @@ function pullRequestPublishing(): void {
     const calls = publish({ open: OPEN, state: "current" });
     assert.ok(calls.some((call) => call.startsWith("gh pr close -R AntelopeJS/api 5 --delete-branch")));
     assert.deepEqual(merges(calls), []);
+  });
+
+  const deletes = (calls: string[]): string[] => calls.filter((call) => call.startsWith("gh api -X DELETE"));
+
+  test("deletes the branch a pull request closed unmerged left behind, once nothing changed", () => {
+    const refs = JSON.stringify([{ ref: `refs/heads/${BRANCH}` }]);
+    assert.deepEqual(deletes(publish({ state: "current", refs })), [`gh api -X DELETE repos/AntelopeJS/api/git/refs/heads/${BRANCH}`]);
+  });
+
+  test("leaves the branches alone when no branch of its own is left, even one whose name starts with it", () => {
+    assert.deepEqual(deletes(publish({ state: "current" })), []);
+    assert.deepEqual(deletes(publish({ state: "current", refs: JSON.stringify([{ ref: `refs/heads/${BRANCH}-old` }]) })), []);
   });
 }
 

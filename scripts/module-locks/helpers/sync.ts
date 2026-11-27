@@ -7,8 +7,8 @@ mkdirSync(syncStubs);
 writeFileSync(
   join(syncStubs, "pnpm"),
   `#!/usr/bin/env bash
-if [ "$1" = run ] && [ "\${!#}" = sync ]; then
-  script=$(jq -r '.scripts.sync // empty' package.json)
+if [ "$1" = run ]; then
+  script=$(jq -r --arg name "\${!#}" '.scripts[$name] // empty' package.json)
   [ -z "$script" ] || PATH="$PWD/node_modules/.bin:$PATH" bash -c "$script"
 fi
 `,

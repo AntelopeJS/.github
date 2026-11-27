@@ -819,8 +819,9 @@ from a `renovate/*` branch of the same repository whose diff changes a
 `package.json` or a `pnpm-lock.yaml`, its `renovate-sync` job installs, runs the
 repository's `sync` script (the write side of the `sync:check` its checks run,
 so the profile is the repository's own; a repository without one is left
-alone) and commits the output to the branch as `github-actions[bot]`, so the
-bump pull request becomes conformant on its own. The hosted Renovate app runs
+alone), then its `format` script when it has one, so a bump of `oxfmt` lands
+with the files it formats, and commits the output to the branch as
+`github-actions[bot]`, so the bump pull request becomes conformant on its own. The hosted Renovate app runs
 no `postUpgradeTasks`, so this job does that work.
 A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
@@ -920,7 +921,8 @@ already in the queue, so the queue merges it once its checks pass. It never
 does so in `cloud`, `k8s-gitops-infra`, `antelope-hardening` and
 `antelope-compliance`, the repositories the Renovate preset leaves to a person.
 A pull request whose checks fail stays open. When nothing changed, it closes
-that pull request. On a `pull_request` event it only refreshes and writes the
+that pull request and deletes `antelopejs/module-locks`, or deletes the branch
+alone when a person closed its pull request unmerged. On a `pull_request` event it only refreshes and writes the
 summary, as a dry run.
 
 `ajs` is the `node_modules/.bin/ajs` of the project folder or of the closest

@@ -131,6 +131,13 @@ test("a third-party release waits three days before it can merge on its own", as
   assert.equal((await rules({ ...vue, depName: "@antelopejs/interface-dms", updateType: "patch" })).minimumReleaseAge, undefined);
 });
 
+test("a digest pin or bump of a GitHub Action merges on its own at once, since a digest has no release date to wait on", async () => {
+  const checkout = { repository: "AntelopeJS/dms-api", manager: "github-actions", depName: "actions/checkout", currentVersion: "v7.0.1", packageFile: ".github/workflows/ci.yml" };
+  for (const updateType of ["pinDigest", "digest"]) {
+    assert.deepEqual(await rules({ ...checkout, updateType }), { enabled: true, groupName: "GitHub Actions", automerge: true, minimumReleaseAge: undefined }, updateType);
+  }
+});
+
 test("template-dms-adonis's synced copy of template-dms-demo gets no update of its own, while its own manifests and other repositories do", async () => {
   const nuxtUi = { repository: "AntelopeJS/template-dms-adonis", manager: "npm", depName: "@nuxt/ui", currentVersion: "4.13.0", updateType: "patch" };
   assert.equal((await rules({ ...nuxtUi, packageFile: "demo/frontend-vue/package.json" })).enabled, false);
