@@ -58,7 +58,7 @@ export function jobsOf(workflow: string): Job[] {
 /** `if: ${{ !cancelled() }}`, with or without the `${{ }}`, and nothing else. */
 const NOT_CANCELLED = /^(\$\{\{\s*)?!\s*cancelled\(\)(\s*\}\})?$/;
 
-/** The check of ci-node.yml that reports the whole run, `ci / checks` for a caller job named `ci`: its gate job, or its only leg when nothing runs beside it. */
+/** The check of ci-node.yml that reports the whole run, `ci / checks` for a caller job named `ci`: its gate job. */
 export const SHARED_CI_VERDICT_JOB = "checks";
 
 /**

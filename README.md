@@ -572,9 +572,8 @@ so a `ci:full` label added later counts from the next push.
 The `node` job runs one job per runner, Node.js version and part:
 
 - By default, with `single-job`, one `Node <version>` job per runner runs the
-  checks, then the tests. When that is the run's only job, it takes the name
-  `checks` instead: a pull request of a small module on `.nvmrc` shows one
-  job, `ci / checks`.
+  checks, then the tests. A pull request on `.nvmrc` shows `Node .nvmrc` and
+  `checks`.
 - With `single-job: false`, or with `services-compose-file`, `Node <version>`
   runs the checks and `Test <version>` runs the tests, in parallel. A caller
   whose tests take minutes passes `single-job: false`.
@@ -719,29 +718,30 @@ It accepts these optional inputs:
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
 | `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress`, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
-| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal <skill>` job that the `gate` job needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
+| `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal (<skill>, …)` job that the `gate` job needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
 ignored. The workflow no longer writes to Notion. The secret stays declared
 because callers still pass it and a reusable workflow rejects a secret it does
 not declare.
 
-The check `ci / checks` is the one result every ruleset requires and the merge
-queue waits for. A run with one job alone, `Node <version>` with `single-job`,
-no services, no `extra-commands-job`, no `formal-checks`, at most one
-`node-versions` entry, no `Windows eligibility` job and no `nightly` tier, gives that job the name `checks`: its own
-result is the check, and a small module pays one runner and one queue hop per
-run, not two. Any other run reports it from the `gate` job. The leg that runs
-the checks on the first `node-versions` entry, on Linux, checks that a pull
-request's title uses Conventional Commits.
+The `gate` job, named `checks`, is the one reporting job of the run, the check
+`ci / checks` that every ruleset requires and the result the merge queue waits
+for. It needs every other job, runs with `if: ${{ !cancelled() }}` whatever
+they ended with, and fails, naming them, when any job failed or was cancelled,
+when `node` did not succeed, and in the `nightly` tier when `Stress` did not
+succeed. The leg that runs the checks on the first `node-versions` entry, on
+Linux, checks that a pull request's title uses Conventional Commits.
 
-The `gate` job takes the name `checks` in a run with more than one job. It
-needs every other job, runs with `if: ${{ !cancelled() }}` whatever they ended
-with, and fails, naming them, when any job failed or was cancelled, when `node`
-did not succeed, and in the `nightly` tier when `Stress` did not succeed. In a
-run with one job, it skips. GitHub names a skipped job after its unevaluated
-`name` expression, so the skipped gate shows as `ci / needs.windows.result ==
-…`, never as a second `ci / checks` that would pass beside a failed leg. A required check that is
+Every job that a run can skip has a constant `name`: GitHub never evaluates the
+name of a skipped job and shows its expression as is, such as
+`Formal ${{ matrix.skill }}`. No name can read `checks` when the gate runs and
+something else when it skips, so the gate runs in every run that is not
+cancelled. A matrix job with a constant name gets its matrix values appended,
+as in `Formal (formal-a)`. The `node` legs keep their `Node <version>` names,
+an expression, because a leg skips only after `Windows eligibility` or
+`Extra shards` failed, or in a run that was cancelled before it started, and
+the gate then fails or ends cancelled. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
 `!cancelled()` never skips it in a run that goes on, and in a run that was
 cancelled, whether a newer run of the same pull request or someone cancelled it,
@@ -793,14 +793,13 @@ examples](CONTRIBUTING.md#shared-ci-and-maintenance-workflows).
 ### Formal checks
 
 The `formal-checks` input runs a repository's formal checks, the `formal-*`
-skills under `.agents/skills/`, as one `Formal <skill>` job each, in parallel
+skills under `.agents/skills/`, as one `Formal (<skill>, …)` job each, in parallel
 with the Node.js jobs. The `gate` job needs them, so a failing formal check
-fails `ci / checks` and blocks the merge. A run with formal checks never folds
-the gate into its leg. Each entry of the JSON array takes:
+fails `ci / checks` and blocks the merge. Each entry of the JSON array takes:
 
 | Key | Required | Description |
 | --- | -------- | ----------- |
-| `skill` | yes | The folder under `.agents/skills/`, such as `formal-billing-lease`. The job is named `Formal <skill>`. |
+| `skill` | yes | The folder under `.agents/skills/`, such as `formal-billing-lease`. The job is named `Formal (<skill>, …)`: GitHub appends every value of the entry, `paths` and `run` included, to the constant name. |
 | `run` | no | Multiline shell commands run with `bash -euo pipefail` instead of `node .agents/skills/<skill>/check.mjs`, such as a `node --test` of the skill's own tests before its `check.mjs`. |
 | `paths` | no | The git pathspecs of the files the check models, the files of its SKILL.md coverage record. A pull request in the `fast` tier runs the check only when one of them or the skill folder changed, and the job summary says when it skipped. Without `paths`, every pull request runs it. |
 

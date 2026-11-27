@@ -148,7 +148,7 @@ jobs:
   node:
     needs: [windows, shards]
     if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
-    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'checks' || format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
+    name: ${{ format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
     # Linux legs on Blacksmith's 4 vCPU Ubuntu 24.04 runner, Windows legs on its 4 vCPU Windows Server 2025
     # runner, unless the CALLING repository's variable RUNNER_CI (Linux) or RUNNER_CI_WINDOWS (Windows) names
     # another label. Windows legs run only for a calling repository the API reports public, and a schedule
@@ -721,7 +721,7 @@ jobs:
         run: docker compose -f "$FILE" down -v
 
   formal:
-    name: Formal ${{ matrix.skill }}
+    name: Formal
     if: inputs.formal-checks != '' && inputs.formal-checks != '[]'
     runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 60
@@ -820,8 +820,8 @@ jobs:
           exit "$status"
 
   gate:
-    name: ${{ needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly) && 'gate' || 'checks' }}
-    if: ${{ !cancelled() && !(needs.windows.result == 'skipped' && inputs.single-job && (inputs.formal-checks == '' || inputs.formal-checks == '[]') && inputs.services-compose-file == '' && !(inputs.extra-commands-job && inputs.extra-commands != '') && !fromJSON(inputs.node-versions || '[""]')[1] && github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.nightly)) }}
+    name: checks
+    if: ${{ !cancelled() }}
     needs: [windows, shards, node, stress, formal]
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
