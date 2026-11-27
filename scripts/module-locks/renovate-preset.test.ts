@@ -117,7 +117,7 @@ test("a 0.x minor of an AntelopeJS package or of the tooling configs group merge
 });
 
 test("a repository without a merge queue never merges on its own", async () => {
-  for (const repository of ["AntelopeJS/cloud", "AntelopeJS/antelope-web", "AntelopeJS/k8s-gitops-infra", "AntelopeJS/antelope-hardening", "AntelopeJS/antelope-compliance"]) {
+  for (const repository of ["AntelopeJS/cloud", "AntelopeJS/k8s-gitops-infra", "AntelopeJS/antelope-hardening", "AntelopeJS/antelope-compliance"]) {
     assert.equal((await rules({ ...testStack, repository, updateType: "patch", packageFile: "antelope.config.ts" })).automerge, false, repository);
     assert.equal((await rules({ repository, manager: "npm", depName: "vue", currentVersion: "3.4.0", updateType: "minor", packageFile: "package.json" })).automerge, false, repository);
   }

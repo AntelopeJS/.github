@@ -305,7 +305,7 @@ jobs:
             number=${url##*/}
           fi
           case "$GITHUB_REPOSITORY" in
-            AntelopeJS/cloud | AntelopeJS/antelope-web | AntelopeJS/k8s-gitops-infra | AntelopeJS/antelope-hardening | AntelopeJS/antelope-compliance) exit 0 ;;
+            AntelopeJS/cloud | AntelopeJS/k8s-gitops-infra | AntelopeJS/antelope-hardening | AntelopeJS/antelope-compliance) exit 0 ;;
           esac
           # shellcheck disable=SC2016
           enable=$(gh api graphql \
