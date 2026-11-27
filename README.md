@@ -942,7 +942,8 @@ does so in `cloud`, `k8s-gitops-infra`, `antelope-hardening` and
 `antelope-compliance`, the repositories the Renovate preset leaves to a person.
 A pull request whose checks fail stays open. When nothing changed, it closes
 that pull request and deletes `antelopejs/module-locks`, or deletes the branch
-alone when a person closed its pull request unmerged. On a `pull_request` event it only refreshes and writes the
+alone when a person closed its pull request unmerged; a repository that calls
+[bot branch cleanup](#bot-branch-cleanup) deletes it at the close itself. On a `pull_request` event it only refreshes and writes the
 summary, as a dry run.
 
 `ajs` is the `node_modules/.bin/ajs` of the project folder or of the closest
@@ -1071,6 +1072,46 @@ The preset:
 - ignores the commits of `github-actions[bot]` on its branches.
 
 A repository's own `renovate.json` keeps only what is specific to it.
+
+## Bot branch cleanup
+
+GitHub deletes the head branch of a merged pull request and leaves the branch
+of one closed unmerged. Renovate deletes its own: Mend's hosted app within a
+minute or two of the close, the self-hosted one of `k8s-gitops-infra` on its
+next run. The [module locks refresh](#module-locks-refresh) deletes
+`antelopejs/module-locks` on its next daily run. Every other bot leaves its
+branch behind. The reusable `bot-branch-cleanup.yml` workflow deletes it at the
+close itself. Called on the `closed` type of `pull_request`, its job runs only
+when the pull request is not merged, its author is a GitHub App or a bot
+(`user.type` is `Bot`) and its head is a branch of the same repository, never
+a fork's. It then deletes the head branch with the caller's `GITHUB_TOKEN`. It
+leaves the branch alone, and says so in the job summary, when it is the default
+branch or the pull request's base, when it is already gone, when it moved since
+the pull request closed because a new push or a new pull request reuses it, when
+it is protected or a ruleset forbids its deletion, or when another pull request
+is open from it. A deletion GitHub refuses fails the job and names the
+permission the caller lacks. A branch deleted with `GITHUB_TOKEN` starts no
+other workflow.
+
+```yaml
+name: bot branch cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    permissions:
+      contents: write
+    uses: AntelopeJS/.github/.github/workflows/bot-branch-cleanup.yml@v2
+```
+
+The calling job grants `contents: write` and nothing else. The workflow takes no
+input and no secret.
 
 ## Trunk and the merge queue
 
