@@ -109,13 +109,13 @@ describe("release-npm.yml", () => {
     for (const mode of ["preview", "pull-request", "stable"]) assert.equal(runs("Push the stable ranges", mode), false, mode);
   });
 
-  test("the job runs on the caller's RUNNER_CI runner for a private or internal repository when it is set, and on ubuntu-latest otherwise, and always for a public one", () => {
+  test("the job runs on the caller's RUNNER_CI runner for a private or internal repository when it is set, and on Blacksmith otherwise, and on ubuntu-latest always for a public one", () => {
     const runsOn = /^ {4}runs-on: (.*)$/m.exec(text)?.[1] ?? "";
     const runner = (visibility: string, vars: JsonObject) => evaluate(runsOn, { github: { event: { repository: { visibility } } }, vars });
     assert.equal(runner("private", { RUNNER_CI: "antelope-ci" }), "antelope-ci");
     assert.equal(runner("internal", { RUNNER_CI: "antelope-ci" }), "antelope-ci");
-    assert.equal(runner("private", {}), "ubuntu-latest");
-    assert.equal(runner("private", { RUNNER_CI: "" }), "ubuntu-latest");
+    assert.equal(runner("private", {}), "blacksmith-4vcpu-ubuntu-2404");
+    assert.equal(runner("private", { RUNNER_CI: "" }), "blacksmith-4vcpu-ubuntu-2404");
     assert.equal(runner("public", { RUNNER_CI: "antelope-ci" }), "ubuntu-latest");
     assert.equal(runner("public", {}), "ubuntu-latest");
   });

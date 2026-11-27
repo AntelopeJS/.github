@@ -43,7 +43,7 @@ describe("ci-node.yml runners", () => {
       assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci-small", job);
       assert.equal(on(job, { RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: without a small lane, the pool as before`);
       assert.equal(on(job, { RUNNER_CI_SMALL: "", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: an empty variable is unset`);
-      assert.equal(on(job, {}), "ubuntu-latest", `${job}: a public repository sets nothing`);
+      assert.equal(on(job, {}), "blacksmith-4vcpu-ubuntu-2404", `${job}: a repository that sets nothing`);
     }
     for (const job of ["node", "stress"]) {
       assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job} runs a full install: never the small lane`);

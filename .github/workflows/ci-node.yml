@@ -56,7 +56,7 @@ on:
         default: 1
         type: number
       windows:
-        description: Also run the node jobs on windows-latest, in parallel with ubuntu-latest, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows, since we have no Windows runner of our own and GitHub bills their hosted minutes. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node jobs on Windows, in parallel with Linux, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
         type: boolean
       windows-merge-queue:
@@ -89,14 +89,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The four small jobs (windows, shards, checks, verdict) run a few seconds of shell and no install. They go to
-  # the caller's RUNNER_CI_SMALL scale set when that variable names one, else to RUNNER_CI like the Node legs,
-  # else to ubuntu-latest: a small lane with a warm runner answers them at once instead of queueing each
-  # behind the full-size legs of other runs. Set the variable per repository, as RUNNER_CI.
+  # The three small jobs (windows, shards, checks) run a few seconds of shell and no install. They go to the
+  # caller's RUNNER_CI_SMALL label when that variable names one, else to RUNNER_CI like the Node legs, else to
+  # Blacksmith's 4 vCPU Ubuntu 24.04 runner. Set the variables per repository.
   windows:
     name: Windows eligibility
     if: inputs.windows && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
-    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -114,7 +113,7 @@ jobs:
   shards:
     name: Extra shards
     if: inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards > 1
-    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -146,13 +145,11 @@ jobs:
     needs: [windows, shards]
     if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
     name: ${{ matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node' }} ${{ matrix.node-version || '.nvmrc' }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }}${{ matrix.os == 'windows-latest' && ' on Windows' || '' }}
-    # Linux legs on our runners when the CALLING repository's variable RUNNER_CI names a scale set (the
-    # private repositories: antelope-ci), and on GitHub's runners when RUNNER_CI is empty or unset (every
-    # public repository). Windows legs run only for a calling repository the API reports public, on
-    # GitHub's runners: no private or internal repository gets one, and a schedule payload carries no
-    # repository to read it from. Set RUNNER_CI per repository, never at organisation
-    # level: the runner group refuses public repositories, and their jobs would wait forever.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.RUNNER_CI || matrix.os }}
+    # Linux legs on Blacksmith's 4 vCPU Ubuntu 24.04 runner, Windows legs on its 4 vCPU Windows Server 2025
+    # runner, unless the CALLING repository's variable RUNNER_CI (Linux) or RUNNER_CI_WINDOWS (Windows) names
+    # another label. Windows legs run only for a calling repository the API reports public, and a schedule
+    # payload carries no repository to read it from.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404') || vars.RUNNER_CI_WINDOWS || 'blacksmith-4vcpu-windows-2025' }}
     permissions:
       contents: read
     strategy:
@@ -553,7 +550,7 @@ jobs:
     name: Stress
     needs: node
     if: ${{ !cancelled() && needs.node.outputs.tier == 'nightly' }}
-    runs-on: ${{ vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -681,7 +678,7 @@ jobs:
     # One reporting job, not two: each is a queue hop on the pool before a caller's own gate.
     if: ${{ !cancelled() }}
     needs: [windows, shards, node, stress]
-    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'ubuntu-latest' }}
+    runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
     defaults:
