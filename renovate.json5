@@ -57,7 +57,7 @@
     {
       description: "GitHub's auto-merge puts a green pull request in the merge queue; these repositories have no merge queue, so a person merges there",
       matchUpdateTypes: ['pin', 'pinDigest', 'digest', 'patch', 'minor'],
-      matchRepositories: ['!AntelopeJS/cloud', '!AntelopeJS/antelope-web', '!AntelopeJS/k8s-gitops-infra', '!AntelopeJS/antelope-hardening', '!AntelopeJS/antelope-compliance'],
+      matchRepositories: ['!AntelopeJS/cloud', '!AntelopeJS/k8s-gitops-infra', '!AntelopeJS/antelope-hardening', '!AntelopeJS/antelope-compliance'],
       automerge: true,
     },
     {

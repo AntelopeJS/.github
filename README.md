@@ -917,7 +917,7 @@ in `antelope.config.ts` and `package.json`, and the other files that changed.
 When the default branch has a merge queue, it turns on squash auto-merge on
 that pull request, unless auto-merge is already on or the pull request is
 already in the queue, so the queue merges it once its checks pass. It never
-does so in `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
+does so in `cloud`, `k8s-gitops-infra`, `antelope-hardening` and
 `antelope-compliance`, the repositories the Renovate preset leaves to a person.
 A pull request whose checks fail stays open. When nothing changed, it closes
 that pull request. On a `pull_request` event it only refreshes and writes the
@@ -1034,7 +1034,7 @@ The preset:
   does a 0.x minor of an `@antelopejs` package, an `AntelopeJS/*` action or
   the tooling configs group, whose checks cover the bump; `oxfmt` and `oxlint`
   still wait out the three days of a third-party release. Every update in
-  `cloud`, `antelope-web`, `k8s-gitops-infra`, `antelope-hardening` and
+  `cloud`, `k8s-gitops-infra`, `antelope-hardening` and
   `antelope-compliance` stays manual, since they have no merge queue. A third-party release waits
   three days before such an update opens; an `@antelopejs` one does not;
 - reads the module versions that `antelope.config.ts`, `antelope.test.ts`,
