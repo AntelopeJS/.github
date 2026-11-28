@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
@@ -9,13 +10,15 @@ import { git, repoFile, runStep, write } from "./helpers/workflow.ts";
 const renovateSync = repoFile(".github/workflows/ci-renovate-sync.yml");
 const DETECT = "Detect a dependency bump";
 const SYNC = "Run antelopejs-sync and the format script";
+const APPLY = "Apply the sync output";
+
+const renovateBranch = (dir: string, files: Record<string, string>): void => {
+  git(dir, "checkout", "-qb", "renovate/bump");
+  write(dir, files);
+  git(dir, "commit", "-qam", "chore(deps): bump");
+};
 
 describe("ci-renovate-sync.yml", () => {
-  const renovateBranch = (dir: string, files: Record<string, string>): void => {
-    git(dir, "checkout", "-qb", "renovate/bump");
-    write(dir, files);
-    git(dir, "commit", "-qam", "chore(deps): bump");
-  };
 
   test("syncs a bump that only moves a lockfile, such as a patch of @antelopejs/core", () => {
     const dir = syncRepository("antelopejs-sync", "README.md");
@@ -119,18 +122,6 @@ describe("ci-renovate-sync.yml", () => {
     assert.equal(runs("merge_group", "renovate/oxfmt", "AntelopeJS/app"), false);
   });
 
-  test("pushes nothing when the format script touches a workflow", () => {
-    const dir = syncRepository(undefined, "AGENTS.md");
-    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { format: "mkdir -p .github/workflows && echo x > .github/workflows/ci.yml" } })}\n` });
-    git(dir, "commit", "-qam", "format script");
-
-    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
-
-    assert.notEqual(sync.status, 0);
-    assert.match(sync.stdout, /::error::The sync output changes workflow paths/);
-    assert.equal(sync.outputs.changed, undefined);
-  });
-
   test("changes nothing in a repository without a sync script", () => {
     const sync = runStep(renovateSync, SYNC, syncRepository(undefined, "AGENTS.md"), SYNC_PATH);
 
@@ -138,11 +129,67 @@ describe("ci-renovate-sync.yml", () => {
     assert.equal(sync.outputs.changed, undefined);
   });
 
-  test("pushes nothing when the sync output touches a workflow", () => {
-    const sync = runStep(renovateSync, SYNC, syncRepository("antelopejs-sync", ".github/workflows/release.yml"), SYNC_PATH);
+  test("hands the sync output to the push job as a patch, workflow files included", () => {
+    const dir = syncRepository("antelopejs-sync", ".github/workflows/release.yml");
 
-    assert.notEqual(sync.status, 0);
-    assert.match(sync.stdout, /::error::The sync output changes workflow paths/);
-    assert.equal(sync.outputs.changed, undefined);
+    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+    assert.equal(sync.status, 0, sync.stdout);
+    assert.equal(sync.outputs.changed, "true");
+    assert.match(readText(join(sync.temp, "renovate-sync.patch")), /\+\+\+ b\/\.github\/workflows\/release\.yml/);
+  });
+});
+
+describe("ci-renovate-sync.yml push job", () => {
+  const pushCheckout = (bump: Record<string, string>, synced: Record<string, string>) => {
+    const dir = syncRepository(undefined, "AGENTS.md");
+    renovateBranch(dir, bump);
+    write(dir, synced);
+    git(dir, "add", "-A");
+    const patch = join(dir, "..", `${dir.split("/").pop()}.patch`);
+    writeFileSync(patch, `${git(dir, "diff", "--cached", "--binary")}\n`);
+    git(dir, "reset", "-q", "--hard");
+    return { dir, patch };
+  };
+  const toolingBump = { "package.json": `${JSON.stringify({ name: "app", devDependencies: { "@antelopejs/tooling-configs": "0.10.12" } }, undefined, 2)}\n` };
+  const otherBump = { "package.json": `${JSON.stringify({ name: "app", devDependencies: { oxfmt: "0.40.0" } }, undefined, 2)}\n` };
+  const workflow = { ".github/workflows/ci.yml": "name: ci\n" };
+
+  test("applies a workflow change of a @antelopejs/tooling-configs bump when the app token pushes", () => {
+    const { dir, patch } = pushCheckout(toolingBump, workflow);
+
+    const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: "true", PATCH: patch, BASE_REF: "main" });
+
+    assert.equal(apply.status, 0, apply.stdout);
+    assert.equal(git(dir, "diff", "--cached", "--name-only"), ".github/workflows/ci.yml");
+  });
+
+  test("refuses a workflow change of any other bump, and names the file", () => {
+    const { dir, patch } = pushCheckout(otherBump, workflow);
+
+    const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: "true", PATCH: patch, BASE_REF: "main" });
+
+    assert.notEqual(apply.status, 0);
+    assert.match(apply.stdout, /::error::The sync output changes \.github\/workflows\/ci\.yml, and only a bump of @antelopejs\/tooling-configs may change workflow paths/);
+  });
+
+  test("refuses a workflow change without the app token, so the pull request stays One-tap", () => {
+    const { dir, patch } = pushCheckout(toolingBump, workflow);
+
+    const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: "", PATCH: patch, BASE_REF: "main" });
+
+    assert.notEqual(apply.status, 0);
+    assert.match(apply.stdout, /::error::The sync output changes workflow paths/);
+  });
+
+  test("applies a sync output outside workflow paths with either token", () => {
+    for (const token of ["true", ""]) {
+      const { dir, patch } = pushCheckout(otherBump, { "AGENTS.md": "synced\n" });
+
+      const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: token, PATCH: patch, BASE_REF: "main" });
+
+      assert.equal(apply.status, 0, apply.stdout);
+      assert.equal(git(dir, "diff", "--cached", "--name-only"), "AGENTS.md");
+    }
   });
 });
