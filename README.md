@@ -564,7 +564,7 @@ compared with.
 | `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
 | Push to the default branch | `none` | none | none: the first Linux job installs the dependencies when the pnpm store of its lockfile is not saved yet, and saves it; `ci / checks` succeeds unless that install fails |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
-| `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` |
+| `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` on the Sunday `schedule` run (UTC), the night of Saturday to Sunday, and on every `workflow_dispatch` with `nightly` |
 | Any other `workflow_dispatch`, and any other event | `full` | none | as `full` |
 
 A root file is a file at the repository root other than a `*.md` file, a
@@ -602,7 +602,8 @@ A test script must run its share of the tests when `ANTELOPEJS_CI_SHARD` is set
 to `<i>/<n>`, and everything when it is unset.
 
 On Windows, the job name ends with ` on Windows`. The jobs run on Linux, also on
-Windows in the `nightly` tier when `windows` is set, and with
+Windows in the `nightly` tier of the Sunday `schedule` run and of a
+`workflow_dispatch` with `nightly` when `windows` is set, and with
 `windows-merge-queue` also in the `queue` tier and on manual runs. A pull request
 never runs on Windows, and neither does a private or internal repository.
 
@@ -653,7 +654,8 @@ in a code span. Nothing is filed anywhere else. A scan of the check run
 annotations of the repository is the machine-readable signal. A pull request or
 a nightly run never retries a failed test or failed `extra-commands`.
 
-In the `nightly` tier only, after the Node.js jobs, the `Stress` job looks for
+In the `nightly` tier of the Sunday `schedule` run and of a `workflow_dispatch`
+with `nightly` only, after the Node.js jobs, the `Stress` job looks for
 tests that pass alone but time out under load. On Linux, with the first
 `node-versions` entry or `.nvmrc`, it installs, runs `setup-commands`,
 `checks:prepare` and `typecheck`, starts the services, then runs `pnpm run test`
@@ -733,12 +735,12 @@ It accepts these optional inputs:
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. The gate needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
 | `test-shards` | `1` | Run the tests in this many jobs, `Test <version> 1/<n>` to `Test <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>` on the test step. The test script must run its share when `ANTELOPEJS_CI_SHARD` is set and everything when it is unset. Above `1`, `Node <version>` runs only the checks, even with `single-job`, so nothing runs twice. Each job keeps the merge queue's one retry, the flaky annotation, the fast-tier test selection and the skip of a documentation-only pull request. The gate needs every job. `1` keeps today's jobs and leaves `ANTELOPEJS_CI_SHARD` unset. |
-| `windows` | `true` | Also run the jobs on Windows, in parallel with Linux, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
+| `windows` | `true` | Also run the jobs on Windows, in parallel with Linux, in the `nightly` tier of the Sunday `schedule` run (UTC) and of a `workflow_dispatch` with `nightly`, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows and Stress eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
 | `module-locks` | `false` | After the install, tests and `extra-commands` of each job, run the [module locks committed](#module-locks-committed) action: the job fails when it wrote an `antelope-lock/` file that is not committed, and on a Renovate pull request it uploads what it wrote. Pass `true` in a repository that commits an `antelope-lock/` folder. |
 | `affected-tests` | `false` | In the `fast` tier, run only the tests the pull request can affect. In a pnpm workspace, that is the `test` script of each package changed since the diff base and of its dependents, or the root `test` script whole when a file outside the packages changes. In a single package whose `test` script is one `vitest` or `jest` command, that command runs with its changed-file option. Any other `test` script runs whole. The `queue`, `full` and `nightly` tiers always run the whole suite. |
-| `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress`, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
+| `nightly` | `false` | On a `workflow_dispatch` run, run the `nightly` tier instead of `full`, with the Windows jobs and `Stress` whatever the day, so a fix to a nightly failure can be proven on a branch. A caller forwards the `nightly` input of its own `workflow_dispatch` trigger, as in [the verdict of a caller](#the-verdict-of-a-caller). Any other event ignores it. |
 | `formal-checks` | `""` | JSON array of the formal checks to run, each in a `Formal (<skill>, …)` job that the `gate` job needs. See [Formal checks](#formal-checks). Empty or `[]` runs none. |
 
 It declares one optional secret, `NOTION_TOKEN`, which is deprecated and
@@ -750,8 +752,8 @@ The `gate` job, named `checks`, is the one reporting job of the run, the check
 `ci / checks` that every ruleset requires and the result the merge queue waits
 for. It needs every other job, runs with `if: ${{ !cancelled() }}` whatever
 they ended with, and fails, naming them, when any job failed or was cancelled,
-when `node` did not succeed, and in the `nightly` tier when `Stress` did not
-succeed. The leg that runs the checks on the first `node-versions` entry, on
+when `node` did not succeed, and in a `nightly` tier that runs `Stress` when
+`Stress` did not succeed. The leg that runs the checks on the first `node-versions` entry, on
 Linux, checks that a pull request's title uses Conventional Commits.
 
 Every job that a run can skip has a constant `name`: GitHub never evaluates the
@@ -760,7 +762,7 @@ name of a skipped job and shows its expression as is, such as
 something else when it skips, so the gate runs in every run that is not
 cancelled. A matrix job with a constant name gets its matrix values appended,
 as in `Formal (formal-a)`. The `node` legs keep their `Node <version>` names,
-an expression, because a leg skips only after `Windows eligibility` or
+an expression, because a leg skips only after `Windows and Stress eligibility` or
 `Extra shards` failed, or in a run that was cancelled before it started, and
 the gate then fails or ends cancelled. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
@@ -790,7 +792,7 @@ The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
 `blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
 variable names another runner label. A reusable workflow reads the caller's
 variables, so one variable switches a repository to another runner. The three
-small jobs, `Windows eligibility`, `Extra shards` and the gate, run a few
+small jobs, `Windows and Stress eligibility`, `Extra shards` and the gate, run a few
 seconds of shell and install nothing: they go to the label the caller's
 `RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
 own gate and tier jobs can read the same variables. The Windows legs run only

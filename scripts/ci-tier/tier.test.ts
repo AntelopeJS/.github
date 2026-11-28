@@ -9,6 +9,7 @@ import {
   actionOutputs,
   checkout,
   ciNode,
+  dayPath,
   fakeEnv,
   git,
   leg,
@@ -25,7 +26,7 @@ import {
   succeeded,
 } from "./helpers/harness.ts";
 import { readText } from "./helpers/read.ts";
-import { type Context, block, interpolateAll, keyed, keys, scope, step } from "./helpers/workflow.ts";
+import { type Context, block, interpolateAll, keyed, keys, mapping, scope, step, stepOutputs } from "./helpers/workflow.ts";
 
 const BASE = "<the checkout's base commit>";
 const nightly = scope("inputs", { nightly: "true" });
@@ -348,6 +349,34 @@ describe("the affected tests", () => {
       const { run, calls } = runPullRequestTests(workspace(`affected-full-${index}`, ["packages/a/src/index.js"]), github, affectedTests);
       assert.deepEqual(calls, ["root"]);
       assert.equal(run.summary, "", "the summary names no command when the whole suite runs");
+    });
+  });
+});
+
+describe("the Windows legs and Stress", () => {
+  const job = block(ciNode, ciNode.indexOf("  eligibility:"));
+  const pick = step(job, "Pick the Windows legs and Stress from the event, the day and the repository visibility");
+  const monday = 1;
+  const saturday = 6;
+  const sunday = 7;
+  const cases = [
+    { name: "a weeknight schedule run skips both", github: other("schedule", "main"), day: monday, visibility: "public", expected: { windows: "false", stress: "false" }, readsVisibility: false },
+    { name: "the Saturday schedule run skips both", github: other("schedule", "main"), day: saturday, visibility: "public", expected: { windows: "false", stress: "false" }, readsVisibility: false },
+    { name: "the Sunday schedule run of a public repository runs both", github: other("schedule", "main"), day: sunday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
+    { name: "the Sunday schedule run of a private repository runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "private", expected: { windows: "false", stress: "true" }, readsVisibility: true },
+    { name: "the Sunday schedule run with windows false runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "public", windows: "false", expected: { windows: "false", stress: "true" }, readsVisibility: false },
+    { name: "a workflow_dispatch with nightly on a weekday runs both", github: () => ({ ...other("workflow_dispatch", "fix/x")(), ...nightly }), day: monday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
+    { name: "a merge group on a weekday keeps its Windows legs", github: mergeGroup, day: monday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
+  ];
+  cases.forEach(({ name, github, day, visibility, windows = "true", expected, readsVisibility }, index) => {
+    test(name, () => {
+      const dir = mkdtempSync(join(root, `eligibility-${index}-`));
+      const log = join(dir, "gh.log");
+      writeFileSync(log, "");
+      const context = { ...github(""), ...scope("inputs", { windows }) };
+      const { outputs } = succeeded(runStep(pick, dir, { ...interpolateAll(pick.env, context), PATH: dayPath(day), GITHUB_REPOSITORY: "AntelopeJS/example", FAKE_GH_VISIBILITY: visibility, FAKE_GH_LOG: log }));
+      assert.deepEqual(interpolateAll(mapping(keyed(job, "outputs")), stepOutputs(pick, outputs)), expected);
+      assert.equal(readText(log) !== "", readsVisibility);
     });
   });
 });

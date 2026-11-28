@@ -32,7 +32,7 @@ describe("ci-node.yml runners", () => {
   test("the small jobs take the caller's RUNNER_CI_SMALL lane before RUNNER_CI, and the legs and Stress keep RUNNER_CI", () => {
     const runsOn = (job: string): string => /^ {4}runs-on: (.*)$/m.exec(jobText(job))?.[1] ?? "";
     const on = (job: string, vars: JsonObject): Evaluated => evaluate(runsOn(job), { vars, matrix: { os: "ubuntu-latest" } });
-    for (const job of ["windows", "shards", "gate"]) {
+    for (const job of ["eligibility", "shards", "gate"]) {
       assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci-small", job);
       assert.equal(on(job, { RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: without a small lane, the pool as before`);
       assert.equal(on(job, { RUNNER_CI_SMALL: "", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: an empty variable is unset`);
@@ -50,7 +50,7 @@ describe("ci-node.yml verdict", () => {
   test("the gate is the job named checks: it needs every other job, runs unless the run was cancelled, and there is no verdict job after it", () => {
     assert.doesNotMatch(ciNode, /^ {2}verdict:$/m, "a second reporting job is a second queue hop on the pool for a run that is already decided");
     assert.equal(key("gate", "name"), "checks", "every ruleset requires ci / checks");
-    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress, formal\]$/m, "the gate waits for every other job");
+    assert.match(jobText("gate"), /^ {4}needs: \[eligibility, shards, node, stress, formal\]$/m, "the gate waits for every other job");
     assert.equal(key("gate", "if"), "${{ !cancelled() }}", "not always(): a job that runs after a cancel waits for a runner of the pool");
     const fail = stepOf(ciNode, "Fail when a job failed, was cancelled or did not run");
     assert.match(fail, /NEEDS: \$\{\{ toJSON\(needs\) \}\}/, "the step reads every need's result and names the failed ones");
@@ -58,12 +58,12 @@ describe("ci-node.yml verdict", () => {
 
   test("a job that a run can skip has a constant name, which GitHub shows as is, and only the gate is named checks", () => {
     const jobs = [...ciNode.slice(ciNode.indexOf("\njobs:\n")).matchAll(/^ {2}([\w-]+):$/gm)].map(([, id]) => id ?? "");
-    assert.deepEqual(jobs, ["windows", "shards", "node", "stress", "formal", "gate"]);
+    assert.deepEqual(jobs, ["eligibility", "shards", "node", "stress", "formal", "gate"]);
     for (const job of jobs.filter((id) => id !== "node")) {
       assert.doesNotMatch(key(job, "name"), /\$\{\{/, `${job}: GitHub never evaluates the name of a skipped job, and shows its expression`);
       assert.ok(job === "gate" || key(job, "name") !== "checks", `${job} would report a second ci / checks`);
     }
-    assert.equal(key("node", "if"), "${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}", "a leg skips only in a run that a failed need already fails, or in a cancelled run");
+    assert.equal(key("node", "if"), "${{ !cancelled() && needs.eligibility.result != 'failure' && needs.shards.result != 'failure' }}", "a leg skips only in a run that a failed need already fails, or in a cancelled run");
     const names = ["ubuntu-latest", "windows-latest"].flatMap((os) => ["", "24"].flatMap((version) => ["all", "checks", "test", "extra"].flatMap((part) => ["", "1/2"].map((shard) =>
       evaluate(key("node", "name"), { matrix: { os, "node-version": version, part, shard } })))));
     assert.ok(names.includes("Node .nvmrc") && names.includes("Test 24 on Windows") && names.includes("Extra .nvmrc 1/2"), JSON.stringify(names));
@@ -72,51 +72,97 @@ describe("ci-node.yml verdict", () => {
 });
 
 describe("ci-node.yml", () => {
-  test("Windows legs join the matrix only for a repository the API reports public, in the nightly tier and, with windows-merge-queue, in the merge queue and manual runs", () => {
-    const gate = /^ {4}if: (.*)$/m.exec(jobText("windows"))?.[1] ?? "";
+  const pickStep = "Pick the Windows legs and Stress from the event, the day and the repository visibility";
+  const fakes = (weekday: number) => {
+    const bin = join(root, `eligibility-bin-${weekday}`);
+    mkdirSync(bin, { recursive: true });
+    const log = join(bin, "gh.log");
+    writeFileSync(join(bin, "gh"), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n[ -n "$FAKE_VISIBILITY" ] || exit 1\necho "$FAKE_VISIBILITY"\n');
+    writeFileSync(join(bin, "date"), `#!/usr/bin/env bash\n[ "$*" = "-u +%u" ] || exit 1\necho ${weekday}\n`);
+    chmodSync(join(bin, "gh"), 0o755);
+    chmodSync(join(bin, "date"), 0o755);
+    return { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log, GITHUB_REPOSITORY: "AntelopeJS/x" }, log };
+  };
+  const monday = 1;
+  const sunday = 7;
+
+  type Caller = { windows: boolean; "windows-merge-queue": boolean; "windows-pull-requests": boolean; nightly: boolean };
+  interface Case {
+    visibility: string;
+    event: string;
+    weekday: number;
+    inputs: Caller;
+  }
+  interface Plan {
+    os: Evaluated;
+    stress: boolean;
+    checks: boolean;
+  }
+  const callers: Caller[] = [[true, false, false, false], [true, true, false, false], [true, false, true, false], [true, true, true, false], [true, false, false, true], [false, true, false, false], [false, false, false, true], [false, false, false, false]]
+    .map(([windows = false, queue = false, pullRequests = false, nightly = false]) => ({ windows, "windows-merge-queue": queue, "windows-pull-requests": pullRequests, nightly }));
+  const cases: Case[] = ["public", "private", "internal"].flatMap((visibility) =>
+    ["schedule", "merge_group", "workflow_dispatch", "pull_request", "push"].flatMap((event) =>
+      [monday, sunday].flatMap((weekday) => callers.map((inputs) => ({ visibility, event, weekday, inputs })))));
+
+  const expectedPlan = ({ visibility, event, weekday, inputs }: Case): Plan => {
+    const manual = event === "merge_group" || event === "workflow_dispatch";
+    const weekly = (event === "schedule" && weekday === sunday) || (event === "workflow_dispatch" && inputs.nightly);
+    const windowsLegs = inputs.windows && (weekly || (manual && (inputs["windows-merge-queue"] || inputs["windows-pull-requests"])));
+    return { os: visibility === "public" && windowsLegs ? ["ubuntu-latest", "windows-latest"] : ["ubuntu-latest"], stress: weekly, checks: true };
+  };
+
+  const workflowPlan = ({ visibility, event, weekday, inputs }: Case): Plan => {
+    const gate = /^ {4}if: (.*)$/m.exec(jobText("eligibility"))?.[1] ?? "";
     const matrix = /^ {8}os: (.*)$/m.exec(jobText("node"))?.[1] ?? "";
-    assert.doesNotMatch(matrix, /github\.event\.repository/, "a schedule payload carries no repository");
-    const os = (visibility: string, event: string, inputs: JsonObject): Evaluated => {
-      const github = { event_name: event, event: {} };
-      const ran = evaluate(gate, { github, inputs }) === true;
-      return evaluate(matrix, { github, inputs, needs: { windows: { outputs: { visibility: ran ? visibility : "" } } } });
-    };
-    const events = ["schedule", "merge_group", "workflow_dispatch", "pull_request", "push"];
-    for (const visibility of ["public", "private", "internal"]) {
-      for (const event of events) {
-        for (const [windows, queue, pullRequests, nightly] of [[true, false, false, false], [true, true, false, false], [true, false, true, false], [true, true, true, false], [true, false, false, true], [false, true, false, false], [false, false, false, true], [false, false, false, false]]) {
-          const inputs = { windows, "windows-merge-queue": queue, "windows-pull-requests": pullRequests, nightly };
-          const manual = event === "merge_group" || event === "workflow_dispatch";
-          const before = windows && (event === "schedule" || (event === "workflow_dispatch" && nightly) || (manual && (queue || pullRequests)));
-          const expected = visibility === "public" && before ? ["ubuntu-latest", "windows-latest"] : ["ubuntu-latest"];
-          assert.deepEqual(os(visibility, event, inputs), expected, `${visibility} ${event} ${JSON.stringify(inputs)}`);
-        }
-      }
+    const stress = /^ {4}if: (.*)$/m.exec(jobText("stress"))?.[1] ?? "";
+    const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
+    const github = { event_name: event, event: {} };
+    const ran = evaluate(gate, { github, inputs }) === true;
+    const picked = ran ? runStep(ciNode, pickStep, root, { ...fakes(weekday).env, FAKE_VISIBILITY: visibility, EVENT: event, WINDOWS: String(inputs.windows) }) : undefined;
+    assert.equal(picked?.status ?? 0, 0, picked?.stderr);
+    const outputs = Object.fromEntries((picked?.outputs ?? "").split("\n").filter((line) => line !== "").map((line): [string, string] => {
+      const [name = "", value = ""] = line.split("=");
+      return [name, value];
+    }));
+    const tier = event === "schedule" || (event === "workflow_dispatch" && inputs.nightly) ? "nightly" : "full";
+    const needs = { eligibility: { result: ran ? "success" : "skipped", outputs }, node: { result: "success", outputs: { tier } } };
+    const stressRuns = evaluate(stress.replace(/!cancelled\(\)/g, "true"), { needs }) === true;
+    const stressResult = stressRuns ? "success" : "skipped";
+    const results = ["skipped", "skipped", "success", stressResult, "skipped"];
+    const checks = evaluate(fail.replaceAll("needs.*.result", JSON.stringify(results)), { needs: { ...needs, stress: { result: stressResult } } }) !== true;
+    return { os: evaluate(matrix, { github, inputs, needs }), stress: stressRuns, checks };
+  };
+
+  test("Windows legs join the matrix only for a repository the API reports public, in the Sunday and dispatched nightly tier and, with windows-merge-queue, in the merge queue and manual runs; Stress runs in the Sunday and dispatched nightly tier", () => {
+    assert.doesNotMatch(/^ {8}os: (.*)$/m.exec(jobText("node"))?.[1] ?? "", /github\.event\.repository/, "a schedule payload carries no repository");
+    for (const run of cases) {
+      assert.deepEqual(workflowPlan(run), expectedPlan(run), `${run.visibility} ${run.event} day ${run.weekday} ${JSON.stringify(run.inputs)}`);
     }
   });
 
-  test("the Windows gate reads the visibility with one API call and fails when the call fails", () => {
-    const bin = join(root, "windows-gate-bin");
-    mkdirSync(bin, { recursive: true });
-    const log = join(root, "windows-gate-gh.log");
-    writeFileSync(join(bin, "gh"), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n[ -n "$FAKE_VISIBILITY" ] || exit 1\necho "$FAKE_VISIBILITY"\n');
-    chmodSync(join(bin, "gh"), 0o755);
-    const env = { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log, GITHUB_REPOSITORY: "AntelopeJS/x" };
-    for (const visibility of ["public", "private"]) {
+  test("the eligibility job reads the visibility with one API call only when Windows may run, and fails when the call fails", () => {
+    const run = (weekday: number, event: string, visibility: string) => {
+      const { env, log } = fakes(weekday);
       writeFileSync(log, "");
-      const result = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: visibility });
+      return { ...runStep(ciNode, pickStep, root, { ...env, FAKE_VISIBILITY: visibility, EVENT: event, WINDOWS: "true" }), calls: readText(log) };
+    };
+    for (const visibility of ["public", "private"]) {
+      const result = run(sunday, "schedule", visibility);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.outputs, `visibility=${visibility}\n`);
-      assert.equal(readText(log), "api repos/AntelopeJS/x --jq .visibility\n");
+      assert.equal(result.outputs, `windows=${visibility === "public"}\nstress=true\n`);
+      assert.equal(result.calls, "api repos/AntelopeJS/x --jq .visibility\n");
     }
-    const failed = runStep(ciNode, "Read the repository visibility", root, { ...env, FAKE_VISIBILITY: "" });
+    const weeknight = run(monday, "schedule", "public");
+    assert.equal(weeknight.outputs, "windows=false\nstress=false\n");
+    assert.equal(weeknight.calls, "", "a weeknight runs no Windows leg, so it reads nothing");
+    const failed = run(sunday, "schedule", "");
     assert.notEqual(failed.status, 0);
     assert.equal(failed.outputs, "");
   });
 
-  test("a failed Windows gate fails the run instead of dropping the Windows legs", () => {
-    assert.match(jobText("node"), /^ {4}needs: \[windows, shards\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.windows\.result != 'failure' && needs\.shards\.result != 'failure' \}\}$/m);
-    assert.match(jobText("gate"), /^ {4}needs: \[windows, shards, node, stress, formal\]$/m);
+  test("a failed eligibility job fails the run instead of dropping the Windows legs", () => {
+    assert.match(jobText("node"), /^ {4}needs: \[eligibility, shards\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.eligibility\.result != 'failure' && needs\.shards\.result != 'failure' \}\}$/m);
+    assert.match(jobText("gate"), /^ {4}needs: \[eligibility, shards, node, stress, formal\]$/m);
   });
 
   test("a newer run of the same pull request cancels the older run whole, and any cancelled run's checks end cancelled instead of failing", () => {
@@ -134,7 +180,7 @@ describe("ci-node.yml", () => {
     const gate = /^ {4}if: (.*)$/m.exec(jobText("gate"))?.[1] ?? "";
     const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
     const checks = (event: string, runCancelled: boolean, node: string): string => {
-      const results = { windows: "skipped", shards: "skipped", node, stress: "skipped", formal: "skipped" };
+      const results = { eligibility: "skipped", shards: "skipped", node, stress: "skipped", formal: "skipped" };
       const status = (expression: string): string => expression.replace(/\bcancelled\(\)/g, String(runCancelled)).replaceAll("needs.*.result", JSON.stringify(Object.values(results)));
       const needs = Object.fromEntries(Object.entries(results).map(([job, result]) => [job, { result, outputs: { tier: "fast" } }]));
       if (evaluate(status(gate), { github: { event_name: event } }) !== true) return "cancelled";
@@ -316,7 +362,7 @@ describe("ci-node.yml formal checks", () => {
   test("checks needs every Formal leg, so a failing formal check blocks the merge", () => {
     const fail = /^ {8}if: (.*)$/m.exec(stepOf(ciNode, "Fail when a job failed, was cancelled or did not run"))?.[1] ?? "";
     const fails = (result: string): boolean => {
-      const results = { windows: "skipped", shards: "skipped", node: "success", stress: "skipped", formal: result };
+      const results = { eligibility: "skipped", shards: "skipped", node: "success", stress: "skipped", formal: result };
       const needs = Object.fromEntries(Object.entries(results).map(([job, value]) => [job, { result: value, outputs: { tier: "queue" } }]));
       return evaluate(fail.replaceAll("needs.*.result", JSON.stringify(Object.values(results))), { needs }) === true;
     };

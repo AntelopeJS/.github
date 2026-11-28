@@ -60,11 +60,11 @@ on:
         default: 1
         type: number
       windows:
-        description: Also run the node jobs on Windows, in parallel with Linux, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
+        description: Also run the node jobs on Windows, in parallel with Linux, in the nightly tier of the Sunday schedule run (UTC) and of a workflow_dispatch with nightly, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
         type: boolean
       windows-merge-queue:
-        description: With windows, also run the Windows jobs in the merge queue and on manual runs, not only in the nightly tier
+        description: With windows, also run the Windows jobs in the merge queue and on manual runs, not only in the Sunday and dispatched nightly tier
         default: false
         type: boolean
       windows-pull-requests:
@@ -80,7 +80,7 @@ on:
         default: false
         type: boolean
       nightly:
-        description: On a workflow_dispatch run, run the nightly tier instead of full, with the Windows jobs and Stress, so a fix to a nightly failure can be proven on a branch; the caller forwards the nightly input of its own workflow_dispatch trigger
+        description: On a workflow_dispatch run, run the nightly tier instead of full, with the Windows jobs and Stress whatever the day, so a fix to a nightly failure can be proven on a branch; the caller forwards the nightly input of its own workflow_dispatch trigger
         default: false
         type: boolean
       formal-checks:
@@ -97,26 +97,42 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The three small jobs (windows, shards, gate) run a few seconds of shell and no install. They go to the
+  # The three small jobs (eligibility, shards, gate) run a few seconds of shell and no install. They go to the
   # caller's RUNNER_CI_SMALL label when that variable names one, else to RUNNER_CI like the Node legs, else to
   # Blacksmith's 4 vCPU Ubuntu 24.04 runner. Set the variables per repository.
-  windows:
-    name: Windows eligibility
-    if: inputs.windows && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) || ((github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests)))
+  eligibility:
+    name: Windows and Stress eligibility
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly) || (inputs.windows && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && (inputs.windows-merge-queue || inputs.windows-pull-requests))
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      visibility: ${{ steps.visibility.outputs.visibility }}
+      windows: ${{ steps.pick.outputs.windows }}
+      stress: ${{ steps.pick.outputs.stress }}
     steps:
-      - name: Read the repository visibility
-        id: visibility
+      - name: Pick the Windows legs and Stress from the event, the day and the repository visibility
+        id: pick
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          WINDOWS: ${{ inputs.windows }}
         run: |
-          visibility=$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
-          echo "visibility=$visibility" >> "$GITHUB_OUTPUT"
+          weekly=true
+          if [[ "$EVENT" == schedule && "$(date -u +%u)" != 7 ]]; then
+            weekly=false
+          fi
+          windows=false
+          if [[ "$WINDOWS" == true && "$weekly" == true ]]; then
+            visibility=$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)
+            if [[ "$visibility" == public ]]; then
+              windows=true
+            fi
+          fi
+          {
+            echo "windows=${windows}"
+            echo "stress=${weekly}"
+          } >> "$GITHUB_OUTPUT"
 
   shards:
     name: Extra shards
@@ -156,8 +172,8 @@ jobs:
           ' >> "$GITHUB_OUTPUT"
 
   node:
-    needs: [windows, shards]
-    if: ${{ !cancelled() && needs.windows.result != 'failure' && needs.shards.result != 'failure' }}
+    needs: [eligibility, shards]
+    if: ${{ !cancelled() && needs.eligibility.result != 'failure' && needs.shards.result != 'failure' }}
     name: ${{ format('{0} {1}{2}{3}', matrix.part == 'test' && 'Test' || matrix.part == 'extra' && 'Extra' || 'Node', matrix.node-version || '.nvmrc', matrix.shard && format(' {0}', matrix.shard) || '', matrix.os == 'windows-latest' && ' on Windows' || '') }}
     # Linux legs on Blacksmith's 4 vCPU Ubuntu 24.04 runner, Windows legs on its 4 vCPU Windows Server 2025
     # runner, unless the CALLING repository's variable RUNNER_CI (Linux) or RUNNER_CI_WINDOWS (Windows) names
@@ -169,7 +185,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.windows.outputs.visibility == 'public' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.eligibility.outputs.windows == 'true' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
         part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && inputs.test-shards <= 1 && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
         shard: ${{ fromJSON(needs.shards.outputs.shards || '[""]') }}
@@ -609,8 +625,8 @@ jobs:
 
   stress:
     name: Stress
-    needs: node
-    if: ${{ !cancelled() && needs.node.outputs.tier == 'nightly' }}
+    needs: [eligibility, node]
+    if: ${{ !cancelled() && needs.node.outputs.tier == 'nightly' && needs.eligibility.outputs.stress == 'true' }}
     runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 120
     permissions:
@@ -834,7 +850,7 @@ jobs:
   gate:
     name: checks
     if: ${{ !cancelled() }}
-    needs: [windows, shards, node, stress, formal]
+    needs: [eligibility, shards, node, stress, formal]
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
@@ -843,7 +859,7 @@ jobs:
         shell: bash
     steps:
       - name: Fail when a job failed, was cancelled or did not run
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.node.result != 'success' || (needs.node.outputs.tier == 'nightly' && needs.stress.result != 'success')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || needs.node.result != 'success' || (needs.node.outputs.tier == 'nightly' && needs.eligibility.outputs.stress == 'true' && needs.stress.result != 'success')
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
