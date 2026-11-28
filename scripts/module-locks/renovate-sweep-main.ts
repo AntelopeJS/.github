@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { isList, isNumber, isObject, isText, parseJson, type Json } from "../ci-metrics/json.ts";
 import { moveOf, parsePull, tickRebase, type RenovatePull } from "./renovate-sweep.ts";
 
@@ -27,17 +27,16 @@ const SEARCH = `query($search: String!, $cursor: String) {
   }
 }`;
 
-/** Room for a page of Renovate bodies, each up to 65536 characters: Node's default of 1 MiB cut a page of 50 short. */
+/** Room for any page of Renovate bodies, each up to 65536 characters, where Node's default of 1 MiB cut a page of 50. */
 const MAX_ANSWER = 64 * 1024 * 1024;
 const ATTEMPTS = 3;
 
 const gh = (args: string[], input?: string): string => execFileSync("gh", args, { encoding: "utf8", input, maxBuffer: MAX_ANSWER });
 
-/** The JSON of one answer of `gh api graphql`, or `undefined` when `gh` could not be run or answered no JSON. */
-function parseAnswer(result: SpawnSyncReturns<string>): Json | undefined {
-  if (result.error !== undefined) return undefined;
+/** The JSON of an answer of `gh`, or `undefined` when it is not JSON. */
+function parseAnswer(text: string): Json | undefined {
   try {
-    return parseJson(result.stdout);
+    return parseJson(text);
   } catch {
     return undefined;
   }
@@ -65,7 +64,7 @@ function graphql(args: string[]): Json {
   let last = "nothing";
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const result = spawnSync("gh", ["api", "graphql", ...args], { encoding: "utf8", maxBuffer: MAX_ANSWER });
-    const answer = parseAnswer(result);
+    const answer = result.error === undefined ? parseAnswer(result.stdout) : undefined;
     if (answer !== undefined) {
       warnErrors(answer);
       return answer;
@@ -91,7 +90,9 @@ function searchPulls(org: string): RenovatePull[] {
 }
 
 function isBehind(pull: RenovatePull): boolean {
-  const comparison = parseJson(gh(["api", `repos/${pull.repo}/compare/${encodeURIComponent(pull.baseRef)}...${pull.headSha}`]));
+  const answer = gh(["api", `repos/${pull.repo}/compare/${encodeURIComponent(pull.baseRef)}...${pull.headSha}`]);
+  const comparison = parseAnswer(answer);
+  if (comparison === undefined) throw new Error(`gh api compare answered no JSON: ${firstLine(answer)}`);
   return isObject(comparison) && isNumber(comparison.behind_by) && comparison.behind_by > 0;
 }
 

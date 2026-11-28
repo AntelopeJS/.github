@@ -151,6 +151,7 @@ writeFileSync(
 echo "gh $1 $2" >> "$GH_LOG"
 case "$1 $2" in
   "api graphql") cat "$GH_ANSWER" ;;
+  "api repos/AntelopeJS/web/compare/"*) printf '<!DOCTYPE html>\n<html><body>Unicorn!</body></html>\n' ;;
   "api repos/"*"/compare/"*) echo "HTTP 404: Not Found" >&2; exit 1 ;;
   *) exit 0 ;;
 esac
@@ -203,6 +204,12 @@ describe("renovate-sweep-main.ts", () => {
       "::error::AntelopeJS/api#49: Command failed: gh api repos/AntelopeJS/api/compare/main...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
         "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n",
     );
+    assert.equal(run.status, 1);
+  });
+
+  test("reports the first line of a base comparison that is not JSON", () => {
+    const run = sweep(page(node({ repo: "AntelopeJS/web", rollup: "FAILURE" })));
+    assert.equal(run.stdout, "::error::AntelopeJS/web#49: gh api compare answered no JSON: <!DOCTYPE html>\n");
     assert.equal(run.status, 1);
   });
 });
