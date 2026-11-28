@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { readText } from "./helpers/read.ts";
 import { SYNC_PATH, syncRepository } from "./helpers/sync.ts";
-import { git, repoFile, runStep, write } from "./helpers/workflow.ts";
+import { git, repoFile, root, runStep, write } from "./helpers/workflow.ts";
 
 const renovateSync = repoFile(".github/workflows/ci-renovate-sync.yml");
 const DETECT = "Detect a dependency bump";
 const SYNC = "Run antelopejs-sync and the format script";
+const APPLY = "Apply the sync output";
 
 const renovateBranch = (dir: string, files: Record<string, string>): void => {
   git(dir, "checkout", "-qb", "renovate/bump");
@@ -135,5 +137,44 @@ describe("ci-renovate-sync.yml", () => {
     assert.equal(sync.status, 0, sync.stdout);
     assert.equal(sync.outputs.changed, "true");
     assert.match(readText(join(sync.temp, "renovate-sync.patch")), /\+\+\+ b\/\.github\/workflows\/release\.yml/);
+  });
+});
+
+describe("ci-renovate-sync.yml push job", () => {
+  let patches = 0;
+  const pushCheckout = (synced: Record<string, string>) => {
+    const dir = syncRepository(undefined, "AGENTS.md");
+    renovateBranch(dir, { "pnpm-lock.yaml": "core: 1.24.8\n" });
+    write(dir, synced);
+    git(dir, "add", "-A");
+    patches += 1;
+    const patch = join(root, `push-${patches}.patch`);
+    writeFileSync(patch, `${git(dir, "diff", "--cached", "--binary")}\n`);
+    git(dir, "reset", "-q", "--hard");
+    return { dir, patch };
+  };
+
+  test("refuses every workflow or action change, with or without the app token, so the pull request stays One-tap", () => {
+    for (const path of [".github/workflows/ci.yml", ".github/actions/setup/action.yml"]) {
+      for (const token of ["true", ""]) {
+        const { dir, patch } = pushCheckout({ [path]: "name: x\n" });
+
+        const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: token, PATCH: patch });
+
+        assert.notEqual(apply.status, 0);
+        assert.match(apply.stdout, /::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap\./);
+      }
+    }
+  });
+
+  test("applies a sync output outside workflow paths with either token", () => {
+    for (const token of ["true", ""]) {
+      const { dir, patch } = pushCheckout({ "AGENTS.md": "synced\n" });
+
+      const apply = runStep(renovateSync, APPLY, dir, { APP_TOKEN: token, PATCH: patch });
+
+      assert.equal(apply.status, 0, apply.stdout);
+      assert.equal(git(dir, "diff", "--cached", "--name-only"), "AGENTS.md");
+    }
   });
 });
