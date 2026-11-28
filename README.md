@@ -580,6 +580,23 @@ The `node` job runs one job per runner, Node.js version and part:
 - With `extra-commands-job`, `Extra <version>` also runs `extra-commands` in
   parallel. With `extra-commands-shards` above 1, `Extra <version> <i>/<n>`
   runs them once per shard, after an `Extra shards` job lists the shards.
+- With `test-shards` above 1, `Test <version> <i>/<n>` runs the tests once per
+  shard, in parallel, and `Node <version>` runs only the checks, even with
+  `single-job`. The same `Extra shards` job lists the test shards.
+
+A caller whose tests take minutes splits them with one input:
+
+```yaml
+jobs:
+  ci:
+    uses: AntelopeJS/.github/.github/workflows/ci-node.yml@v2
+    with:
+      renovate-sync: false
+      test-shards: 4
+```
+
+A test script must run its share of the tests when `ANTELOPEJS_CI_SHARD` is set
+to `<i>/<n>`, and everything when it is unset.
 
 On Windows, the job name ends with ` on Windows`. The jobs run on Linux, also on
 Windows in the `nightly` tier when `windows` is set, and with
@@ -712,6 +729,7 @@ It accepts these optional inputs:
 | `test-job` | `false` | Accepted and ignored. The tests run as a step of the single job, or in a job of their own with `single-job: false`. |
 | `extra-commands-job` | `false` | Run `extra-commands` in their own job, in parallel with the other checks. Use it only when the commands do not read files that `pnpm run checks` writes, such as a build. |
 | `extra-commands-shards` | `1` | With `extra-commands-job`, run `extra-commands` in this many jobs, `Extra <version> 1/<n>` to `Extra <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>`. The commands read it to run their share of the work, such as `playwright test --shard="$ANTELOPEJS_CI_SHARD"`. In the `queue` tier, each job runs its share once more after a failure. The gate needs every job. `1` keeps one job and leaves `ANTELOPEJS_CI_SHARD` unset. |
+| `test-shards` | `1` | Run the tests in this many jobs, `Test <version> 1/<n>` to `Test <version> <n>/<n>`, each on its own runner with `ANTELOPEJS_CI_SHARD` set to its `<i>/<n>` on the test step. The test script must run its share when `ANTELOPEJS_CI_SHARD` is set and everything when it is unset. Above `1`, `Node <version>` runs only the checks, even with `single-job`, so nothing runs twice. Each job keeps the merge queue's one retry, the flaky annotation, the fast-tier test selection and the skip of a documentation-only pull request. The gate needs every job. `1` keeps today's jobs and leaves `ANTELOPEJS_CI_SHARD` unset. |
 | `windows` | `true` | Also run the jobs on Windows, in parallel with Linux, in the `nightly` tier, and with `windows-merge-queue` in the `queue` tier and on manual runs. Windows runs only when the calling repository is public, which a `Windows eligibility` job reads from the API once per run, because a `schedule` payload names no repository. Private and internal repositories skip it. Steps and package scripts run in Git Bash, and git checks out with `core.autocrlf false` and `core.symlinks true`. The Windows jobs skip services and the skill evals, so tests that need the services must not run there. A caller that cannot run on Windows passes `false` and states the reason in its workflow. |
 | `windows-merge-queue` | `false` | With `windows`, also run the Windows jobs in the `queue` tier and on manual runs. |
 | `windows-pull-requests` | `false` | Accepted. The former name of `windows-merge-queue`, with the same effect. |
@@ -740,7 +758,7 @@ something else when it skips, so the gate runs in every run that is not
 cancelled. A matrix job with a constant name gets its matrix values appended,
 as in `Formal (formal-a)`. The `node` legs keep their `Node <version>` names,
 an expression, because a leg skips only after `Windows eligibility` or
-`Extra shards` failed, or in a run that was cancelled before it started, and
+`Extra shards` (which also lists the test shards) failed, or in a run that was cancelled before it started, and
 the gate then fails or ends cancelled. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
 `!cancelled()` never skips it in a run that goes on, and in a run that was
@@ -769,7 +787,7 @@ The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
 `blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
 variable names another runner label. A reusable workflow reads the caller's
 variables, so one variable switches a repository to another runner. The three
-small jobs, `Windows eligibility`, `Extra shards` and the gate, run a few
+small jobs, `Windows eligibility`, `Extra shards` (which also lists the test shards) and the gate, run a few
 seconds of shell and install nothing: they go to the label the caller's
 `RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
 own gate and tier jobs can read the same variables. The Windows legs run only

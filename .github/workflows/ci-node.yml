@@ -55,6 +55,10 @@ on:
         description: With extra-commands-job, split the extra-commands job into this many jobs, each with ANTELOPEJS_CI_SHARD set to its shard, such as 2/3, for the commands to pick their share of the work
         default: 1
         type: number
+      test-shards:
+        description: Split the test part of each Node leg into this many jobs, Test <version> <i>/<n>, each with ANTELOPEJS_CI_SHARD set to its shard, such as 2/4, for the test script to pick its share of the tests. Above 1, the checks run in their own Node leg even with single-job, so nothing runs twice
+        default: 1
+        type: number
       windows:
         description: Also run the node jobs on Windows, in parallel with Linux, in the nightly tier, and in the merge queue and manual runs with windows-merge-queue, only when the calling repository is public; private and internal repositories skip Windows. Callers that cannot run on Windows pass false and say why. Run steps and package scripts use Git Bash there, git checks out with core.autocrlf false and core.symlinks true, and the docker compose services and skill evals are skipped, so tests that need the services must not run on Windows
         default: true
@@ -116,7 +120,7 @@ jobs:
 
   shards:
     name: Extra shards
-    if: inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards > 1
+    if: (inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards > 1) || inputs.test-shards > 1
     runs-on: ${{ vars.RUNNER_CI_SMALL || vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
@@ -124,26 +128,32 @@ jobs:
       shards: ${{ steps.shards.outputs.shards }}
       exclude: ${{ steps.shards.outputs.exclude }}
     steps:
-      - name: List the extra-commands shards
+      - name: List the shards
         id: shards
         env:
-          SHARDS: ${{ inputs.extra-commands-shards }}
+          EXTRA_SHARDS: ${{ inputs.extra-commands-job && inputs.extra-commands != '' && inputs.extra-commands-shards || 1 }}
+          TEST_SHARDS: ${{ inputs.test-shards }}
         run: |
-          if [[ ! "$SHARDS" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::extra-commands-shards must be a whole number, not ${SHARDS}."
-            exit 1
-          fi
-          shards='""' exclude='{"part":"extra","shard":""}'
-          for ((i = 1; i <= SHARDS; i++)); do
-            shards+=",\"$i/$SHARDS\""
-            for part in all checks test; do
-              exclude+=",{\"part\":\"$part\",\"shard\":\"$i/$SHARDS\"}"
-            done
+          declare -A names=([EXTRA_SHARDS]=extra-commands-shards [TEST_SHARDS]=test-shards)
+          for input in EXTRA_SHARDS TEST_SHARDS; do
+            if [[ ! "${!input}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::${names[$input]} must be a whole number, not ${!input}."
+              exit 1
+            fi
           done
-          {
-            echo "shards=[$shards]"
-            echo "exclude=[$exclude]"
-          } >> "$GITHUB_OUTPUT"
+          jq -nrc --argjson test "$TEST_SHARDS" --argjson extra "$EXTRA_SHARDS" '
+            def labels($n): if $n == 1 then [""] else [range(1; $n + 1) | "\(.)/\($n)"] end;
+            {all: 1, checks: 1, test: $test, extra: $extra} as $count
+            | ([$count[] | labels(.)[]] | reduce .[] as $shard ([]; if any(.[]; . == $shard) then . else . + [$shard] end)) as $shards
+            | {
+                shards: $shards,
+                exclude: [
+                  $count | to_entries[] | .key as $part | .value as $n | $shards[]
+                  | select(IN(labels($n)[]) | not) | {part: $part, shard: .}
+                ]
+              }
+            | "shards=\(.shards)", "exclude=\(.exclude)"
+          ' >> "$GITHUB_OUTPUT"
 
   node:
     needs: [windows, shards]
@@ -161,7 +171,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.windows.outputs.visibility == 'public' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
         node-version: ${{ fromJSON(inputs.node-versions || '[""]') }}
-        part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
+        part: ${{ fromJSON(format('[{0}{1}]', inputs.single-job && inputs.services-compose-file == '' && inputs.test-shards <= 1 && '"all"' || '"checks","test"', inputs.extra-commands-job && inputs.extra-commands != '' && ',"extra"' || '')) }}
         shard: ${{ fromJSON(needs.shards.outputs.shards || '[""]') }}
         exclude: ${{ fromJSON(needs.shards.outputs.exclude || '[]') }}
     defaults:
@@ -393,7 +403,9 @@ jobs:
         env:
           CI: "1"
           AFFECTED_TESTS: ${{ inputs.affected-tests }}
+          ANTELOPEJS_CI_SHARD: ${{ matrix.shard }}
         run: |
+          [ -n "$ANTELOPEJS_CI_SHARD" ] || unset ANTELOPEJS_CI_SHARD
           log="$RUNNER_TEMP/test-attempt-1.log"
           command=(pnpm run test)
           if [[ "$AFFECTED_TESTS" == true && "$ANTELOPEJS_CI_TIER" == fast ]]; then
