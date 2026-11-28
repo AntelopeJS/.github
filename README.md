@@ -72,7 +72,10 @@ sibling with `pnpm pack`, fetches its `latest` tarball from npm and compares
 the `.d.ts`, `.d.mts` and `.d.cts` files of both by path and content. When
 they match, the preview gets `^<latest>` instead, so a module that already
 depends on a stable range of the sibling installs one copy of it. A sibling
-never released is always pinned. The trade-off: a runtime-only change of a
+never released is always pinned. A preview that would pin a sibling preview npm
+does not hold fails before it publishes and names the sibling's directory:
+dispatch the preview of that directory first, then run the dependent's again.
+The trade-off: a runtime-only change of a
 sibling, such as a bug fix behind unchanged types, reaches the previews of its
 dependents only once the sibling is released. A sibling that ships no
 declaration files always counts as unchanged. A stable release keeps its

@@ -278,6 +278,7 @@ describe("release-npm.yml", () => {
         ["@antelopejs/interface-z version", "0.2.0"],
         ["@antelopejs/interface-z@next gitHead", previewed],
         ["@antelopejs/interface-z@next version", "0.2.1-next.2.g1111111"],
+        ["@antelopejs/interface-z@0.2.1-next.2.g1111111 version", "0.2.1-next.2.g1111111"],
       ]
         .map((row) => row.join("\t"))
         .join("\n") + "\n",
@@ -330,11 +331,16 @@ describe("release-npm.yml", () => {
     symlinkSync(join(dirname(realNpm), "..", "node_modules"), join(packing, "..", "node_modules"));
     writeFileSync(
       join(packing, "npm"),
-      `#!/bin/sh\nif [ "$1" = pack ] && [ "$3" = --pack-destination ]; then tarball=$(awk -F '\\t' -v key="$2" '$1 == key { print $2 }' "${join(stable, "tarballs.tsv")}"); [ -n "$tarball" ] || { echo "npm error code E404" >&2; exit 1; }; cp "$tarball" "$4"; exit 0; fi\nexec '${join(recordingNpm, "npm")}' "$@"\n`,
+      `#!/bin/sh\nif [ "$1" = pack ] && [ "$3" = --pack-destination ]; then tarball=$(awk -F '\\t' -v key="$2" '$1 == key { print $2 }' "${join(stable, "tarballs.tsv")}"); [ -n "$tarball" ] || { echo "npm error code E404" >&2; exit 1; }; cp "$tarball" "$4"; exit 0; fi\nif [ "$1" = view ]; then exec '${join(registry, "npm")}' "$@"; fi\nexec '${join(recordingNpm, "npm")}' "$@"\n`,
     );
     chmodSync(join(packing, "npm"), 0o755);
     const publish = (pinned: JsonObject) =>
-      publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PATH: `${packing}:${recordingNpm}:${process.env.PATH ?? ""}`, PINS: JSON.stringify(pinned) });
+      publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PATH: `${packing}:${recordingNpm}:${process.env.PATH ?? ""}`, PINS: JSON.stringify(pinned), FAKE_VIEWS: views });
+    const missing = publish(pins);
+    assert.deepEqual([missing.status, missing.publication], [1, null]);
+    assert.match(missing.stderr, new RegExp(`@antelopejs/interface-x@0\\.10\\.1-${suffix} is not on the registry\\. Dispatch the preview of packages/interface-x first`));
+    git(directory, "checkout", "--", "packages/x/package.json");
+    writeFileSync(views, `${readText(views)}@antelopejs/interface-x@0.10.1-${suffix} version\t0.10.1-${suffix}\n`);
     const preview = publish(pins);
     assert.equal(preview.status, 0, preview.stderr);
     assert.deepEqual(preview.publication?.manifest, {
