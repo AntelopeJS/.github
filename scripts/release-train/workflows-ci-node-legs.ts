@@ -92,7 +92,7 @@ const runLeg = (step: string, name: string, matrix: Record<string, string>, env:
 /** Every job the node matrix expands to for a caller, with the shard each running step sees. */
 export const jobs = (overrides: Overrides, pick: (part: string) => Picked = everyPart): Job[] => {
   const inputs = inputsOf(overrides);
-  const scope = { inputs, needs: { windows: { outputs: { visibility: "" } }, shards: { outputs: listed(inputs) ?? {} } } };
+  const scope = { inputs, needs: { eligibility: { outputs: { windows: "" } }, shards: { outputs: listed(inputs) ?? {} } } };
   const exclude = evaluateRules(line("exclude"), scope);
   const combinations = (["os", "node-version", "part", "shard"] as const)
     .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => values(line(key), scope).map((value) => ({ ...matrix, [key]: value }))), [{}])
