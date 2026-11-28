@@ -784,7 +784,7 @@ jobs:
         run: |
           set -euo pipefail
           node <<'NODE'
-          const { execFileSync } = require('node:child_process')
+          const { execFileSync, spawnSync } = require('node:child_process')
           const fs = require('node:fs')
           const path = require('node:path')
           const { isDeepStrictEqual } = require('node:util')
@@ -810,6 +810,13 @@ jobs:
             if (!specs.has(name)) {
               const { preview, latest, directory } = pins[name]
               const unchanged = latest !== '' && isDeepStrictEqual(declarations(packed('pnpm', ['pack'], path.join(top, directory))), declarations(packed('npm', ['pack', `${name}@${latest}`], '.')))
+              if (!unchanged) {
+                const view = spawnSync('npm', ['view', `${name}@${preview}`, 'version'], { encoding: 'utf8' })
+                if (view.stdout?.trim() !== preview) {
+                  console.error(`${name}@${preview} is not on the registry. Dispatch the preview of ${directory} first, then run this one again.\n${(view.stderr ?? '').trim()}`)
+                  process.exit(1)
+                }
+              }
               specs.set(name, unchanged ? `^${latest}` : preview)
             }
             return specs.get(name)
