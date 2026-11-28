@@ -109,6 +109,7 @@ jobs:
           path: ${{ runner.temp }}/renovate-sync.patch
           retention-days: 1
           if-no-files-found: error
+          overwrite: true
 
   push:
     name: Push the Renovate sync
