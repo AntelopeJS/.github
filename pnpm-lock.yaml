@@ -186,7 +186,7 @@ importers:
   .:
     devDependencies:
       '@antelopejs/tooling-configs':
-        specifier: ^0.10.11
+        specifier: ^0.10.7
         version: 0.10.11(oxlint@1.95.0(oxlint-tsgolint@7.0.2008))
       '@types/node':
         specifier: 26.6.11
