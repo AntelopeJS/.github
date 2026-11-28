@@ -19,10 +19,11 @@ npm install --no-save --no-audit --no-fund --silent --prefix "$tools/pnpm10" pnp
 curl -fsSLo "$tools/actionlint.tgz" https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
 echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $tools/actionlint.tgz" | sha256sum -c --quiet
 tar -xzf "$tools/actionlint.tgz" -C "$tools" actionlint
-export PATH="$tools/node_modules/.bin:$PATH"
+curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz | tar -xJ -C "$tools"
+export PATH="$tools/node_modules/.bin:$tools/shellcheck-v0.11.0:$PATH"
 ```
 
-`node -v` prints `v26.x` once `PATH` is set.
+`node -v` prints `v26.x` and `shellcheck --version` prints `0.11.0` once `PATH` is set. actionlint skips every shell rule when no `shellcheck` is on `PATH`, and the CI runners have one.
 
 ## What to run for your change
 
@@ -35,8 +36,8 @@ export PATH="$tools/node_modules/.bin:$PATH"
 | A test or source of `module-locks` | `LOG_LEVEL=warn RENOVATE_MODULES="$tools/node_modules" node --test --test-concurrency=4 scripts/module-locks/<file>.test.ts` |
 | A test or source of `ci-tier` | `PNPM="$tools/pnpm10/node_modules/.bin/pnpm" node --test --test-concurrency=4 scripts/ci-tier/<file>.test.ts` |
 | A test or source of `ci-metrics` or `ci-verdict` | `node --test --test-concurrency=4 scripts/<dir>/<file>.test.ts` |
-| A workflow under `.github/workflows/` | `"$tools/actionlint" -ignore SC2016 <files>`, then `RELEASE_IT="$tools/node_modules/release-it/bin/release-it.js" node --test --test-concurrency=4 'scripts/release-train/workflows*.test.ts'`, which reads every workflow (runners, gates, publish steps, ci-node.yml). Also run the tests of the folder whose name the workflow carries: `ci-node.yml` goes with `ci-tier`, `verdict-conformance.yml` with `ci-verdict`, `template-demo-sync.yml` and `renovate-sweep.yml` with `module-locks`. |
-| `scripts/release-train/frozen-caller.yml` or a release workflow's inputs | `RELEASE_IT="$tools/node_modules/release-it/bin/release-it.js" node --test --test-concurrency=4 scripts/release-train/caller.test.ts` |
+| A workflow under `.github/workflows/` | Lint: `"$tools/actionlint" <files>`, adding `-ignore SC2016` only for `ci-node.yml` and `ci-tier-checks.yml`, as `ci-tier-checks.yml` does. Test: `RELEASE_IT="$tools/node_modules/release-it/bin/release-it.js" node --test --test-concurrency=4 'scripts/release-train/workflows*.test.ts' scripts/release-train/caller.test.ts`, which read every workflow (runners, gates, publish steps, app tokens and their permissions). Then run each test that names the file, `grep -l '<file>.yml' scripts/*/*.test.ts`, with its folder's row: `ci-node.yml` alone is read by tests in `ci-tier`, `ci-verdict`, `module-locks` and `release-train`. |
+| `scripts/release-train/frozen-caller.yml` | `RELEASE_IT="$tools/node_modules/release-it/bin/release-it.js" node --test --test-concurrency=4 scripts/release-train/caller.test.ts` |
 | `renovate.json5` | `LOG_LEVEL=warn renovate-config-validator --strict --no-global renovate.json5`, then the `module-locks` row with `renovate-preset.test.ts` |
 | `package.json`, `pnpm-lock.yaml`, `oxlint.config.ts` | `pnpm install --frozen-lockfile && pnpm run checks` |
 | Markdown (`README.md`, `CONTRIBUTING.md`, `profile/`, community files) | No local command. Read the rendered file. The nightly `link-rot.yml` checks its links. |
