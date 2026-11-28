@@ -939,8 +939,11 @@ Actions or from any source, the result of the run's job of that name on the new
 head as a commit status of the same name, which the ruleset counts. A required
 check the run has no single job for fails the job. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
-its summary: the pull request stays One-tap. On any other event the job is
-skipped.
+its summary: the pull request stays One-tap. When the `format` script changes
+more than whitespace and line breaks (a lint fix, a quote or comma rewrite, or
+a file it adds or deletes), nothing is pushed and the job fails with the paths
+in its summary, so only a layout-only reformat lands without a human. On any
+other event the job is skipped.
 
 The workflow declares no permissions: it inherits the token permissions of the
 job that calls it, so a caller that grants less keeps working and only a bump
