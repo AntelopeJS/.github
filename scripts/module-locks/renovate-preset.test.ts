@@ -56,6 +56,7 @@ const { massageConfig } = await load<{ massageConfig: (config: Config) => Config
 const { mergeChildConfig } = await load<{ mergeChildConfig: (parent: Config, child: Config) => Config }>("renovate/dist/config/utils.js");
 const { getConfig } = await load<{ getConfig: () => Config }>("renovate/dist/config/defaults.js");
 const { applyPackageRules } = await load<{ applyPackageRules: (config: Config, stage: string) => Promise<Config> }>("renovate/dist/util/package-rules/index.js");
+const { getRangeStrategy } = await load<{ getRangeStrategy: (config: Config & { depType: string; currentValue: string }) => string }>("renovate/dist/modules/manager/npm/range.js");
 const { generateBranchName } = await load<{ generateBranchName: (update: Config) => void }>("renovate/dist/workers/repository/updates/branch-name.js");
 
 const preset = JSON5.parse(readText(new URL("../../renovate.json5", import.meta.url)));
@@ -167,10 +168,30 @@ test("every third-party patch and minor of a repository arrives in one pull requ
     { depName: "rimraf", currentVersion: "6.1.3", packageFile: "package.json" },
     { depName: "oxlint-tsgolint", currentVersion: "7.0.2007", packageFile: "package.json" },
     { depName: "dotenv-cli", currentVersion: "11.0.0", updateType: "minor", packageFile: "package.json" },
-    { depName: "@types/node", currentVersion: "22.20.4", packageFile: "playground/package.json" },
     { depName: "vue", currentVersion: "0.4.0", updateType: "minor", packageFile: "frontend/package.json" },
   ];
   for (const bump of bumps) assert.equal(await branch({ ...npm, ...bump }), "renovate/non-major-dependencies", bump.depName);
+});
+
+test("no branch mixes update-lockfile with another range strategy in one package file, so Renovate reuses the branch and keeps the sync's commits", async () => {
+  const npm = { repository: "AntelopeJS/dms", manager: "npm", updateType: "minor", packageFile: "package.json", depType: "devDependencies" };
+  const bumps = [
+    { depName: "rimraf", currentVersion: "6.1.3", currentValue: "^6.1.3" },
+    { depName: "vue", currentVersion: "3.4.0", currentValue: "^3.4.0", depType: "dependencies" },
+    { depName: "@types/node", currentVersion: "24.10.1", currentValue: "^24.10.1" },
+  ];
+  const strategies = new Map<string, Set<string>>();
+  for (const bump of bumps) {
+    const upgrade = { ...npm, ...bump };
+    const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
+    generateBranchName(result);
+    const branchName = result.branchName ?? "";
+    strategies.set(branchName, (strategies.get(branchName) ?? new Set()).add(getRangeStrategy({ ...result, depType: upgrade.depType, currentValue: upgrade.currentValue })));
+  }
+  assert.deepEqual(Object.fromEntries([...strategies].map(([branchName, set]) => [branchName, [...set]])), {
+    "renovate/non-major-dependencies": ["update-lockfile"],
+    "renovate/node.js-types": ["bump"],
+  });
 });
 
 test("a third-party major keeps its own pull request, so a breaking one holds back no patch", async () => {
