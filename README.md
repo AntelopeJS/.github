@@ -1463,8 +1463,11 @@ jobs:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 ```
 
-Both workflows install from the nearest directory at or above the package
-directory that holds `pnpm-workspace.yaml`, or from the package directory when
-there is none. pnpm validates the root lockfile and installs every workspace
+Both workflows install from the outermost directory at or above the package
+directory whose `pnpm-workspace.yaml` lists the package in its `packages` globs.
+A member's own standalone `pnpm-workspace.yaml`, which `antelopejs-sync` writes
+next to each lockfile, does not stop that walk. When no workspace lists the
+package, they install from the nearest directory that holds a
+`pnpm-workspace.yaml`, or from the package directory when there is none. pnpm validates the root lockfile and installs every workspace
 project, so the released package and the workspace dependencies it links
 through `workspace:*` are installed together. No `--filter` is required.

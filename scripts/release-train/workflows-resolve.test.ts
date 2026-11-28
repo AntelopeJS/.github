@@ -165,3 +165,56 @@ describe("release-npm.yml", () => {
     assert.match(decide(frontend, dependency), /^version=0\.5\.1-next\./);
   });
 });
+
+describe("release-npm.yml", () => {
+  test("Resolve pnpm workspace root picks the outermost workspace whose packages globs include the package, and the nearest one when none does", () => {
+    const standalone = 'packages:\n  - "."\nminimumReleaseAge: 1440\n';
+    const members = "packages:\n  - packages/*\n  - packages/*/frontend-vue\n\nminimumReleaseAge: 1440\n";
+    const repositories = {
+      mailing: {
+        "pnpm-workspace.yaml": members,
+        "packages/dms-mailing/package.json": "{}\n",
+        "packages/dms-mailing/pnpm-workspace.yaml": standalone,
+        "packages/dms-mailing/frontend-vue/pnpm-workspace.yaml": "packages:\n  - '.'\n",
+        "e2e/playground-deps/package.json": "{}\n",
+        "e2e/playground-deps/pnpm-workspace.yaml": standalone,
+      },
+      automation: {
+        "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n  - \"!packages/legacy\"\n  - ./packages/*/frontend-vue/\n",
+        "packages/dms-automation/package.json": "{}\n",
+        "packages/dms-automation/pnpm-workspace.yaml": standalone,
+        "packages/dms-automation/frontend-vue/package.json": "{}\n",
+        "packages/dms-automation/frontend-vue/pnpm-workspace.yaml": standalone,
+        "packages/legacy/package.json": "{}\n",
+        "packages/legacy/pnpm-workspace.yaml": standalone,
+      },
+      single: { "package.json": "{}\n", "pnpm-workspace.yaml": standalone, "frontend-vue/package.json": "{}\n", "frontend-vue/pnpm-workspace.yaml": standalone },
+      bare: { "packages/x/package.json": "{}\n" },
+    } satisfies Record<string, Record<string, string>>;
+    for (const [name, files] of Object.entries(repositories)) {
+      for (const [file, content] of Object.entries(files)) {
+        mkdirSync(join(root, `workspace-${name}`, file, ".."), { recursive: true });
+        writeFileSync(join(root, `workspace-${name}`, file), content);
+      }
+    }
+    const resolved = (name: string, directory: string): string => {
+      const result = runStep(text, "Resolve pnpm workspace root", join(root, `workspace-${name}`), { PACKAGE_DIRECTORY: directory });
+      assert.equal(result.status, 0, result.stderr);
+      return result.outputs;
+    };
+    const cases: [string, string, string][] = [
+      ["mailing", "packages/dms-mailing", "."],
+      ["mailing", "./packages/dms-mailing/", "."],
+      ["mailing", "e2e/playground-deps", "e2e/playground-deps"],
+      ["automation", "packages/dms-automation", "."],
+      ["automation", "packages/dms-automation/frontend-vue", "."],
+      ["automation", "packages/legacy", "packages/legacy"],
+      ["single", ".", "."],
+      ["bare", "packages/x", "packages/x"],
+    ];
+    assert.deepEqual(
+      cases.map(([name, directory]) => [name, directory, resolved(name, directory)]),
+      cases.map(([name, directory, expected]) => [name, directory, `install-directory=${expected}\n`]),
+    );
+  });
+});
