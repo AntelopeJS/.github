@@ -941,7 +941,7 @@ check the run has no single job for fails the job. When the sync output touches 
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
 its summary: the pull request stays One-tap. When the `format` script changes
 more than whitespace and line breaks (a lint fix, a quote or comma rewrite, or
-a file it adds or deletes), nothing is pushed and the job fails with the paths
+a file it adds, deletes or changes the mode of), nothing is pushed and the job fails with the paths
 in its summary, so only a layout-only reformat lands without a human. On any
 other event the job is skipped.
 

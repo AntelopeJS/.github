@@ -82,11 +82,13 @@ jobs:
             exit 1
           fi
           unsafe=$(git ls-files --others --exclude-standard)
+          unsafe+=$'\n'$(git diff --summary | sed -n 's/^ mode change [0-7]* => [0-7]* //p')
+          git diff -z --name-only > "$RUNNER_TEMP/formatted"
           while IFS= read -r -d '' path; do
             if [ ! -f "$path" ] || ! cmp -s <(git show ":$path" | tr -d '[:space:]') <(tr -d '[:space:]' < "$path"); then
               unsafe+=$'\n'"$path"
             fi
-          done < <(git diff -z --name-only)
+          done < "$RUNNER_TEMP/formatted"
           if [ -n "${unsafe//$'\n'/}" ]; then
             {
               echo "### Renovate sync: format script changes more than layout"

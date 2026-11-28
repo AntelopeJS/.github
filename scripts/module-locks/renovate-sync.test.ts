@@ -64,6 +64,19 @@ describe("ci-renovate-sync.yml", () => {
     assert.equal(readText(join(dir, "src/index.ts")), "export const a = [1, 2];\n");
   });
 
+  test("formats after the sync, so the reformat of a file the sync wrote lands with it", () => {
+    const dir = syncRepository("antelopejs-sync", "AGENTS.md");
+    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { sync: "antelopejs-sync", format: "sed -i 's/  */ /g' AGENTS.md" } })}\n`, "AGENTS.md": "old\n" });
+    git(dir, "commit", "-qam", "format script");
+    write(dir, { "node_modules/.bin/antelopejs-sync": '#!/usr/bin/env bash\necho "synced    by  sync" > AGENTS.md\n' });
+
+    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+    assert.equal(sync.status, 0, sync.stdout);
+    assert.equal(sync.outputs.changed, "true");
+    assert.equal(readText(join(dir, "AGENTS.md")), "synced by sync\n");
+  });
+
   test("commits nothing when the format script leaves every file as it is", () => {
     const dir = formatRepository("true", "export const a = 1;\n");
 
@@ -74,7 +87,7 @@ describe("ci-renovate-sync.yml", () => {
   });
 
   test("pushes nothing when the format script changes more than whitespace, such as a lint fix", () => {
-    for (const format of ["printf 'export const a = 1;\\n' > src/index.ts", "rm src/index.ts", "echo x > src/new.ts"]) {
+    for (const format of ["printf 'export const a = 1;\\n' > src/index.ts", "rm src/index.ts", "echo x > src/new.ts", "chmod +x src/index.ts"]) {
       const dir = formatRepository(format, "export let a = 1;\n");
 
       const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
