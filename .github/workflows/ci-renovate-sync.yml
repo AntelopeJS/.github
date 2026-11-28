@@ -168,7 +168,9 @@ jobs:
               echo
               echo "Changed paths:"
               echo
-              sed 's/^/- /' <<< "$workflows"
+              while IFS= read -r file; do
+                echo "- ${file}"
+              done <<< "$workflows"
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
             exit 1
