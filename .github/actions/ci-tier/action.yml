@@ -8,7 +8,7 @@ inputs:
 
 outputs:
   tier:
-    description: none, fast, full, queue or nightly; in a merge group the queue dropped, the action fails and sets none
+    description: none, fast, full, queue or nightly; none on a Renovate pull request whose head only commits the module locks of a run whose checks passed; in a merge group the queue dropped, the action fails and sets none
     value: ${{ steps.tier.outputs.tier }}
   base:
     description: The commit the change is compared with, present in the checkout when there is one; the pull request base on a pull request, the merge group base in the merge queue, empty otherwise
@@ -30,6 +30,9 @@ runs:
         MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
         MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         REPOSITORY: ${{ github.repository }}
+        HEAD_REF: ${{ github.head_ref }}
+        HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         SELECTION: ${{ inputs.selection }}
         TOKEN: ${{ github.token }}
@@ -67,12 +70,28 @@ runs:
           *) tier=full ;;
         esac
 
+        fetch() {
+          credentials=$(printf 'x-access-token:%s' "$TOKEN" | base64 --wrap=0)
+          echo "::add-mask::${credentials}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
+            fetch --quiet --no-tags "--depth=$1" origin "$2"
+        }
+
+        if [[ "$EVENT" == pull_request && "$HEAD_REF" == renovate/* && "$HEAD_REPOSITORY" == "$REPOSITORY" && -n "$HEAD_SHA" ]] \
+          && git rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+          && { git cat-file -e "${HEAD_SHA}^^{commit}" 2> /dev/null || fetch 2 "$HEAD_SHA" 2> /dev/null; } \
+          && [[ "$(git log -1 --format='%ae%x09%s' "$HEAD_SHA")" == $'41898282+github-actions[bot]@users.noreply.github.com\tbuild(deps): record the module locks of the bumped modules' ]] \
+          && [[ "$(git rev-list --parents -n 1 "$HEAD_SHA" | wc -w)" -eq 2 ]] \
+          && checks=$(git log -1 --format='%(trailers:key=Checks-Passed,valueonly,separator=%x20)' "$HEAD_SHA") && [[ -n "$checks" ]] \
+          && files=$(git -c core.quotepath=off diff --name-only --no-renames "${HEAD_SHA}^" "$HEAD_SHA") && [[ -n "$files" ]] \
+          && ! grep -qvE '^([^/]+/)*antelope-lock/' <<< "$files"; then
+          tier=none
+          echo "Tier \`none\`: the head commit only records the module locks of ${checks}, whose checks passed." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
         if [[ -n "$base" ]] && git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
           if ! git cat-file -e "${base}^{commit}" 2> /dev/null; then
-            credentials=$(printf 'x-access-token:%s' "$TOKEN" | base64 --wrap=0)
-            echo "::add-mask::${credentials}"
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${credentials}" \
-              fetch --quiet --no-tags --depth=1 origin "$base"
+            fetch 1 "$base"
           fi
           if [[ "$tier" == fast ]]; then
             changed=$(git -c core.quotepath=off diff --name-only --no-renames "$base" HEAD)
