@@ -3,9 +3,11 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { readText } from "./helpers/read.ts";
-import type { JsonObject } from "./json.ts";
-import { commitFiles, evaluate, evaluateRules, evaluateStrings, interpolate, repository, root, runStep, stepOf, workflowText } from "./workflows-helpers.ts";
+import type { Json, JsonObject } from "./json.ts";
+import { commitFiles, evaluate, evaluateRules, interpolate, repository, root, runStep, stepOf, workflowText } from "./workflows-helpers.ts";
 import type { Evaluated } from "./workflows-helpers.ts";
+import { ciNode, declaredTestShards, inputsOf, jobText, legs, listed, names, outputsOf, runs } from "./workflows-ci-node-legs.ts";
+import type { Overrides, Picked } from "./workflows-ci-node-legs.ts";
 
 describe("next-sync.yml", () => {
   const sync = workflowText("next-sync.yml");
@@ -25,15 +27,6 @@ describe("next-sync.yml", () => {
     assert.deepEqual(run({}), [1, "", "::error::RELEASE_APP_ID"]);
   });
 });
-
-const ciNode = workflowText("ci-node.yml");
-const jobText = (name: string): string => {
-  const start = ciNode.indexOf(`\n  ${name}:\n`);
-  assert.notEqual(start, -1, `no job ${name}`);
-  const next = /\n {2}[\w-]+:\n/g;
-  next.lastIndex = start + 1;
-  return ciNode.slice(start, next.exec(ciNode)?.index);
-};
 
 describe("ci-node.yml runners", () => {
   test("the small jobs take the caller's RUNNER_CI_SMALL lane before RUNNER_CI, and the legs and Stress keep RUNNER_CI", () => {
@@ -157,43 +150,104 @@ describe("ci-node.yml", () => {
       assert.equal(checks(event, false, "cancelled"), "failure", `${event}: a leg that timed out is cancelled in a run that was not`);
     }
   });
+});
+
+describe("ci-node.yml shards", () => {
+  const allCallers = (axes: Record<string, Json[]>): Overrides[] =>
+    Object.entries(axes).reduce<Overrides[]>((callers, [input, choices]) => callers.flatMap((caller) => choices.map((choice) => ({ ...caller, [input]: choice }))), [{}]);
+  const noExtra = { "extra-commands-job": false, "extra-commands": "" };
 
   test("extra-commands-shards splits the extra-commands job into one job per shard, and the default keeps one", () => {
-    const node = jobText("node");
-    const line = (key: string): string => new RegExp(`^ {4,8}${key}: (.*)$`, "m").exec(node)?.[1] ?? "";
-    const extra = stepOf(ciNode, "Run extra commands");
-    const extraIf = /^ {8}if: (.*)$/m.exec(extra)?.[1] ?? "";
-    const extraShard = /^ {10}ANTELOPEJS_CI_SHARD: (.*)$/m.exec(extra)?.[1] ?? "";
-    const legs = (overrides: JsonObject): string[] => {
-      const inputs = { "node-versions": "", "single-job": true, "services-compose-file": "", "extra-commands": "pnpm run e2e", "extra-commands-job": true, "extra-commands-shards": 1, "formal-checks": "", ...overrides };
-      const ran = evaluate(/^ {4}if: (.*)$/m.exec(jobText("shards"))?.[1] ?? "", { inputs }) === true;
-      const listed = ran ? runStep(ciNode, "List the extra-commands shards", root, { SHARDS: String(inputs["extra-commands-shards"]) }) : undefined;
-      assert.equal(listed?.status ?? 0, 0, listed?.stderr);
-      const outputs: Record<string, string> = {};
-      for (const entry of (listed?.outputs ?? "").split("\n").filter(Boolean)) {
-        const [key = "", value = ""] = entry.split(/=(.*)/s);
-        outputs[key] = value;
-      }
-      const scope = { inputs, needs: { windows: { outputs: { visibility: "" } }, shards: { outputs } } };
-      const exclude = evaluateRules(line("exclude"), scope);
-      const combinations = (["os", "node-version", "part", "shard"] as const)
-        .reduce<Record<string, string>[]>((partial, key) => partial.flatMap((matrix) => evaluateStrings(line(key), scope).map((value) => ({ ...matrix, [key]: value }))), [{}])
-        .filter((matrix) => !exclude.some((rule) => Object.entries(rule).every(([key, value]) => matrix[key] === value)));
-      return combinations.map((matrix) => {
-        const name = interpolate(line("name"), { matrix });
-        if (evaluate(extraIf, { matrix, inputs, steps: { leg: { outputs: { work: "true" } } } }) !== true) return name;
-        const shard = interpolate(extraShard, { matrix });
-        const result = runStep(ciNode, "Run extra commands", root, { ANTELOPEJS_CI_TIER: "full", EXTRA_COMMANDS: 'echo "shard ${ANTELOPEJS_CI_SHARD-unset}"', ANTELOPEJS_CI_SHARD: shard });
-        assert.equal(result.status, 0, result.stderr);
-        return `${name}: ${result.stdout.trim()}`;
-      });
-    };
-
     assert.deepEqual(legs({}), ["Node .nvmrc", "Extra .nvmrc: shard unset"]);
     assert.deepEqual(legs({ "extra-commands-shards": 3 }), ["Node .nvmrc", "Extra .nvmrc 1/3: shard 1/3", "Extra .nvmrc 2/3: shard 2/3", "Extra .nvmrc 3/3: shard 3/3"]);
     assert.deepEqual(legs({ "extra-commands-shards": 2, "single-job": false }), ["Node .nvmrc", "Test .nvmrc", "Extra .nvmrc 1/2: shard 1/2", "Extra .nvmrc 2/2: shard 2/2"]);
     assert.deepEqual(legs({ "extra-commands-shards": 3, "extra-commands-job": false }), ["Node .nvmrc: shard unset"]);
-    assert.notEqual(runStep(ciNode, "List the extra-commands shards", root, { SHARDS: "2.5" }).status, 0);
+    assert.notEqual(runStep(ciNode, "List the shards", root, { EXTRA_SHARDS: "2.5", TEST_SHARDS: "1" }).status, 0);
+  });
+
+  test("a caller that passes no test-shards, or 1, gets the jobs it always had", () => {
+    assert.equal(declaredTestShards, 1);
+    const callers = allCallers({
+      "single-job": [true, false],
+      "services-compose-file": ["", "docker-compose.yml"],
+      "extra-commands-job": [true, false],
+      "extra-commands": ["pnpm run e2e", ""],
+      "extra-commands-shards": [1, 3],
+      "node-versions": ["", "[22, 24]"],
+    });
+    assert.equal(callers.length, 64);
+    for (const caller of callers) {
+      assert.deepEqual(runs({ ...caller, "test-shards": 1 }), runs({ ...caller, "test-shards": undefined }), JSON.stringify(caller));
+    }
+
+    assert.deepEqual(names(noExtra), ["Node .nvmrc"]);
+    assert.deepEqual(runs(noExtra), ["Node .nvmrc: tests shard unset"]);
+    assert.deepEqual(runs({ ...noExtra, "single-job": false }), ["Node .nvmrc", "Test .nvmrc: tests shard unset"]);
+    assert.deepEqual(runs({ ...noExtra, "services-compose-file": "docker-compose.yml", "node-versions": "[22, 24]" }), ["Node 22", "Test 22: tests shard unset", "Node 24", "Test 24: tests shard unset"]);
+    assert.deepEqual(runs({}), ["Node .nvmrc: tests shard unset", "Extra .nvmrc: extra shard unset"]);
+    assert.deepEqual(runs({ "extra-commands-shards": 3 }), ["Node .nvmrc: tests shard unset", "Extra .nvmrc 1/3: extra shard 1/3", "Extra .nvmrc 2/3: extra shard 2/3", "Extra .nvmrc 3/3: extra shard 3/3"]);
+    for (const caller of [{}, { "extra-commands-shards": 3, "extra-commands-job": false }, { "test-shards": 1 }]) {
+      assert.equal(listed(inputsOf(caller)), undefined, "no Extra shards job when nothing splits");
+    }
+
+    const outputs = listed(inputsOf({ "extra-commands-shards": 3 }));
+    assert.equal(outputs?.shards, '["","1/3","2/3","3/3"]');
+    const rules = evaluateRules(outputs?.exclude ?? "[]", {}).map((rule) => `${rule.part} ${rule.shard}`);
+    assert.deepEqual(rules.sort(), ["all 1/3", "all 2/3", "all 3/3", "checks 1/3", "checks 2/3", "checks 3/3", "extra ", "test 1/3", "test 2/3", "test 3/3"]);
+  });
+
+  test("test-shards splits the tests of each Node version into one job per shard, and the checks run once in their own Node leg", () => {
+    const four = { ...noExtra, "node-versions": "[22, 24]", "test-shards": 4 };
+    const versions = ["22", "24"];
+    assert.deepEqual(names(four), versions.flatMap((version) => [`Node ${version}`, ...[1, 2, 3, 4].map((shard) => `Test ${version} ${shard}/4`)]));
+    assert.deepEqual(runs(four), versions.flatMap((version) => [`Node ${version}`, ...[1, 2, 3, 4].map((shard) => `Test ${version} ${shard}/4: tests shard ${shard}/4`)]));
+    assert.deepEqual(runs({ ...four, "single-job": false }), runs(four), "single-job false changes nothing once the tests are split");
+    assert.deepEqual(runs({ ...four, "services-compose-file": "docker-compose.yml" }), runs(four));
+    assert.deepEqual(runs({ ...noExtra, "test-shards": 2 }), ["Node .nvmrc", "Test .nvmrc 1/2: tests shard 1/2", "Test .nvmrc 2/2: tests shard 2/2"]);
+  });
+
+  test("test-shards and extra-commands-shards of different counts split their own part only", () => {
+    const tests = (count: number): string[] => Array.from({ length: count }, (_, index) => `Test .nvmrc ${index + 1}/${count}: tests shard ${index + 1}/${count}`);
+    const extras = (count: number): string[] => Array.from({ length: count }, (_, index) => `Extra .nvmrc ${index + 1}/${count}: extra shard ${index + 1}/${count}`);
+    assert.deepEqual(runs({ "test-shards": 4, "extra-commands-shards": 2 }), ["Node .nvmrc", ...tests(4), ...extras(2)]);
+    assert.deepEqual(runs({ "test-shards": 2, "extra-commands-shards": 3 }), ["Node .nvmrc", ...tests(2), ...extras(3)]);
+    assert.deepEqual(runs({ "test-shards": 3, "extra-commands-shards": 1 }), ["Node .nvmrc", ...tests(3), "Extra .nvmrc: extra shard unset"]);
+    assert.deepEqual(runs({ "test-shards": 4, "extra-commands-shards": 3, "extra-commands-job": false }), ["Node .nvmrc: extra shard unset", ...tests(4)]);
+  });
+
+  test("test-shards that is not a whole number fails the shards step and names the input", () => {
+    for (const value of ["2.5", "0", "-1", "", "abc"]) {
+      const result = runStep(ciNode, "List the shards", root, { EXTRA_SHARDS: "1", TEST_SHARDS: value });
+      assert.notEqual(result.status, 0, value);
+      assert.match(result.stdout, /^::error::test-shards must be a whole number/, value);
+    }
+    const extra = runStep(ciNode, "List the shards", root, { EXTRA_SHARDS: "2.5", TEST_SHARDS: "2" });
+    assert.notEqual(extra.status, 0);
+    assert.match(extra.stdout, /^::error::extra-commands-shards must be a whole number/);
+    assert.equal(runStep(ciNode, "List the shards", root, { EXTRA_SHARDS: "1", TEST_SHARDS: "3" }).status, 0);
+  });
+
+  test("a pull request that changes only documentation runs no test shard, and one that changes source runs all of them", () => {
+    const summary = join(root, "shards-summary");
+    const environment = join(root, "shards-env");
+    const checkout = repository("shards-checkout", { "README.md": "a\n", "docs/guide.md": "a\n", "src/a.ts": "a\n" });
+    const pick = (part: string): Picked => {
+      writeFileSync(summary, "");
+      writeFileSync(environment, "");
+      const result = runStep(ciNode, "Pick the work of this leg from the tier", checkout.directory, { TIER: "fast", BASE: checkout.sha, PART: part, EVENT: "pull_request", NIGHTLY: "false", PRIMARY_LEG: "true", GITHUB_ENV: environment, GITHUB_STEP_SUMMARY: summary });
+      assert.equal(result.status, 0, result.stderr);
+      const outputs = outputsOf(result.outputs);
+      return { work: outputs.work, tests: outputs.tests };
+    };
+    const split = { ...noExtra, "test-shards": 4 };
+
+    commitFiles(checkout.directory, "docs: readme", { "README.md": "b\n", "docs/guide.md": "b\n", "docs/new.md": "c\n" });
+    assert.equal(pick("test").work, "false");
+    assert.deepEqual(runs(split, pick), ["Node .nvmrc", "Test .nvmrc 1/4", "Test .nvmrc 2/4", "Test .nvmrc 3/4", "Test .nvmrc 4/4"]);
+
+    commitFiles(checkout.directory, "fix: a", { "src/a.ts": "b\n" });
+    assert.equal(pick("test").work, "true");
+    assert.deepEqual(runs(split, pick), ["Node .nvmrc", ...[1, 2, 3, 4].map((shard) => `Test .nvmrc ${shard}/4: tests shard ${shard}/4`)]);
   });
 });
 
