@@ -63,6 +63,7 @@ jobs:
           if ! git diff --quiet -- package.json; then
             pnpm install --lockfile-only --reporter=silent
           fi
+          git add -A
           if ! out=$(pnpm run --silent --if-present format 2>&1); then
             echo "$out"
             exit 1
@@ -78,6 +79,27 @@ jobs:
               git status --porcelain --untracked-files=all -- .github/workflows .github/actions | sed 's/^/- /'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
+            exit 1
+          fi
+          unsafe=$(git ls-files --others --exclude-standard)
+          unsafe+=$'\n'$(git diff --summary | sed -n 's/^ mode change [0-7]* => [0-7]* //p')
+          git diff -z --name-only > "$RUNNER_TEMP/formatted"
+          while IFS= read -r -d '' path; do
+            if [ ! -f "$path" ] || ! cmp -s <(git show ":$path" | tr -d '[:space:]') <(tr -d '[:space:]' < "$path"); then
+              unsafe+=$'\n'"$path"
+            fi
+          done < "$RUNNER_TEMP/formatted"
+          if [ -n "${unsafe//$'\n'/}" ]; then
+            {
+              echo "### Renovate sync: format script changes more than layout"
+              echo
+              echo "The \`format\` script changes more than whitespace and line breaks. Nothing was pushed: a lint fix or a rewrite needs a human commit."
+              echo
+              echo "Changed paths:"
+              echo
+              grep . <<< "$unsafe" | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The format script changes more than whitespace; nothing pushed."
             exit 1
           fi
           if git status --porcelain --untracked-files=all | grep -q .; then
