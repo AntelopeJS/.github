@@ -28,22 +28,6 @@ describe("next-sync.yml", () => {
   });
 });
 
-describe("ci-node.yml runners", () => {
-  test("the small jobs take the caller's RUNNER_CI_SMALL lane before RUNNER_CI, and the legs and Stress keep RUNNER_CI", () => {
-    const runsOn = (job: string): string => /^ {4}runs-on: (.*)$/m.exec(jobText(job))?.[1] ?? "";
-    const on = (job: string, vars: JsonObject): Evaluated => evaluate(runsOn(job), { vars, matrix: { os: "ubuntu-latest" } });
-    for (const job of ["eligibility", "shards", "gate"]) {
-      assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci-small", job);
-      assert.equal(on(job, { RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: without a small lane, the pool as before`);
-      assert.equal(on(job, { RUNNER_CI_SMALL: "", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job}: an empty variable is unset`);
-      assert.equal(on(job, {}), "blacksmith-4vcpu-ubuntu-2404", `${job}: a repository that sets nothing`);
-    }
-    for (const job of ["node", "stress"]) {
-      assert.equal(on(job, { RUNNER_CI_SMALL: "antelope-ci-small", RUNNER_CI: "antelope-ci" }), "antelope-ci", `${job} runs a full install: never the small lane`);
-    }
-  });
-});
-
 describe("ci-node.yml verdict", () => {
   const key = (job: string, name: string): string => new RegExp(`^ {4}${name}: (.*)$`, "m").exec(jobText(job))?.[1] ?? "";
 
