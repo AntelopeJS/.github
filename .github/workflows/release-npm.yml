@@ -229,25 +229,46 @@ jobs:
         env:
           PACKAGE_DIRECTORY: ${{ inputs.package-directory }}
         run: |
-          set -euo pipefail
-          root=$(pwd -P)
-          current=$(cd "$PACKAGE_DIRECTORY" && pwd -P)
-          directory=$PACKAGE_DIRECTORY
-          while :; do
-            if [ -f "$current/pnpm-workspace.yaml" ]; then
-              if [ "$current" = "$root" ]; then
-                directory=.
-              else
-                directory=${current#"$root"/}
-              fi
-              break
-            fi
-            if [ "$current" = "$root" ]; then
-              break
-            fi
-            current=$(dirname "$current")
-          done
-          echo "install-directory=$directory" >> "$GITHUB_OUTPUT"
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const root = fs.realpathSync('.')
+          const directory = fs.realpathSync(process.env.PACKAGE_DIRECTORY)
+          const unquote = (value) => value.trim().replace(/^(['"])(.*)\1$/, '$2')
+          const globsOf = (file) => {
+            const lines = fs.readFileSync(file, 'utf8').split('\n')
+            const start = lines.findIndex((line) => /^packages:/.test(line))
+            if (start === -1) return []
+            const inline = /^packages:\s*\[(.*)\]\s*$/.exec(lines[start])
+            if (inline) return inline[1].split(',').map(unquote).filter(Boolean)
+            const globs = []
+            for (const line of lines.slice(start + 1)) {
+              const item = /^\s+-\s+(.*?)\s*$/.exec(line)
+              if (item) globs.push(unquote(item[1]))
+              else if (line.trim() !== '' && !line.trim().startsWith('#')) break
+            }
+            return globs
+          }
+          const matcher = (glob) => {
+            const normalized = glob.replace(/^\.\//, '').replace(/\/+$/, '') || '.'
+            const source = normalized.split(/(\*\*|\*|\?)/).map((part) => ({ '**': '.*', '*': '[^/]*', '?': '[^/]' })[part] ?? part.replace(/[.+^${}()|[\]\\]/g, '\\$&')).join('')
+            return new RegExp(`^${source}$`)
+          }
+          const includes = (workspace) => {
+            const relative = path.relative(workspace, directory) || '.'
+            if (relative === '.') return true
+            const globs = globsOf(path.join(workspace, 'pnpm-workspace.yaml'))
+            const matches = (glob) => matcher(glob).test(relative)
+            return globs.some((glob) => !glob.startsWith('!') && matches(glob)) && !globs.some((glob) => glob.startsWith('!') && matches(glob.slice(1)))
+          }
+          const workspaces = []
+          for (let current = directory; ; current = path.dirname(current)) {
+            if (fs.existsSync(path.join(current, 'pnpm-workspace.yaml'))) workspaces.push(current)
+            if (current === root) break
+          }
+          const install = workspaces.findLast(includes) ?? workspaces[0] ?? directory
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `install-directory=${path.relative(root, install) || '.'}\n`)
+          NODE
 
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
