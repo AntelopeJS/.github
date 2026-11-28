@@ -214,7 +214,8 @@ writeFileSync(
 /**
  * A fake `gh`, first on the `PATH` of every step, so no test calls GitHub. It logs each call and its token to
  * `FAKE_GH_LOG`, and answers `gh api …/git/matching-refs/…` with `FAKE_GH_REFS` and `gh api …/compare/…` with
- * `FAKE_GH_COMPARE`, as their `--jq` would print them. An unset answer fails the call, as a failed API call does.
+ * `FAKE_GH_COMPARE`, and `gh api repos/<repo>` with `FAKE_GH_VISIBILITY`, as their `--jq` would print them. An unset
+ * answer fails the call, as a failed API call does.
  */
 const ghBin = join(root, "gh-bin");
 mkdirSync(ghBin);
@@ -226,6 +227,7 @@ writeFileSync(
     'case "$1 $2" in',
     '  "api "*/git/matching-refs/*) [ -n "${FAKE_GH_REFS+set}" ] || exit 1; [ -z "$FAKE_GH_REFS" ] || printf "%s\\n" "$FAKE_GH_REFS" ;;',
     '  "api "*/compare/*) [ -n "${FAKE_GH_COMPARE+set}" ] || exit 1; printf "%s\\n" "$FAKE_GH_COMPARE" ;;',
+    '  "api repos/"*) [ -n "${FAKE_GH_VISIBILITY+set}" ] || exit 1; printf "%s\\n" "$FAKE_GH_VISIBILITY" ;;',
     "  *) exit 1 ;;",
     "esac",
   ].join("\n"),
@@ -245,3 +247,11 @@ export const fakeEnv = (dir: string, extra: Record<string, string>) => ({
   FAKE_CALLS: join(dir, "calls"),
   ...extra,
 });
+
+/** A `PATH` whose `date -u +%u` prints `weekday`, 1 for Monday to 7 for Sunday, with the fake `gh` after it. */
+export function dayPath(weekday: number): string {
+  const dir = join(root, `day-${weekday}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "date"), ["#!/usr/bin/env bash", '[ "$*" = "-u +%u" ] || exit 1', `echo ${weekday}`].join("\n"), { mode: 0o755 });
+  return `${dir}:${ghBin}:${process.env.PATH}`;
+}
