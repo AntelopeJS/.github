@@ -113,10 +113,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          others=$(gh api --paginate "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --jq '.jobs[] | select(.runner_name != env.RUNNER_NAME) | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not)) | "\(.name): \(.conclusion // .status)"')
+          others=$(gh api --paginate "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --jq '
+            def lock: IN("Check that the module locks are committed", "Run AntelopeJS/.github/.github/actions/module-locks-committed@v2");
+            def aggregator: split(" / ") | last | IN("checks", "verdict", "ubuntu");
+            .jobs[]
+            | select(.runner_name != env.RUNNER_NAME and (.name | aggregator | not))
+            | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not))
+            | select((.conclusion == "failure" and ([.steps[] | select(.conclusion == "failure") | .name] | length > 0 and all(lock))) | not)
+            | "\(.name): \(.conclusion // .status)"')
           if [ -n "$others" ]; then
             printf '%s\n' "$others"
-            echo "::notice::The jobs above did not pass or still run, so the checks run again in full on the lock commit."
+            echo "::notice::The jobs above failed for another reason than the module locks, or still run, so the checks run again in full on the lock commit."
             exit 0
           fi
           echo "passed=true" >> "$GITHUB_OUTPUT"
