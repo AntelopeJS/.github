@@ -951,9 +951,17 @@ App, scoped to the calling repository with `contents: write` and
 installs and runs the bumped dependencies, never holds the key or the token. A
 push made with the app token starts the pull request's checks on the new head,
 so no job waits for another run. A patch that touches `.github/workflows/**` or
-`.github/actions/**` is pushed only when the pull request's diff bumps
-`@antelopejs/tooling-configs` in a `package.json`; on any other pull request the
-job fails and names each such file.
+`.github/actions/**` is pushed only when the pull request moves
+`@antelopejs/tooling-configs` in the `dependencies` or `devDependencies` of the
+root `package.json` from one plain version or range to another, as parsed JSON,
+and brings no other code into the sync: every other dependency spec it changes,
+in any `package.json`, is a plain version of an `@antelopejs/` package, it
+changes no override, resolution or patch, it adds no package outside
+`@antelopejs/` to a `pnpm-lock.yaml`, and it changes no file other than
+`package.json`, `pnpm-lock.yaml` and workflow files. Otherwise nothing is pushed,
+the pull request stays One-tap, and the summary names the reason and each file.
+A tooling-configs bump grouped with `oxfmt`, `oxlint` or `@oxlint/plugins` stays
+One-tap, since their code runs in the sync.
 
 Without the secrets, the `push` job pushes with `GITHUB_TOKEN`. A push made with
 `GITHUB_TOKEN` starts no workflow run, so the job then

@@ -160,11 +160,73 @@ jobs:
           if [ -z "$workflows" ]; then
             exit 0
           fi
-          if [ "$APP_TOKEN" != true ]; then
+          base=$(git merge-base "origin/${BASE_REF}" HEAD)
+          manifest() {
+            git show "$1:$2" 2>/dev/null || echo '{}'
+          }
+          specs() {
+            { manifest "$1" "$2" | jq -r 2>/dev/null '
+              def section($name; $deps): if ($deps | type) == "object" then $deps | to_entries[] | "\($name)\t\(.key)\t\(.value | tojson)" else empty end;
+              section("dependencies"; .dependencies), section("devDependencies"; .devDependencies),
+              section("peerDependencies"; .peerDependencies), section("optionalDependencies"; .optionalDependencies),
+              section("overrides"; .overrides), section("resolutions"; .resolutions),
+              section("pnpm.overrides"; .pnpm.overrides?), section("pnpm.patchedDependencies"; .pnpm.patchedDependencies?)' \
+              || printf 'unparsable\t%s\t""\n' "$(git rev-parse -q --verify "$1:$2" || echo none)"; } | sort
+          }
+          tooling() {
+            manifest "$1" package.json | jq -r '[(.dependencies, .devDependencies) | objects | .["@antelopejs/tooling-configs"] | strings] | if length == 1 then .[0] else "" end'
+          }
+          locked() {
+            git show "$1:$2" 2>/dev/null | awk '/^[^ ]/ { packages = ($0 == "packages:") } packages && /^  [^ ]/ { key = substr($0, 3); sub(/:( \{\})?$/, "", key); gsub(/["\047]/, "", key); sub(/^\//, "", key); print key }' | sort -u
+          }
+          refusal() {
+            if [ "$APP_TOKEN" != true ]; then
+              echo "GITHUB_TOKEN cannot push workflow files, so this needs a human tap, or the job that calls ci-renovate-sync.yml passes RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY."
+              return
+            fi
+            semver='^[~^]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+            before=$(tooling "$base")
+            after=$(tooling HEAD)
+            if [[ ! "$before" =~ $semver ]] || [[ ! "$after" =~ $semver ]] || [ "$before" = "$after" ]; then
+              echo "Only a pull request that moves @antelopejs/tooling-configs in the root package.json from one plain version to another may change workflow files; this one moves it from '${before}' to '${after}'."
+              return
+            fi
+            others=$(git diff --name-only "$base" HEAD -- . ':(exclude,glob)**/package.json' ':(exclude,glob)**/pnpm-lock.yaml' ':(exclude,glob).github/workflows/**' | paste -sd ' ' -)
+            if [ -n "$others" ]; then
+              echo "The pull request changes files other than package.json, pnpm-lock.yaml and workflow files: ${others}."
+              return
+            fi
+            moved=""
+            while IFS= read -r -d '' file; do
+              moved+=$(comm -3 <(specs "$base" "$file") <(specs HEAD "$file") | awk -F '\t' -v file="$file" '
+                { head = ($1 == ""); section = head ? $2 : $1; name = head ? $3 : $2; spec = head ? $4 : $3 }
+                section ~ /overrides|resolutions|patched|unparsable/ || name !~ /^@antelopejs\// || (head && spec !~ /^"[~^]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?"$/) { print section " " name " (" file ")" }')
+              moved+=$'\n'
+            done < <(git diff -z --name-only "$base" HEAD -- ':(glob)**/package.json')
+            moved=$(grep . <<< "$moved" | sort -u | paste -sd ',' - || true)
+            if [ -n "$moved" ]; then
+              echo "The pull request also changes dependency specs other than a plain version of an @antelopejs/ package, and their code runs in the sync: ${moved}."
+              return
+            fi
+            added=""
+            while IFS= read -r -d '' file; do
+              added+=$(comm -13 <(locked "$base" "$file") <(locked HEAD "$file") | grep -v '^@antelopejs/' || true)
+              added+=$'\n'
+            done < <(git diff -z --name-only "$base" HEAD -- ':(glob)**/pnpm-lock.yaml')
+            added=$(grep . <<< "$added" | sort -u | paste -sd ' ' - || true)
+            if [ -n "$added" ]; then
+              echo "The pull request adds packages outside @antelopejs/ to the lockfile, and their code runs in the sync: ${added}."
+              return
+            fi
+            echo ok
+          }
+          reason=$(refusal || true)
+          if [ "$reason" != ok ]; then
+            reason=${reason:-The workflow-path check stopped before it finished.}
             {
               echo "### Renovate sync: One-tap"
               echo
-              echo "\`antelopejs-sync\` or the \`format\` script changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: GITHUB_TOKEN cannot push workflow files, so this needs a human tap, or the job that calls ci-renovate-sync.yml passes RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY."
+              echo "\`antelopejs-sync\` or the \`format\` script changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed. ${reason}"
               echo
               echo "Changed paths:"
               echo
@@ -172,13 +234,7 @@ jobs:
                 echo "- ${file}"
               done <<< "$workflows"
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
-            exit 1
-          fi
-          if ! git diff -U0 "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' | grep -Eq '^\+[[:space:]]*"@antelopejs/tooling-configs"[[:space:]]*:'; then
-            while IFS= read -r file; do
-              echo "::error::The sync output changes ${file}, and only a bump of @antelopejs/tooling-configs may change workflow paths; nothing pushed."
-            done <<< "$workflows"
+            echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap. ${reason}"
             exit 1
           fi
 

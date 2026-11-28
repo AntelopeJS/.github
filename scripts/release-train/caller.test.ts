@@ -206,4 +206,41 @@ test("each release app token asks only the permissions its job uses", () => {
   assert.deepEqual(asked("template-demo-sync.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
   assert.deepEqual(asked("renovate-sweep.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
   assert.deepEqual(asked("verdict-conformance.yml"), ["permission-contents: read"]);
+  assert.deepEqual(asked("ci-renovate-sync.yml"), ["permission-contents: write", "permission-workflows: write"]);
+});
+
+describe("ci-renovate-sync.yml keeps the release app away from repository code", () => {
+  const text = read("../../.github/workflows/ci-renovate-sync.yml");
+  const start = text.indexOf("\n  push:\n");
+  const next = text.slice(start + 1).search(/\n {2}[\w-]+:\n/);
+  const push = next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
+  const outside = text.replace(push, "");
+
+  test("the token is scoped to the calling repository alone", () => {
+    const token = push.split(/\n {6}- /).find((step) => step.includes("uses: actions/create-github-app-token@")) ?? "";
+    assert.match(token, /^ {10}repositories: \$\{\{ github\.event\.repository\.name \}\}$/m);
+    assert.doesNotMatch(token, /^ {10}owner:/m);
+  });
+
+  test("only the push job reads the app secrets or the token it mints", () => {
+    assert.notEqual(start, -1);
+    assert.match(push, /secrets\.RELEASE_APP_PRIVATE_KEY/);
+    assert.deepEqual(outside.match(/secrets\.|secrets\)|secrets: inherit|steps\.token\./g), null);
+  });
+
+  test("the push job installs and runs nothing from the repository", () => {
+    const steps = [...push.matchAll(/^ {6}- (.*)$/gm)].map(([, line]) => line);
+    assert.deepEqual(steps, [
+      "name: Pick the push credentials",
+      "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+      "uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
+      "name: Apply the sync output",
+      "name: Create the push token",
+      "name: Commit the sync output and push it with the app token",
+      "name: Commit the sync output and start checks",
+      "name: Report the dispatched checks on the sync commit",
+    ]);
+    assert.deepEqual(push.match(/(^|[;&|(]|\$\()[ \t]*(pnpm|npm|npx|yarn|bun|node|corepack|make|bash|sh|source|\.)[ \t]|\.\/[\w.-]/gm), null);
+    assert.equal([...push.matchAll(/git (-c core\.hooksPath=\/dev\/null )?commit/g)].every(([match]) => match.includes("hooksPath")), true);
+  });
 });
