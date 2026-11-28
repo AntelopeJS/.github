@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, test } from "node:test";
+import { runInNewContext } from "node:vm";
 import { readText } from "./helpers/read.ts";
 import { SYNC_PATH, syncRepository } from "./helpers/sync.ts";
 import { git, repoFile, runStep, write } from "./helpers/workflow.ts";
@@ -45,16 +46,64 @@ describe("ci-renovate-sync.yml", () => {
     }
   });
 
-  test("formats the repository after the sync, so a bump of oxfmt lands with the files it formats", () => {
-    const dir = syncRepository("antelopejs-sync", "AGENTS.md");
-    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { sync: "antelopejs-sync", format: "cat AGENTS.md > src/index.ts" } })}\n`, "src/index.ts": "unformatted\n" });
-    git(dir, "commit", "-qam", "format script");
+  const formatRepository = (format: string, source: string): string => {
+    const dir = syncRepository(undefined, "AGENTS.md");
+    write(dir, { "package.json": `${JSON.stringify({ name: "app", scripts: { format } })}\n`, "src/index.ts": source });
+    git(dir, "add", "-A");
+    git(dir, "commit", "-qm", "format script");
+    return dir;
+  };
+
+  test("commits the reformat of an oxfmt bump, so the pull request lands with the files it formats", () => {
+    const dir = formatRepository("printf 'export const a = [1, 2];\\n' > src/index.ts", "export const a = [\n  1,\n  2\n];\n");
 
     const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
 
     assert.equal(sync.status, 0, sync.stdout);
     assert.equal(sync.outputs.changed, "true");
-    assert.equal(readText(join(dir, "src/index.ts")), "synced \n");
+    assert.equal(readText(join(dir, "src/index.ts")), "export const a = [1, 2];\n");
+  });
+
+  test("commits nothing when the format script leaves every file as it is", () => {
+    const dir = formatRepository("true", "export const a = 1;\n");
+
+    const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+    assert.equal(sync.status, 0, sync.stdout);
+    assert.equal(sync.outputs.changed, undefined);
+  });
+
+  test("pushes nothing when the format script changes more than whitespace, such as a lint fix", () => {
+    for (const format of ["printf 'export const a = 1;\\n' > src/index.ts", "rm src/index.ts", "echo x > src/new.ts"]) {
+      const dir = formatRepository(format, "export let a = 1;\n");
+
+      const sync = runStep(renovateSync, SYNC, dir, SYNC_PATH);
+
+      assert.notEqual(sync.status, 0, format);
+      assert.match(sync.stdout, /::error::The format script changes more than whitespace/);
+      assert.equal(sync.outputs.changed, undefined);
+    }
+  });
+
+  test("runs only on a Renovate pull request from this repository", () => {
+    const lines = renovateSync.split("\n");
+    const start = lines.findIndex((line) => line.trim() === "if: >-");
+    const condition = lines
+      .slice(start + 1, lines.findIndex((line, index) => index > start && line.trim().startsWith("runs-on:")))
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith("#"))
+      .join(" ")
+      .replace(/==/g, "===");
+    const runs = (event: string, head: string, fork: string): boolean =>
+      runInNewContext(condition, {
+        startsWith: (text: string, prefix: string) => text.startsWith(prefix),
+        github: { event_name: event, head_ref: head, repository: "AntelopeJS/app", event: { pull_request: { head: { repo: { full_name: fork } } } } },
+      }) === true;
+
+    assert.equal(runs("pull_request", "renovate/oxfmt", "AntelopeJS/app"), true);
+    assert.equal(runs("pull_request", "fix/oxfmt", "AntelopeJS/app"), false);
+    assert.equal(runs("pull_request", "renovate/oxfmt", "someone/app"), false);
+    assert.equal(runs("merge_group", "renovate/oxfmt", "AntelopeJS/app"), false);
   });
 
   test("pushes nothing when the format script touches a workflow", () => {
