@@ -46,47 +46,56 @@ function parseAnswer(text: string): Json | undefined {
 const firstLine = (...texts: string[]): string =>
   (texts.flatMap((text) => text.split("\n")).find((line) => line.trim() !== "") ?? "nothing").slice(0, 200);
 
-function warnErrors(answer: Json): void {
-  if (!isObject(answer) || !isList(answer.errors)) return;
-  for (const entry of answer.errors) {
-    const path = isObject(entry) && isList(entry.path) ? entry.path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") : "?";
+/**
+ * Each error of a search page, named by the pull request it hides when its path points into `search.nodes`. A field
+ * the token may not read comes back null with such an error, and `gh` then exits nonzero.
+ */
+function pageErrors(answer: Json, nodes: Json[]): string[] {
+  if (!isObject(answer) || !isList(answer.errors)) return [];
+  return answer.errors.map((entry) => {
+    const path = isObject(entry) && isList(entry.path) ? entry.path : [];
+    const index = path[0] === "search" && path[1] === "nodes" ? path[2] : undefined;
+    const node = isNumber(index) ? nodes[index] : undefined;
+    const pull = isObject(node) && isNumber(node.number) && isObject(node.repository) && isText(node.repository.nameWithOwner) ? `${node.repository.nameWithOwner}#${node.number}: ` : "";
+    const where = path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") || "?";
     const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
-    process.stdout.write(`::warning::${path}: ${message}\n`);
-  }
+    return `${pull}${where}: ${message}`;
+  });
 }
 
-/**
- * The answer of a GraphQL query, asked up to three times while GitHub answers something that is not JSON. A field the
- * token may not read comes back null with an error, and `gh` then exits nonzero; each such error is printed as a
- * warning, and the pull request it hides is left alone.
- */
+/** The answer of a GraphQL query, asked up to three times while GitHub answers something that is not JSON. */
 function graphql(args: string[]): Json {
   let last = "nothing";
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const result = spawnSync("gh", ["api", "graphql", ...args], { encoding: "utf8", maxBuffer: MAX_ANSWER });
     const answer = result.error === undefined ? parseAnswer(result.stdout) : undefined;
-    if (answer !== undefined) {
-      warnErrors(answer);
-      return answer;
-    }
+    if (answer !== undefined) return answer;
     last = firstLine(result.error?.message ?? "", result.stdout, result.stderr);
   }
   throw new Error(`gh api graphql answered no JSON ${ATTEMPTS} times; the last answer: ${last}`);
 }
 
-function searchPulls(org: string): RenovatePull[] {
+/** The pull requests of the search, and one line per error that hid some of their fields. */
+interface Search {
+  pulls: RenovatePull[];
+  errors: string[];
+}
+
+function searchPulls(org: string): Search {
   const pulls: RenovatePull[] = [];
+  const errors: string[] = [];
   let cursor: string | null = null;
   do {
     const args = ["-f", `query=${SEARCH}`, "-f", `search=org:${org} is:pr is:open archived:false author:app/renovate`];
     if (cursor !== null) args.push("-f", `cursor=${cursor}`);
     const page = graphql(args);
     const search = isObject(page) && isObject(page.data) ? page.data.search : undefined;
-    if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error("The pull request search answered no search result.");
+    errors.push(...pageErrors(page, isObject(search) && isList(search.nodes) ? search.nodes : []));
+    if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error(`The pull request search answered no search result: ${errors.join("; ") || "and no error"}`);
     pulls.push(...search.nodes.flatMap((node) => parsePull(node) ?? []));
     cursor = search.pageInfo.hasNextPage === true && isText(search.pageInfo.endCursor) ? search.pageInfo.endCursor : null;
   } while (cursor !== null);
-  return pulls;
+  return { pulls, errors };
 }
 
 function isBehind(pull: RenovatePull): boolean {
@@ -114,15 +123,16 @@ if (org === undefined || org === "--help" || (flag !== undefined && flag !== "--
 }
 const dryRun = flag === "--dry-run";
 
-let pulls: RenovatePull[];
+let search: Search;
 try {
-  pulls = searchPulls(org);
+  search = searchPulls(org);
 } catch (error) {
   process.stdout.write(`::error::${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n`);
   process.exit(1);
 }
-let failed = 0;
-for (const pull of pulls) {
+for (const error of search.errors) process.stdout.write(`::warning::${error}\n`);
+let failed = search.errors.length > 0 ? 1 : 0;
+for (const pull of search.pulls) {
   const link = `${pull.repo}#${pull.number}`;
   try {
     const move = moveOf(pull, () => isBehind(pull));
