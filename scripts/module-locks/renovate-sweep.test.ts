@@ -212,4 +212,17 @@ describe("renovate-sweep-main.ts", () => {
     assert.equal(run.stdout, "::error::AntelopeJS/web#49: gh api compare answered no JSON: <!DOCTYPE html>\n");
     assert.equal(run.status, 1);
   });
+
+  test("names each pull request whose checks the token may not read, moves the others, and exits nonzero", () => {
+    const nodes = [node({ repo: "AntelopeJS/dms-saas", rollup: null }), node()];
+    const path = ["search", "nodes", 0, "commits", "nodes", 0, "commit", "statusCheckRollup"];
+    const errors = [{ type: "FORBIDDEN", path, message: "Resource not accessible by integration" }];
+    const run = sweep(JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } }, errors }));
+    assert.equal(
+      run.stdout,
+      "::warning::AntelopeJS/dms-saas#49: search.nodes.0.commits.nodes.0.commit.statusCheckRollup: Resource not accessible by integration\n" +
+        "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n",
+    );
+    assert.equal(run.status, 1);
+  });
 });
