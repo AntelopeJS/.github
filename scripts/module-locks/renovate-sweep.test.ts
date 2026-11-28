@@ -213,6 +213,12 @@ describe("renovate-sweep-main.ts", () => {
     assert.equal(run.status, 1);
   });
 
+  test("names GitHub's error when the search answers no result", () => {
+    const run = sweep(JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] }));
+    assert.equal(run.stdout, "::error::The pull request search answered no search result: ?: API rate limit exceeded\n");
+    assert.equal(run.status, 1);
+  });
+
   test("names each pull request whose checks the token may not read, moves the others, and exits nonzero", () => {
     const nodes = [node({ repo: "AntelopeJS/dms-saas", rollup: null }), node()];
     const path = ["search", "nodes", 0, "commits", "nodes", 0, "commit", "statusCheckRollup"];

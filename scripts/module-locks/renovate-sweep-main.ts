@@ -91,7 +91,7 @@ function searchPulls(org: string): Search {
     const page = graphql(args);
     const search = isObject(page) && isObject(page.data) ? page.data.search : undefined;
     errors.push(...pageErrors(page, isObject(search) && isList(search.nodes) ? search.nodes : []));
-    if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error("The pull request search answered no search result.");
+    if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error(`The pull request search answered no search result: ${errors.join("; ") || "and no error"}`);
     pulls.push(...search.nodes.flatMap((node) => parsePull(node) ?? []));
     cursor = search.pageInfo.hasNextPage === true && isText(search.pageInfo.endCursor) ? search.pageInfo.endCursor : null;
   } while (cursor !== null);
