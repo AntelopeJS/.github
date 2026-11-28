@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { isList, isNumber, isObject, isText, parseJson, type Json } from "../ci-metrics/json.ts";
-import { moveOf, parsePull, tickRebase, type RenovatePull } from "./renovate-sweep.ts";
+import { HELD_REPOSITORIES, moveOf, parsePull, tickRebase, type RenovatePull } from "./renovate-sweep.ts";
 
 const usage = `usage: node scripts/module-locks/renovate-sweep-main.ts <organisation> [--dry-run]
 
@@ -46,20 +46,27 @@ function parseAnswer(text: string): Json | undefined {
 const firstLine = (...texts: string[]): string =>
   (texts.flatMap((text) => text.split("\n")).find((line) => line.trim() !== "") ?? "nothing").slice(0, 200);
 
-/**
- * Each error of a search page, named by the pull request it hides when its path points into `search.nodes`. A field
- * the token may not read comes back null with such an error, and `gh` then exits nonzero.
- */
-function pageErrors(answer: Json, nodes: Json[]): string[] {
+/** An error of a search page. */
+interface PageError {
+  /** The repository of the pull request it hides, when its path points into `search.nodes`. */
+  repo: string | null;
+  /** It forbids only the check rollup of that pull request, as for a token without Checks and Commit statuses read. */
+  checksOnly: boolean;
+  line: string;
+}
+
+/** Each error of a search page. A field the token may not read comes back null with such an error, and `gh` then exits nonzero. */
+function pageErrors(answer: Json, nodes: Json[]): PageError[] {
   if (!isObject(answer) || !isList(answer.errors)) return [];
   return answer.errors.map((entry) => {
     const path = isObject(entry) && isList(entry.path) ? entry.path : [];
     const index = path[0] === "search" && path[1] === "nodes" ? path[2] : undefined;
     const node = isNumber(index) ? nodes[index] : undefined;
-    const pull = isObject(node) && isNumber(node.number) && isObject(node.repository) && isText(node.repository.nameWithOwner) ? `${node.repository.nameWithOwner}#${node.number}: ` : "";
+    const pull = isObject(node) && isNumber(node.number) && isObject(node.repository) && isText(node.repository.nameWithOwner) ? { repo: node.repository.nameWithOwner, number: node.number } : null;
     const where = path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") || "?";
     const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
-    return `${pull}${where}: ${message}`;
+    const line = pull === null ? `${where}: ${message}` : `${pull.repo}#${pull.number}: ${where}: ${message}`;
+    return { repo: pull?.repo ?? null, checksOnly: pull !== null && isObject(entry) && entry.type === "FORBIDDEN" && path.at(-1) === "statusCheckRollup", line };
   });
 }
 
@@ -75,14 +82,17 @@ function graphql(args: string[]): Json {
   throw new Error(`gh api graphql answered no JSON ${ATTEMPTS} times; the last answer: ${last}`);
 }
 
-/** The pull requests of the search, and one line per error that hid some of their fields. */
+/** The pull requests of the search, and one line per error that hid some of their fields, outside held repositories. */
 interface Search {
   pulls: RenovatePull[];
+  /** Pull requests whose checks the token may not read: each is left alone, and the sweep still succeeds. */
+  unreadable: string[];
   errors: string[];
 }
 
 function searchPulls(org: string): Search {
   const pulls: RenovatePull[] = [];
+  const unreadable: string[] = [];
   const errors: string[] = [];
   let cursor: string | null = null;
   do {
@@ -90,12 +100,15 @@ function searchPulls(org: string): Search {
     if (cursor !== null) args.push("-f", `cursor=${cursor}`);
     const page = graphql(args);
     const search = isObject(page) && isObject(page.data) ? page.data.search : undefined;
-    errors.push(...pageErrors(page, isObject(search) && isList(search.nodes) ? search.nodes : []));
+    for (const error of pageErrors(page, isObject(search) && isList(search.nodes) ? search.nodes : [])) {
+      if (error.repo !== null && HELD_REPOSITORIES.has(error.repo)) continue;
+      (error.checksOnly ? unreadable : errors).push(error.line);
+    }
     if (!isObject(search) || !isList(search.nodes) || !isObject(search.pageInfo)) throw new Error(`The pull request search answered no search result: ${errors.join("; ") || "and no error"}`);
     pulls.push(...search.nodes.flatMap((node) => parsePull(node) ?? []));
     cursor = search.pageInfo.hasNextPage === true && isText(search.pageInfo.endCursor) ? search.pageInfo.endCursor : null;
   } while (cursor !== null);
-  return { pulls, errors };
+  return { pulls, unreadable, errors };
 }
 
 function isBehind(pull: RenovatePull): boolean {
@@ -130,7 +143,7 @@ try {
   process.stdout.write(`::error::${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n`);
   process.exit(1);
 }
-for (const error of search.errors) process.stdout.write(`::warning::${error}\n`);
+for (const error of [...search.unreadable, ...search.errors]) process.stdout.write(`::warning::${error}\n`);
 let failed = search.errors.length > 0 ? 1 : 0;
 for (const pull of search.pulls) {
   const link = `${pull.repo}#${pull.number}`;
@@ -147,5 +160,10 @@ for (const pull of search.pulls) {
     failed = 1;
     process.stdout.write(`::error::${link}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n`);
   }
+}
+const unreadable = search.unreadable.length;
+if (unreadable > 0) {
+  const count = unreadable === 1 ? "1 pull request" : `${unreadable} pull requests`;
+  process.stdout.write(`${count} could not be read: the release app needs Checks and Commit statuses read access\n`);
 }
 process.exit(failed);
