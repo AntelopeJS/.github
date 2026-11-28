@@ -16,6 +16,10 @@ env:
   BRANCH: antelopejs/demo-sync
   TITLE: "chore(demo): sync demo/ with template-dms-demo"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Runs template-dms-adonis's own scripts/sync-demo.sh against template-dms-demo's main, with no write token, and
   # hands the result to the publish job as a patch.
