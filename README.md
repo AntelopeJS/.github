@@ -758,7 +758,7 @@ something else when it skips, so the gate runs in every run that is not
 cancelled. A matrix job with a constant name gets its matrix values appended,
 as in `Formal (formal-a)`. The `node` legs keep their `Node <version>` names,
 an expression, because a leg skips only after `Windows eligibility` or
-`Extra shards` (which also lists the test shards) failed, or in a run that was cancelled before it started, and
+`Extra shards` failed, or in a run that was cancelled before it started, and
 the gate then fails or ends cancelled. A required check that is
 skipped passes, so a gate that a failed job would skip gates nothing:
 `!cancelled()` never skips it in a run that goes on, and in a run that was
@@ -787,7 +787,7 @@ The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
 `blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
 variable names another runner label. A reusable workflow reads the caller's
 variables, so one variable switches a repository to another runner. The three
-small jobs, `Windows eligibility`, `Extra shards` (which also lists the test shards) and the gate, run a few
+small jobs, `Windows eligibility`, `Extra shards` and the gate, run a few
 seconds of shell and install nothing: they go to the label the caller's
 `RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
 own gate and tier jobs can read the same variables. The Windows legs run only
