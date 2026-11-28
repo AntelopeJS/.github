@@ -116,7 +116,7 @@ needs no token scope. The run installs `pkg-pr-new@0.0.94` and calls it with
 `--pnpm`, so that each `workspace:` and `catalog:` spec resolves. pkg.pr.new
 takes one publish per workflow run, so in a workspace only the job of the first
 released directory in path order calls it, once, on every directory of the
-workspace that holds a `.release-it.json`. The jobs of the other packages say so
+workspace that holds a `.release-it.json` and is not `private`. The jobs of the other packages say so
 in a notice and publish nothing. pkg.pr.new then points each `workspace:` spec
 on another package of that call at its pkg.pr.new preview.
 

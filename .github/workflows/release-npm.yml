@@ -812,8 +812,12 @@ jobs:
               const unchanged = latest !== '' && isDeepStrictEqual(declarations(packed('pnpm', ['pack'], path.join(top, directory))), declarations(packed('npm', ['pack', `${name}@${latest}`], '.')))
               if (!unchanged) {
                 const view = spawnSync('npm', ['view', `${name}@${preview}`, 'version'], { encoding: 'utf8' })
+                if (view.status !== 0 && !/\bE404\b/.test(view.stderr ?? '')) {
+                  console.error(`npm view ${name}@${preview} version failed: ${(view.stderr ?? '').trim()}`)
+                  process.exit(1)
+                }
                 if (view.stdout?.trim() !== preview) {
-                  console.error(`${name}@${preview} is not on the registry. Dispatch the preview of ${directory} first, then run this one again.\n${(view.stderr ?? '').trim()}`)
+                  console.error(`${name}@${preview} is not on the registry. Dispatch the preview of ${directory} first, then run this one again.`)
                   process.exit(1)
                 }
               }
@@ -854,7 +858,7 @@ jobs:
             .split('\0')
             .filter(Boolean)
             .map((file) => fs.realpathSync(path.join(top, path.dirname(file))))
-            .filter((directory) => fs.existsSync(path.join(directory, 'package.json')))
+            .filter((directory) => fs.existsSync(path.join(directory, 'package.json')) && JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).private !== true)
             .sort()
           const directories = released.includes(own) ? released : [own]
           const list = `${process.env.RUNNER_TEMP}/pkg-pr-new-directories`
