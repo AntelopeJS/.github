@@ -334,12 +334,14 @@ describe("release-npm.yml", () => {
       `#!/bin/sh\nif [ "$1" = pack ] && [ "$3" = --pack-destination ]; then tarball=$(awk -F '\\t' -v key="$2" '$1 == key { print $2 }' "${join(stable, "tarballs.tsv")}"); [ -n "$tarball" ] || { echo "npm error code E404" >&2; exit 1; }; cp "$tarball" "$4"; exit 0; fi\nif [ "$1" = view ]; then exec '${join(registry, "npm")}' "$@"; fi\nexec '${join(recordingNpm, "npm")}' "$@"\n`,
     );
     chmodSync(join(packing, "npm"), 0o755);
-    const publish = (pinned: JsonObject) =>
-      publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PATH: `${packing}:${recordingNpm}:${process.env.PATH ?? ""}`, PINS: JSON.stringify(pinned), FAKE_VIEWS: views });
+    const publish = (pinned: JsonObject, env: Record<string, string> = {}) =>
+      publishPreview(text, join(directory, "packages", "x"), `0.12.2-${suffix}`, { PATH: `${packing}:${recordingNpm}:${process.env.PATH ?? ""}`, PINS: JSON.stringify(pinned), FAKE_VIEWS: views, ...env });
     const missing = publish(pins);
     assert.deepEqual([missing.status, missing.publication], [1, null]);
     assert.match(missing.stderr, new RegExp(`@antelopejs/interface-x@0\\.10\\.1-${suffix} is not on the registry\\. Dispatch the preview of packages/interface-x first`));
-    git(directory, "checkout", "--", "packages/x/package.json");
+    const unreachable = publish(pins, { FAKE_DOWN: `@antelopejs/interface-x@0.10.1-${suffix} version` });
+    assert.deepEqual([unreachable.status, unreachable.publication, /Dispatch/.test(unreachable.stderr)], [1, null, false]);
+    assert.match(unreachable.stderr, new RegExp(`^npm view @antelopejs/interface-x@0\\.10\\.1-${suffix} version failed: npm error code E500$`, "m"));
     writeFileSync(views, `${readText(views)}@antelopejs/interface-x@0.10.1-${suffix} version\t0.10.1-${suffix}\n`);
     const preview = publish(pins);
     assert.equal(preview.status, 0, preview.stderr);
@@ -420,6 +422,8 @@ describe("release-npm.yml", () => {
       "package.json": JSON.stringify({ name: "workspace", private: true }),
       "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
       "packages/dms/package.json": manifest("@antelopejs/dms", { "@antelopejs/interface-dms": "workspace:^" }),
+      "packages/a-internal/package.json": JSON.stringify({ name: "@antelopejs/a-internal", version: "0.1.0", private: true }),
+      "packages/a-internal/.release-it.json": "{}\n",
       "packages/dms/.release-it.json": "{}\n",
       "packages/dms/playground/package.json": manifest("playground"),
       "packages/interface-dms/package.json": manifest("@antelopejs/interface-dms"),
@@ -440,7 +444,7 @@ describe("release-npm.yml", () => {
     const first = publish("packages/dms");
     assert.deepEqual(first.call?.slice(1), ["publish", "--pnpm", "--comment=update", ".", "../interface-dms", "../interface-dms-builder"]);
     assert.equal(realpathSync(first.call?.[0] ?? ""), realpathSync(join(directory, "packages", "dms")));
-    const versions = ["dms", "dms/playground", "interface-dms", "interface-dms-builder"].map((name) => parseObject(readText(join(directory, "packages", name, "package.json")))["version"]);
-    assert.deepEqual(versions, [version, "0.1.0", version, version]);
+    const versions = ["a-internal", "dms", "dms/playground", "interface-dms", "interface-dms-builder"].map((name) => parseObject(readText(join(directory, "packages", name, "package.json")))["version"]);
+    assert.deepEqual(versions, ["0.1.0", version, "0.1.0", version, version]);
   });
 });
