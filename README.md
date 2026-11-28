@@ -567,7 +567,7 @@ compared with.
 | Pull request with the `ci:full` label, from a repository whose `CI_SELECTION` variable is `full`, or that changes a root file | `full` | the pull request base | the Node.js jobs and the tests |
 | Any other pull request, draft or ready, into any branch | `fast` | the pull request base | the Node.js jobs and the tests. A pull request that changes only documentation skips the tests. |
 | `merge_group` | `queue` | the merge group base | the Node.js jobs and the tests, with one retry of a failed test and of failed `extra-commands` |
-| Pull request from a `renovate/*` branch of the repository whose head commit is a lock commit marked `Checks-Passed` (see [module locks of a Renovate pull request](#module-locks-of-a-renovate-pull-request)) | `none` | the pull request base | none: the run that recorded the locks passed every other job; `ci / checks` succeeds |
+| Pull request from a `renovate/*` branch of the repository whose head commit is a lock commit marked `Checks-Passed` (see [module locks of a Renovate pull request](#module-locks-of-a-renovate-pull-request)) | `none` | the pull request base | none: the run that recorded the locks failed only on them; `ci / checks` succeeds |
 | Push to the default branch | `none` | none | none: the first Linux job installs the dependencies when the pnpm store of its lockfile is not saved yet, and saves it; `ci / checks` succeeds unless that install fails |
 | Push to any other branch | `full` | none | the Node.js jobs and the tests |
 | `schedule`, or `workflow_dispatch` with the `nightly` input | `nightly` | none | as `full`, plus the Windows jobs and `Stress` on the Sunday `schedule` run (UTC), the night of Saturday to Sunday, and on every `workflow_dispatch` with `nightly` |
@@ -1133,12 +1133,13 @@ the locks of the same package whose version a line the pull request removed
 names and no line it adds names. It commits the result as `github-actions[bot]`,
 an author the [Renovate preset](#renovate-preset) ignores, with git hooks off.
 Only then does it mint an installation token of the same app and push, so the
-checks run on the new head. On such a pull request, the `module-locks-committed`
-action warns on the locks it uploaded instead of failing the job. When every
-other job of the run passed, the commit carries a `Checks-Passed: <run URL>`
-trailer, and the [`ci-tier` action](#node-ci) picks the `none` tier on it,
+checks run on the new head. The jobs that recorded the locks fail, so the pull
+request cannot enter the merge queue before the lock commit lands. When no job
+of the run failed but on its `module-locks-committed` step, the aggregator jobs
+(`checks`, `verdict`, `ubuntu`) aside, the commit carries a
+`Checks-Passed: <run URL>` trailer, and the [`ci-tier` action](#node-ci) picks the `none` tier on it,
 since it changes nothing but the locks: the bump runs its checks once. When a
-job failed or still runs, the commit has no trailer and the checks run again in
+job failed for another reason or still runs, the commit has no trailer and the checks run again in
 full. A branch that already holds two of these
 commits gets no third: the job fails and names the locks to commit by hand. The
 lock of a version a range resolved to stays until the next refresh deletes it.
