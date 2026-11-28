@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { describe, test } from "node:test";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, test } from "node:test";
 import type { Json } from "../ci-metrics/json.ts";
+import { readText } from "./helpers/read.ts";
 import { moveOf, parsePull, tickRebase, type RenovatePull } from "./renovate-sweep.ts";
 
 const BODY = "Update rimraf.\n\n---\n\n - [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check this box\n";
@@ -135,5 +140,69 @@ describe("renovate-sweep", () => {
   test("parses only pull requests from a renovate/ branch of their own repository", () => {
     assert.equal(parsePull(node({ head: "feat/x" })), null);
     assert.equal(parsePull(node({ fork: true })), null);
+  });
+});
+
+const scratch = mkdtempSync(join(tmpdir(), "renovate-sweep-"));
+after(() => rmSync(scratch, { recursive: true, force: true }));
+writeFileSync(
+  join(scratch, "gh"),
+  `#!/usr/bin/env bash
+echo "gh $1 $2" >> "$GH_LOG"
+case "$1 $2" in
+  "api graphql") cat "$GH_ANSWER" ;;
+  "api repos/"*"/compare/"*) echo "HTTP 404: Not Found" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+`,
+);
+chmodSync(join(scratch, "gh"), 0o755);
+
+interface Sweep {
+  status: number | null;
+  stdout: string;
+  calls: string[];
+}
+
+let sweeps = 0;
+
+/** Runs the sweep with `--dry-run` against a `gh` whose GraphQL answer is `answer`, as GitHub's text. */
+function sweep(answer: string): Sweep {
+  sweeps++;
+  const file = join(scratch, `answer-${sweeps}`);
+  const log = join(scratch, `gh-${sweeps}.log`);
+  writeFileSync(file, answer);
+  const main = new URL("renovate-sweep-main.ts", import.meta.url).pathname;
+  const result = spawnSync(process.execPath, [main, "AntelopeJS", "--dry-run"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${scratch}:${process.env.PATH}`, GH_ANSWER: file, GH_LOG: log },
+  });
+  return { status: result.status, stdout: result.stdout, calls: existsSync(log) ? readText(log).trimEnd().split("\n") : [] };
+}
+
+const page = (...nodes: Json[]): string => JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } });
+
+describe("renovate-sweep-main.ts", () => {
+  test("reads a search page larger than 1 MiB, as GitHub answered for 50 pull requests on 2026-11-28", () => {
+    const run = sweep(page(node({ body: `${BODY}${"x".repeat(2 * 1024 * 1024)}` })));
+    assert.equal(run.stdout, "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n");
+    assert.equal(run.status, 0);
+  });
+
+  test("retries an answer that is not JSON, then reports its first line", () => {
+    const run = sweep("<!DOCTYPE html>\n<html><body>Unicorn!</body></html>\n");
+    assert.equal(run.stdout, "::error::gh api graphql answered no JSON 3 times; the last answer: <!DOCTYPE html>\n");
+    assert.equal(run.calls.filter((call) => call === "gh api graphql").length, 3);
+    assert.equal(run.status, 1);
+  });
+
+  test("moves the other pull requests when one cannot be read, and exits nonzero at the end", () => {
+    const run = sweep(page(node({ repo: "AntelopeJS/api", rollup: "FAILURE" }), node()));
+    assert.equal(
+      run.stdout,
+      "::error::AntelopeJS/api#49: Command failed: gh api repos/AntelopeJS/api/compare/main...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+        "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n",
+    );
+    assert.equal(run.status, 1);
   });
 });
