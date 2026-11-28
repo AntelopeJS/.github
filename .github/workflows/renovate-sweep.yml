@@ -16,7 +16,7 @@ permissions:
 jobs:
   sweep:
     name: Re-arm dropped and rebase stale-red Renovate pull requests
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     permissions:
       contents: read
     timeout-minutes: 15

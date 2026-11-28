@@ -707,7 +707,7 @@ caller's own tier job are skipped too:
 ```yaml
 jobs:
   tier:
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     permissions:
       contents: read
     outputs:
@@ -794,23 +794,24 @@ job of it runs as before. When either API call fails, the job runs as before.
 The run's `ci / checks` then fails in seconds, on a commit no queue
 waits for.
 
-The Linux jobs run on Blacksmith's 4 vCPU Ubuntu 24.04 runner,
-`blacksmith-4vcpu-ubuntu-2404`, unless the calling repository's `RUNNER_CI`
-variable names another runner label. A reusable workflow reads the caller's
-variables, so one variable switches a repository to another runner. The three
-small jobs, `Windows and Stress eligibility`, `Extra shards` and the gate, run a few
-seconds of shell and install nothing: they go to the label the caller's
-`RUNNER_CI_SMALL` variable names when it is set, before `RUNNER_CI`. A caller's
-own gate and tier jobs can read the same variables. The Windows legs run only
-for a public repository, on Blacksmith's 4 vCPU Windows Server 2025 runner,
-`blacksmith-4vcpu-windows-2025`, unless `RUNNER_CI_WINDOWS` names another
-label.
-The npm release workflows follow the same default and `RUNNER_CI` for a
-private or internal repository, and a public repository's release stays on
-`ubuntu-latest`, because npm trusted publishing and provenance refuse
-self-hosted runners, Blacksmith's included. Every other workflow here follows
-the Linux default and `RUNNER_CI`, and `workflows-runners.test.ts` fails on a
-`runs-on` that resolves to any other label when no variable is set.
+Every job picks its runner from the calling repository's visibility, which a
+reusable workflow reads from the caller's event as `github.event.repository.visibility`:
+GitHub's `ubuntu-latest` for a public repository, and Blacksmith's 4 vCPU Ubuntu
+24.04 runner, `blacksmith-4vcpu-ubuntu-2404`, for a private or internal one.
+An event that carries no repository, a `schedule`, lands on Blacksmith. The
+caller's `RUNNER_CI` variable, when set, wins over both. Every job carries the
+same `runs-on`:
+
+```yaml
+runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
+```
+
+The Windows legs run only for a public repository, on `windows-latest`, or on
+`blacksmith-4vcpu-windows-2025` in a `schedule` run, unless `RUNNER_CI_WINDOWS`
+names another label. The npm release workflows keep a public repository's
+release on `ubuntu-latest` whatever `RUNNER_CI` says, because npm trusted
+publishing and provenance refuse self-hosted runners, Blacksmith's included.
+`workflows-runners.test.ts` fails on any `runs-on` that differs from these.
 
 Services start with `docker compose up -d --wait` in the `Test` and `Extra`
 jobs, and in a `Node <version>` job only when it runs `extra-commands`. After a
@@ -838,7 +839,7 @@ the `full` tier, so it runs every check whatever its `paths`. A job installs wit
 sets up Temurin Java 21, and restores `~/.cache/antelopejs-formal`, the cache
 where `@antelopejs/tooling-configs/formal` keeps the TLC model checker, under a
 key of the skill and `pnpm-lock.yaml`, falling back to any skill's cache. It
-runs on the `RUNNER_CI` label, Blacksmith 4 vCPU by default, with a 60-minute
+runs on the same runner as every job, with a 60-minute
 timeout against a hung checker. No time budget fails a check: the job summary
 gives the exit code and time in seconds of each check that exits.
 
@@ -915,7 +916,7 @@ jobs:
   verdict:
     needs: [ci, renovate-sync]
     if: ${{ !cancelled() }}
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 5
     permissions: {}
     steps:

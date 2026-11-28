@@ -12,12 +12,14 @@ const isPublic = "github.event.repository.visibility == 'public'";
 const linux = `vars.RUNNER_CI || (${isPublic} && '${hosted.linux}' || '${blacksmith.linux}')`;
 const windows = `vars.RUNNER_CI_WINDOWS || (${isPublic} && '${hosted.windows}' || '${blacksmith.windows}')`;
 
-/** The one `runs-on` every job carries, and the two jobs that carry another. */
-const pinned = {
-  default: `\${{ ${linux} }}`,
-  "ci-node.yml node": `\${{ matrix.os == '${hosted.windows}' && (${windows}) || (${linux}) }}`,
-  "release-npm.yml release": `\${{ github.event.repository.visibility != 'public' && (vars.RUNNER_CI || '${blacksmith.linux}') || '${hosted.linux}' }}`,
-};
+/** The one `runs-on` every job carries. */
+const pinned = `\${{ ${linux} }}`;
+
+/** The two jobs that carry another. */
+const exceptions = new Map([
+  ["ci-node.yml node", `\${{ matrix.os == '${hosted.windows}' && (${windows}) || (${linux}) }}`],
+  ["release-npm.yml release", `\${{ github.event.repository.visibility != 'public' && (vars.RUNNER_CI || '${blacksmith.linux}') || '${hosted.linux}' }}`],
+]);
 
 const visibilities = ["public", "private", "internal", undefined] as const;
 const systems = [hosted.linux, hosted.windows] as const;
@@ -65,8 +67,7 @@ describe("runners", () => {
     for (const file of workflows) {
       for (const [job, expression] of runsOn(file)) {
         const key = `${file} ${job}`;
-        const expected = key in pinned ? pinned[key as keyof typeof pinned] : pinned.default;
-        assert.equal(expression, expected, key);
+        assert.equal(expression, exceptions.get(key) ?? pinned, key);
       }
     }
   });

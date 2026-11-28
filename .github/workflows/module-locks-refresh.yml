@@ -29,7 +29,7 @@ env:
 jobs:
   refresh:
     name: Refresh the module locks
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -214,7 +214,7 @@ jobs:
     name: Open or update the pull request
     needs: refresh
     if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 10
     permissions:
       contents: read

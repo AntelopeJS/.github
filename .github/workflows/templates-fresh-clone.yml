@@ -14,7 +14,7 @@ concurrency:
 jobs:
   templates:
     name: Templates
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
   start:
     name: ${{ matrix.template.name }}
     needs: templates
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 45
     permissions:
       contents: read

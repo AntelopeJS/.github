@@ -8,9 +8,9 @@ permissions:
 
 jobs:
   checks:
-    # Blacksmith's 4 vCPU Ubuntu 24.04 runner, unless the CALLING repository's variable RUNNER_CI names
-    # another runner label: one variable switches a repository to another runner.
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    # GitHub's ubuntu-latest for a public CALLING repository, Blacksmith's 4 vCPU Ubuntu 24.04 runner for any
+    # other or when the event carries no visibility, unless the caller's variable RUNNER_CI names another label.
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     permissions:
       contents: read
     timeout-minutes: 10
