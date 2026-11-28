@@ -12,6 +12,7 @@ assert.ok(existsSync(join(modules, "renovate", "package.json")), "RENOVATE_MODUL
 interface Config {
   schedule?: string[];
   timezone?: string;
+  prConcurrentLimit?: number;
   rebaseWhen?: string;
   dependencyDashboard?: { enabled?: boolean };
   dependencyDashboardApproval?: boolean;
@@ -81,6 +82,49 @@ test("Renovate runs daily in the Brussels night and rebases a branch only on a c
   assert.deepEqual(config.schedule, ["* 0-3 * * *"]);
   assert.equal(config.timezone, "Europe/Brussels");
   assert.equal(config.rebaseWhen, "conflicted");
+});
+
+async function schedule(upgrade: Upgrade): Promise<string[] | undefined> {
+  const result = await applyPackageRules({ ...config, ...upgrade, packageName: upgrade.depName }, "pre-lookup");
+  return result.schedule;
+}
+
+const daily = ["* 0-3 * * *"];
+const weekly = ["* 0-3 * * 1"];
+const monthly = ["* 0-3 1 * *"];
+
+test("a repository has at most three Renovate pull requests open at once", () => {
+  assert.equal(config.prConcurrentLimit, 3);
+});
+
+test("third-party patches and minors open on Monday night, majors on the first night of the month, and AntelopeJS updates every night", async () => {
+  const npm = { repository: "AntelopeJS/dms-media", manager: "npm", depName: "vue", currentVersion: "3.4.0", packageFile: "package.json" };
+  const action = { repository: "AntelopeJS/dms-media", manager: "github-actions", depName: "actions/checkout", currentVersion: "v7.0.1", packageFile: ".github/workflows/ci.yml" };
+  assert.deepEqual(await schedule({ ...npm, updateType: "patch" }), weekly);
+  assert.deepEqual(await schedule({ ...npm, updateType: "minor" }), weekly);
+  assert.deepEqual(await schedule({ ...npm, updateType: "major" }), monthly);
+  assert.deepEqual(await schedule({ ...action, updateType: "major" }), monthly);
+  assert.deepEqual(await schedule({ ...action, updateType: "minor" }), daily);
+  for (const updateType of ["patch", "minor", "major"]) {
+    assert.deepEqual(await schedule({ ...testStack, updateType }), daily, `module ${updateType}`);
+    assert.deepEqual(await schedule({ ...npm, depName: "@antelopejs/core", updateType }), daily, `core ${updateType}`);
+    for (const depName of ["@antelopejs/tooling-configs", "oxlint"]) assert.deepEqual(await schedule({ ...npm, depName, updateType }), daily, `${depName} ${updateType}`);
+    assert.deepEqual(await schedule({ ...action, depName: "AntelopeJS/tooling-configs", updateType }), daily, `tooling-configs action ${updateType}`);
+  }
+});
+
+test("Renovate never opens a Node.js, pnpm or TypeScript major, which tooling-configs migrates org-wide, but keeps their patches and minors", async () => {
+  const runtimes = [
+    { manager: "nvm", depName: "node", currentVersion: "24.10.0", packageFile: ".nvmrc" },
+    { manager: "npm", depName: "node", currentVersion: "24.10.0", packageFile: "package.json" },
+    { manager: "npm", depName: "pnpm", currentVersion: "10.20.0", packageFile: "package.json" },
+    { manager: "npm", depName: "typescript", currentVersion: "5.9.3", packageFile: "package.json" },
+  ];
+  for (const runtime of runtimes) {
+    const upgrade = { repository: "AntelopeJS/dms-media", ...runtime };
+    assert.equal((await rules({ ...upgrade, updateType: "major" })).enabled, false, `${runtime.manager} ${runtime.depName} major`);
+    assert.equal((await rules({ ...upgrade, updateType: "minor" })).enabled, true, `${runtime.manager} ${runtime.depName} minor`);
+  }
 });
 
 test("Renovate opens no Dependency Dashboard and holds no update for an approval on it", () => {

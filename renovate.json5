@@ -7,6 +7,7 @@
     'schedule:daily',
   ],
   timezone: 'Europe/Brussels',
+  prConcurrentLimit: 3,
   dependencyDashboard: { enabled: false },
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   rebaseWhen: 'conflicted',
@@ -54,12 +55,25 @@
       matchManagers: ['npm'],
       matchUpdateTypes: ['patch', 'minor'],
       groupName: 'non-major dependencies',
+      schedule: ['* 0-3 * * 1'],
+    },
+    {
+      description: 'Each major opens a pull request whose CI may stay red until someone migrates it, so majors open once a month; the AntelopeJS rules below keep the daily window',
+      matchUpdateTypes: ['major'],
+      schedule: ['* 0-3 1 * *'],
+    },
+    {
+      description: 'A Node.js, pnpm or TypeScript major is an org-wide migration done from tooling-configs, so Renovate never opens one',
+      matchPackageNames: ['node', 'pnpm', 'typescript'],
+      matchUpdateTypes: ['major'],
+      enabled: false,
     },
     {
       description: "The interface resolver couples core, every module and the interfaces they declare, and a project's test stack runs the same modules, so every AntelopeJS package moves in one pull request, majors included, and CI records their locks once",
       matchPackageNames: ['@antelopejs/**'],
       groupName: 'AntelopeJS packages',
       separateMajorMinor: false,
+      schedule: ['* 0-3 * * *'],
     },
     {
       // The npm package and docs action share a release tag; keep them together.
@@ -67,6 +81,7 @@
       matchPackageNames: ['@antelopejs/tooling-configs', 'AntelopeJS/tooling-configs', 'oxfmt', 'oxlint', '@oxlint/plugins'],
       groupName: 'AntelopeJS tooling configs',
       separateMajorMinor: false,
+      schedule: ['* 0-3 * * *'],
     },
     {
       description: '@types/node follows the Node.js major each package runs on, so it never moves to another major; a lockfile-only update rewrites every workspace importer to one version, so the range is bumped in the package that declares it instead',
