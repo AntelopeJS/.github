@@ -68,6 +68,33 @@ test("a failure neither a re-run nor the next nightly repeats is a flake, and pe
   assert.deepEqual(pending.failures.map((failure) => failure.verdict), ["pending"]);
 });
 
+test("a weekly job's failure waits for the next Sunday nightly, and its baseline is the last Sunday that passed it", () => {
+  const windows = "ci / Node 24 on Windows";
+  const stress = "ci / Stress";
+  const sundayFailure = (): NightlyJob[] => [job("ci / Node 24", "success"), job(windows, "failure"), job(stress, "failure"), job("ci / checks", "failure")];
+  const weeknightFailure = (): NightlyJob[] => [job("ci / Test 24", "failure"), job(stress, "skipped"), job("ci / checks", "failure")];
+  const week = (...later: Nightly[]): NightlyDataset => ({
+    org: "AntelopeJS",
+    to: day(28),
+    days: 30,
+    repos: [repo(
+      [nightly(8, "a"), nightly(14, "b"), nightly(15, "c", sundayFailure()), nightly(16, "d"), nightly(18, "e", weeknightFailure()), ...later],
+      { queue: { b: "success", c: "success" }, commits: { [rangeKey("a", "c")]: ["b", "c"] } },
+    )],
+  });
+  const weekly = (dataset: NightlyDataset) =>
+    nightlyReport(dataset).failures.filter((failure) => failure.job !== "ci / Test 24").map((failure) => [failure.job, failure.baseline?.sha, failure.reproducedBy, failure.verdict]);
+
+  assert.deepEqual(weekly(week()), [[windows, "a", null, "pending"], [stress, "a", null, "pending"]], "the weeknights after it ran neither job");
+  assert.deepEqual(weekly(week(nightly(22, "f"))), [[windows, "a", null, "flake"], [stress, "a", null, "flake"]], "the next Sunday passed both");
+  assert.deepEqual(weekly(week(nightly(22, "f", sundayFailure()))), [
+    [windows, "a", "next-nightly", "missed"],
+    [stress, "a", "next-nightly", "missed"],
+    [windows, "a", null, "pending"],
+    [stress, "a", null, "pending"],
+  ], "the next Sunday failed both again");
+});
+
 test("a reproduced failure on the baseline's commit has no new commit, and one with no passing nightly before it no baseline", () => {
   const same = nightlyReport(dataset(repo([nightly(16, "a"), nightly(17, "a", failing()), nightly(18, "a", failing())])));
   assert.equal(same.failures[0].verdict, "no-new-commit");

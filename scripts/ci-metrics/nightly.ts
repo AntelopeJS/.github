@@ -49,7 +49,7 @@ export interface NightlyDataset {
  * baseline passed its queue run. `unqueued`: a commit since the baseline has no passing queue run, such as a
  * push that bypassed the queue or a commit from before the rollout. `no-new-commit`: the baseline ran the same
  * commit. `no-baseline`: no earlier nightly of the dataset passed the job. `flake`: neither a re-run nor the
- * next nightly failed the job again. `pending`: nothing failed it again yet, and the next nightly has not run.
+ * next nightly that ran the job failed it again. `pending`: nothing failed it again yet, and no later nightly ran it.
  * `infra`: the runner, billing or network failed, not the code.
  */
 export const verdicts = ["missed", "unqueued", "no-new-commit", "no-baseline", "flake", "pending", "infra"] as const;
@@ -112,15 +112,27 @@ export function failedJobs(nightly: Nightly): NightlyJob[] {
   return others.length > 0 ? others : first;
 }
 
+/** Whether ci-node.yml runs the job only in the Sunday nightly (UTC): the Windows legs and `Stress`. */
+const weeklyJob = (name: string): boolean => / on Windows$|(^|\/ )Stress$/.test(name);
+
+/**
+ * Whether a nightly ran the job. A nightly that did not succeed lists its jobs, a skipped job included. One that
+ * succeeded lists none, so it ran every job but a weekly one, which it ran only on a Sunday.
+ */
+function ranJob(nightly: Nightly, name: string): boolean {
+  if (nightly.jobs !== undefined) return nightly.jobs.some((job) => job.name === name && job.attempt === 1 && job.conclusion !== "skipped");
+  return !weeklyJob(name) || new Date(nightly.startedAt).getUTCDay() === 0;
+}
+
 function passedJob(nightly: Nightly, name: string): boolean {
+  if (!ranJob(nightly, name)) return false;
   if (nightly.conclusion === "success") return true;
   return (nightly.jobs ?? []).some((job) => job.name === name && job.conclusion === "success");
 }
 
-function reproducedBy(nightlies: readonly Nightly[], index: number, job: NightlyJob): Failure["reproducedBy"] {
-  const rerun = nightlies[index].jobs?.some((other) => other.name === job.name && other.attempt > 1 && failed(other.conclusion));
+function reproducedBy(nightly: Nightly, next: Nightly | undefined, job: NightlyJob): Failure["reproducedBy"] {
+  const rerun = nightly.jobs?.some((other) => other.name === job.name && other.attempt > 1 && failed(other.conclusion));
   if (rerun === true) return "rerun";
-  const next = nightlies[index + 1];
   const again = next?.jobs?.some((other) => other.name === job.name && other.attempt === 1 && failed(other.conclusion));
   return again === true ? "next-nightly" : null;
 }
@@ -146,6 +158,7 @@ export function failuresOf(repo: RepoNightlies, from: number): Failure[] {
     if (Date.parse(nightly.startedAt) < from) return [];
     return failedJobs(nightly).map((job): Failure => {
       const baseline = nightlies.slice(0, index).findLast((earlier) => passedJob(earlier, job.name)) ?? null;
+      const next = nightlies.slice(index + 1).find((later) => ranJob(later, job.name));
       const tests = own(repo.annotations, String(job.id)) ?? [];
       const range = baseline === null ? [] : own(repo.commits, rangeKey(baseline.sha, nightly.sha)) ?? [];
       const failure = {
@@ -155,11 +168,11 @@ export function failuresOf(repo: RepoNightlies, from: number): Failure[] {
         jobId: job.id,
         kind: failureKind(job, tests),
         tests,
-        reproducedBy: reproducedBy(nightlies, index, job),
+        reproducedBy: reproducedBy(nightly, next, job),
         baseline: baseline === null ? null : { id: baseline.id, sha: baseline.sha },
         commits: range.map((sha) => ({ sha, queue: queueResult(own(repo.queue, sha)) })),
       };
-      return { ...failure, verdict: verdictOf(failure, index + 1 < nightlies.length) };
+      return { ...failure, verdict: verdictOf(failure, next !== undefined) };
     });
   });
 }
