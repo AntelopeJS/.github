@@ -206,7 +206,7 @@ test("each release app token asks only the permissions its job uses", () => {
   assert.deepEqual(asked("template-demo-sync.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
   assert.deepEqual(asked("renovate-sweep.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
   assert.deepEqual(asked("verdict-conformance.yml"), ["permission-contents: read"]);
-  assert.deepEqual(asked("ci-renovate-sync.yml"), ["permission-contents: write", "permission-workflows: write"]);
+  assert.deepEqual(asked("ci-renovate-sync.yml"), ["permission-contents: write"]);
 });
 
 describe("ci-renovate-sync.yml keeps the release app away from repository code", () => {
