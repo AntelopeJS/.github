@@ -115,7 +115,7 @@ jobs:
         run: |
           others=$(gh api --paginate "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}/jobs" --jq '
             def lock: IN("Check that the module locks are committed", "Run AntelopeJS/.github/.github/actions/module-locks-committed@v2");
-            def aggregator: . as $name | any("checks", "verdict", "ubuntu"; . as $aggregator | $name == $aggregator or ($name | endswith(" / " + $aggregator)));
+            def aggregator: split(" / ") | last | IN("checks", "verdict", "ubuntu");
             .jobs[]
             | select(.runner_name != env.RUNNER_NAME and (.name | aggregator | not))
             | select(.status != "completed" or (.conclusion | IN("success", "skipped", "neutral") | not))
