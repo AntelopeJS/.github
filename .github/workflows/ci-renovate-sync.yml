@@ -17,9 +17,9 @@ jobs:
       github.event_name == 'pull_request'
       && startsWith(github.head_ref, 'renovate/')
       && github.event.pull_request.head.repo.full_name == github.repository
-    # Blacksmith's 4 vCPU Ubuntu 24.04 runner, unless the CALLING repository's variable RUNNER_CI names
-    # another runner label: one variable switches a repository to another runner.
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    # GitHub's ubuntu-latest for a public CALLING repository, Blacksmith's 4 vCPU Ubuntu 24.04 runner for any
+    # other or when the event carries no visibility, unless the caller's variable RUNNER_CI names another label.
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 60
     concurrency:
       group: ci-renovate-sync-${{ github.event.pull_request.number }}
@@ -115,7 +115,7 @@ jobs:
     name: Push the Renovate sync
     needs: renovate-sync
     if: needs.renovate-sync.outputs.changed == 'true'
-    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
     timeout-minutes: 360
     concurrency:
       group: ci-renovate-sync-push-${{ github.event.pull_request.number }}

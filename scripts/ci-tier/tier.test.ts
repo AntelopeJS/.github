@@ -415,13 +415,13 @@ describe("the Windows legs and Stress", () => {
   const saturday = 6;
   const sunday = 7;
   const cases = [
-    { name: "a weeknight schedule run skips both", github: other("schedule", "main"), day: monday, visibility: "public", expected: { windows: "false", stress: "false" }, readsVisibility: false },
-    { name: "the Saturday schedule run skips both", github: other("schedule", "main"), day: saturday, visibility: "public", expected: { windows: "false", stress: "false" }, readsVisibility: false },
-    { name: "the Sunday schedule run of a public repository runs both", github: other("schedule", "main"), day: sunday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
-    { name: "the Sunday schedule run of a private repository runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "private", expected: { windows: "false", stress: "true" }, readsVisibility: true },
-    { name: "the Sunday schedule run with windows false runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "public", windows: "false", expected: { windows: "false", stress: "true" }, readsVisibility: false },
-    { name: "a workflow_dispatch with nightly on a weekday runs both", github: () => ({ ...other("workflow_dispatch", "fix/x")(), ...nightly }), day: monday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
-    { name: "a merge group on a weekday keeps its Windows legs", github: mergeGroup, day: monday, visibility: "public", expected: { windows: "true", stress: "true" }, readsVisibility: true },
+    { name: "a weeknight schedule run skips both", github: other("schedule", "main"), day: monday, visibility: "public", expected: { visibility: "public", windows: "false", stress: "false" }, readsVisibility: true },
+    { name: "the Saturday schedule run skips both", github: other("schedule", "main"), day: saturday, visibility: "public", expected: { visibility: "public", windows: "false", stress: "false" }, readsVisibility: true },
+    { name: "the Sunday schedule run of a public repository runs both", github: other("schedule", "main"), day: sunday, visibility: "public", expected: { visibility: "public", windows: "true", stress: "true" }, readsVisibility: true },
+    { name: "the Sunday schedule run of a private repository runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "private", expected: { visibility: "private", windows: "false", stress: "true" }, readsVisibility: true },
+    { name: "the Sunday schedule run with windows false runs Stress only", github: other("schedule", "main"), day: sunday, visibility: "public", windows: "false", expected: { visibility: "public", windows: "false", stress: "true" }, readsVisibility: true },
+    { name: "a workflow_dispatch with nightly on a weekday runs both", github: () => ({ ...other("workflow_dispatch", "fix/x")(), ...nightly }), day: monday, visibility: "public", expected: { visibility: "public", windows: "true", stress: "true" }, readsVisibility: true },
+    { name: "a merge group on a weekday keeps its Windows legs", github: mergeGroup, day: monday, visibility: "public", expected: { visibility: "public", windows: "true", stress: "true" }, readsVisibility: true },
   ];
   cases.forEach(({ name, github, day, visibility, windows = "true", expected, readsVisibility }, index) => {
     test(name, () => {

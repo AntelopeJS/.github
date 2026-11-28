@@ -6,90 +6,108 @@ import { isJsonObject, isString, readJson } from "./json.ts";
 import type { JsonObject } from "./json.ts";
 import { evaluate, workflowText } from "./workflows-helpers.ts";
 
-const linux = "blacksmith-4vcpu-ubuntu-2404";
-const windows = "blacksmith-4vcpu-windows-2025";
-const visibilities = ["public", "private", "internal"] as const;
-const systems = ["ubuntu-latest", "windows-latest"] as const;
+const blacksmith = { linux: "blacksmith-4vcpu-ubuntu-2404", windows: "blacksmith-4vcpu-windows-2025" };
+const hosted = { linux: "ubuntu-latest", windows: "windows-latest" };
+const payload = "github.event.repository.visibility";
+/** A schedule payload carries no repository, so a ci-node job that waits for eligibility also reads the visibility that job read through the API. */
+const payloadOrApi = `(${payload} || needs.eligibility.outputs.visibility)`;
+const linux = (visibility: string): string => `vars.RUNNER_CI || (${visibility} == 'public' && '${hosted.linux}' || '${blacksmith.linux}')`;
+const windows = (visibility: string): string => `vars.RUNNER_CI_WINDOWS || (${visibility} == 'public' && '${hosted.windows}' || '${blacksmith.windows}')`;
 
-/** One job's `runs-on` evaluated in one context. */
-interface Resolution {
+/** One job of one workflow. */
+interface Job {
+  file: string;
   job: string;
-  visibility: (typeof visibilities)[number];
-  os: (typeof systems)[number];
-  label: string;
+  runsOn: string;
+  readsEligibility: boolean;
+}
+
+/** The `runs-on` a job must carry: one expression, its visibility source picked by whether the job waits for ci-node's eligibility job. */
+function pinned({ file, job, readsEligibility }: Job): string {
+  const visibility = readsEligibility ? payloadOrApi : payload;
+  if (file === "ci-node.yml" && job === "node") return `\${{ matrix.os == '${hosted.windows}' && (${windows(visibility)}) || (${linux(visibility)}) }}`;
+  if (file === "release-npm.yml" && job === "release") return `\${{ ${payload} != 'public' && (vars.RUNNER_CI || '${blacksmith.linux}') || '${hosted.linux}' }}`;
+  return `\${{ ${linux(visibility)} }}`;
 }
 
 const workflows = listDirectory(new URL("../../.github/workflows/", import.meta.url)).filter((file) => /\.ya?ml$/.test(file));
 
-function runsOn(file: string): [string, string][] {
+const jobs: Job[] = workflows.flatMap((file) => {
   const workflow = readJson(JSON.stringify(parse(workflowText(file))));
   assert.ok(isJsonObject(workflow) && isJsonObject(workflow.jobs), `${file} has no jobs`);
-  return Object.entries(workflow.jobs).flatMap(([job, body]): [string, string][] => {
+  return Object.entries(workflow.jobs).flatMap(([job, body]): Job[] => {
     if (!isJsonObject(body) || body["runs-on"] === undefined) return [];
-    const label = body["runs-on"];
-    assert.ok(isString(label), `${file} ${job}: runs-on is not one label`);
-    return [[job, label]];
+    const runsOn = body["runs-on"];
+    assert.ok(isString(runsOn), `${file} ${job}: runs-on is not one label`);
+    const needs = body.needs;
+    const readsEligibility = file === "ci-node.yml" && (needs === "eligibility" || (Array.isArray(needs) && needs.includes("eligibility")));
+    return [{ file, job, runsOn, readsEligibility }];
   });
+});
+
+const visibilities = ["public", "private", "internal", undefined] as const;
+const systems = [hosted.linux, hosted.windows] as const;
+
+/** One job's `runs-on` evaluated in one context. */
+interface Resolution {
+  job: Job;
+  visibility: (typeof visibilities)[number];
+  api: (typeof visibilities)[number];
+  os: (typeof systems)[number];
+  label: string;
 }
 
-function resolve(file: string, vars: JsonObject): Resolution[] {
-  return runsOn(file).flatMap(([job, expression]) =>
+function resolve(vars: JsonObject): Resolution[] {
+  return jobs.flatMap((job) =>
     visibilities.flatMap((visibility) =>
-      systems.map((os) => {
-        const label = expression.startsWith("${{") ? evaluate(expression, { vars, matrix: { os }, github: { event: { repository: { visibility } } } }) : expression;
-        assert.ok(isString(label), `${file} ${job}: runs-on resolves to ${JSON.stringify(label)}`);
-        return { job, visibility, os, label };
-      }),
+      visibilities.flatMap((api) =>
+        systems.map((os) => {
+          const scope = { vars, matrix: { os }, github: { event: { repository: { visibility } } }, needs: { eligibility: { outputs: { visibility: api ?? "" } } } };
+          const label = evaluate(job.runsOn, scope);
+          assert.ok(isString(label) && label !== "", `${job.file} ${job.job}: runs-on resolves to ${JSON.stringify(label)}`);
+          return { job, visibility, api, os, label };
+        }),
+      ),
     ),
   );
 }
 
-/** npm trusted publishing and provenance refuse self-hosted runners, Blacksmith's included. */
-const publishesPublicly = (file: string, { job, visibility }: Resolution): boolean => file === "release-npm.yml" && job === "release" && visibility === "public";
+const where = ({ job, visibility, api, os }: Resolution): string => `${job.file} ${job.job} (payload ${visibility ?? "absent"}, API ${api ?? "absent"}, ${os})`;
+const isWindowsLeg = ({ job, os }: Resolution): boolean => job.file === "ci-node.yml" && job.job === "node" && os === hosted.windows;
+const isRelease = ({ job }: Resolution): boolean => job.file === "release-npm.yml" && job.job === "release";
 
-const unset: JsonObject[] = [{}, { RUNNER_CI: "", RUNNER_CI_SMALL: "", RUNNER_CI_WINDOWS: "" }];
+const unset: JsonObject[] = [{}, { RUNNER_CI: "", RUNNER_CI_WINDOWS: "" }];
 
 describe("runners", () => {
-  test("every job of every workflow runs on Blacksmith 4 vCPU when the caller sets no variable, but a public npm release", () => {
-    for (const file of workflows) {
-      for (const vars of unset) {
-        for (const resolution of resolve(file, vars)) {
-          const where = `${file} ${resolution.job} (${resolution.visibility}, ${resolution.os})`;
-          if (publishesPublicly(file, resolution)) assert.equal(resolution.label, "ubuntu-latest", where);
-          else assert.ok([linux, windows].includes(resolution.label), `${where} runs on ${resolution.label}`);
-        }
+  test("every runs-on of every workflow is the one pinned expression", () => {
+    for (const job of jobs) assert.equal(job.runsOn, pinned(job), `${job.file} ${job.job}`);
+  });
+
+  test("with no variable set, a public caller runs on GitHub's runners and any other caller, or one whose visibility no source carries, on Blacksmith", () => {
+    for (const vars of unset) {
+      for (const resolution of resolve(vars)) {
+        const visibility = resolution.visibility ?? (resolution.job.readsEligibility && !isRelease(resolution) ? resolution.api : undefined);
+        const system = isWindowsLeg(resolution) ? "windows" : "linux";
+        assert.equal(resolution.label, visibility === "public" ? hosted[system] : blacksmith[system], where(resolution));
       }
     }
   });
 
-  test("no branch of a runs-on names a label but the Blacksmith ones, and ubuntu-latest only in the npm release", () => {
-    for (const file of workflows) {
-      for (const [job, expression] of runsOn(file)) {
-        const labels = expression.startsWith("${{") ? [...expression.replace(/[!=]=\s*'[^']*'/g, "").matchAll(/'([^']*)'/g)].map((match) => match[1]) : [expression];
-        const allowed = file === "release-npm.yml" && job === "release" ? [linux, "ubuntu-latest"] : [linux, windows];
-        for (const label of labels) assert.ok(allowed.includes(label), `${file} ${job} can run on ${label}`);
-      }
+  test("a schedule run of a public caller, whose payload carries no repository, runs the ci-node jobs that wait for eligibility on GitHub's runners", () => {
+    const waiting = jobs.filter((job) => job.readsEligibility).map((job) => job.job);
+    assert.deepEqual(waiting, ["node", "stress", "formal", "gate"]);
+    for (const resolution of resolve({})) {
+      if (!resolution.job.readsEligibility || resolution.visibility !== undefined || resolution.api !== "public") continue;
+      assert.equal(resolution.label, isWindowsLeg(resolution) ? hosted.windows : hosted.linux, where(resolution));
     }
   });
 
-  test("each job moves with its own variable: RUNNER_CI_SMALL for the small ci-node jobs, RUNNER_CI_WINDOWS for the Windows legs, RUNNER_CI for the rest", () => {
-    const vars = { RUNNER_CI: "other", RUNNER_CI_SMALL: "other-small", RUNNER_CI_WINDOWS: "other-windows" };
-    const small = ["eligibility", "shards", "gate"];
-    for (const file of workflows) {
-      for (const resolution of resolve(file, vars)) {
-        if (publishesPublicly(file, resolution)) continue;
-        const ciNode = file === "ci-node.yml";
-        const expected = ciNode && small.includes(resolution.job) ? vars.RUNNER_CI_SMALL : ciNode && resolution.job === "node" && resolution.os === "windows-latest" ? vars.RUNNER_CI_WINDOWS : vars.RUNNER_CI;
-        assert.equal(resolution.label, expected, `${file} ${resolution.job} (${resolution.visibility}, ${resolution.os})`);
-      }
+  test("a set RUNNER_CI moves every Linux job and RUNNER_CI_WINDOWS the Windows legs, whatever the visibility, but a public npm release", () => {
+    const vars = { RUNNER_CI: "other", RUNNER_CI_WINDOWS: "other-windows" };
+    for (const resolution of resolve(vars)) {
+      if (isRelease(resolution) && resolution.visibility === "public") assert.equal(resolution.label, hosted.linux, `${where(resolution)}: npm trusted publishing refuses self-hosted runners`);
+      else assert.equal(resolution.label, isWindowsLeg(resolution) ? vars.RUNNER_CI_WINDOWS : vars.RUNNER_CI, where(resolution));
     }
-  });
-
-  test("the Node legs run Windows on the Windows runner and Linux on the Linux one", () => {
-    const node = runsOn("ci-node.yml").find(([job]) => job === "node")?.[1] ?? "";
-    assert.equal(evaluate(node, { vars: {}, matrix: { os: "windows-latest" } }), windows);
-    assert.equal(evaluate(node, { vars: {}, matrix: { os: "ubuntu-latest" } }), linux);
-    assert.equal(evaluate(node, { vars: { RUNNER_CI: "other" }, matrix: { os: "windows-latest" } }), windows, "RUNNER_CI names a Linux label");
   });
 
   test("every job that runs repository code exports the UTF-8 locale and a TERM that is not dumb, as GitHub's hosted runners do, but on Windows", () => {
