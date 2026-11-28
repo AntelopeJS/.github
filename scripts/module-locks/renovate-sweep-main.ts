@@ -50,7 +50,7 @@ const firstLine = (...texts: string[]): string =>
 interface PageError {
   /** The repository of the pull request it hides, when its path points into `search.nodes`. */
   repo: string | null;
-  /** It hides only the check rollup of that pull request, as for a token without Checks and Commit statuses read. */
+  /** It forbids only the check rollup of that pull request, as for a token without Checks and Commit statuses read. */
   checksOnly: boolean;
   line: string;
 }
@@ -66,7 +66,7 @@ function pageErrors(answer: Json, nodes: Json[]): PageError[] {
     const where = path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") || "?";
     const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
     const line = pull === null ? `${where}: ${message}` : `${pull.repo}#${pull.number}: ${where}: ${message}`;
-    return { repo: pull?.repo ?? null, checksOnly: pull !== null && path.at(-1) === "statusCheckRollup", line };
+    return { repo: pull?.repo ?? null, checksOnly: pull !== null && isObject(entry) && entry.type === "FORBIDDEN" && path.at(-1) === "statusCheckRollup", line };
   });
 }
 

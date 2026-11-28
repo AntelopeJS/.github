@@ -186,9 +186,9 @@ const page = (...nodes: Json[]): string => JSON.stringify({ data: { search: { pa
 /** A search page of `nodes` that also carries GraphQL `errors`. */
 const answer = (nodes: Json[], errors: Json[]): string => JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } }, errors });
 
-/** The error GitHub answers for node `index` when the token may not read its check rollup. */
-const hiddenRollup = (index: number): Json => ({
-  type: "FORBIDDEN",
+/** The error GitHub answers for node `index` when the token may not read its check rollup, or of another `type`. */
+const hiddenRollup = (index: number, type = "FORBIDDEN"): Json => ({
+  type,
   path: ["search", "nodes", index, "commits", "nodes", 0, "commit", "statusCheckRollup"],
   message: "Resource not accessible by integration",
 });
@@ -244,6 +244,12 @@ describe("renovate-sweep-main.ts", () => {
     const run = sweep(answer([node({ repo: "AntelopeJS/cloud", rollup: null })], [hiddenRollup(0)]));
     assert.equal(run.stdout, "");
     assert.equal(run.status, 0);
+  });
+
+  test("still fails when the check rollup failed for another reason than the token's access", () => {
+    const run = sweep(answer([node({ repo: "AntelopeJS/dms-saas", rollup: null })], [hiddenRollup(0, "INTERNAL")]));
+    assert.equal(run.stdout, "::warning::AntelopeJS/dms-saas#49: search.nodes.0.commits.nodes.0.commit.statusCheckRollup: Resource not accessible by integration\n");
+    assert.equal(run.status, 1);
   });
 
   test("still fails on an error other than unreadable checks", () => {
