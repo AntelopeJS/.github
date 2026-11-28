@@ -183,6 +183,16 @@ function sweep(answer: string): Sweep {
 
 const page = (...nodes: Json[]): string => JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } });
 
+/** A search page of `nodes` that also carries GraphQL `errors`. */
+const answer = (nodes: Json[], errors: Json[]): string => JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } }, errors });
+
+/** The error GitHub answers for node `index` when the token may not read its check rollup. */
+const hiddenRollup = (index: number): Json => ({
+  type: "FORBIDDEN",
+  path: ["search", "nodes", index, "commits", "nodes", 0, "commit", "statusCheckRollup"],
+  message: "Resource not accessible by integration",
+});
+
 describe("renovate-sweep-main.ts", () => {
   test("reads a search page larger than 1 MiB, as GitHub answered for 50 pull requests on 2026-11-28", () => {
     const run = sweep(page(node({ body: `${BODY}${"x".repeat(2 * 1024 * 1024)}` })));
@@ -219,16 +229,26 @@ describe("renovate-sweep-main.ts", () => {
     assert.equal(run.status, 1);
   });
 
-  test("names each pull request whose checks the token may not read, moves the others, and exits nonzero", () => {
-    const nodes = [node({ repo: "AntelopeJS/dms-saas", rollup: null }), node()];
-    const path = ["search", "nodes", 0, "commits", "nodes", 0, "commit", "statusCheckRollup"];
-    const errors = [{ type: "FORBIDDEN", path, message: "Resource not accessible by integration" }];
-    const run = sweep(JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } }, errors }));
+  test("warns of each pull request whose checks the token may not read, moves the others, and still succeeds", () => {
+    const run = sweep(answer([node({ repo: "AntelopeJS/dms-saas", rollup: null }), node()], [hiddenRollup(0)]));
     assert.equal(
       run.stdout,
       "::warning::AntelopeJS/dms-saas#49: search.nodes.0.commits.nodes.0.commit.statusCheckRollup: Resource not accessible by integration\n" +
-        "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n",
+        "- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n" +
+        "1 pull request could not be read: the release app needs Checks and Commit statuses read access\n",
     );
+    assert.equal(run.status, 0);
+  });
+
+  test("leaves out a pull request of a held repository before its checks are judged", () => {
+    const run = sweep(answer([node({ repo: "AntelopeJS/cloud", rollup: null })], [hiddenRollup(0)]));
+    assert.equal(run.stdout, "");
+    assert.equal(run.status, 0);
+  });
+
+  test("still fails on an error other than unreadable checks", () => {
+    const run = sweep(answer([node()], [{ type: "INTERNAL", message: "Something went wrong" }]));
+    assert.equal(run.stdout, "::warning::?: Something went wrong\n- AntelopeJS/brevo-private#49: re-arm auto-merge (green, removed from the merge queue)\n");
     assert.equal(run.status, 1);
   });
 });
