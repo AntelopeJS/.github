@@ -1,57 +1,7 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, test } from "node:test";
-import { git, repoFile, repository, root, runStep, write } from "./helpers/workflow.ts";
-
-const renovateSync = repoFile(".github/workflows/ci-renovate-sync.yml");
-const APPLY = "Apply the sync output";
-const WORKFLOW = { ".github/workflows/ci.yml": "name: ci\n" };
-
-/** The fields of a package.json these tests write. */
-interface Manifest {
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  pnpm?: { overrides: Record<string, string> };
-}
-
-const manifest = (fields: Manifest): string => `${JSON.stringify({ name: "app", ...fields }, undefined, 2)}\n`;
-const lockfile = (packages: readonly string[]): string =>
-  `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    devDependencies: {}\n\npackages:\n\n${packages.map((key) => `  '${key}':\n    resolution: {integrity: sha512-x}\n`).join("\n")}\nsnapshots:\n\n${packages.map((key) => `  '${key}': {}\n`).join("\n")}`;
-const devDependencies = (tooling: string, oxlint = "1.0.0"): Manifest => ({ devDependencies: { "@antelopejs/tooling-configs": tooling, oxlint } });
-const BASE = { "package.json": manifest(devDependencies("0.10.13")), "pnpm-lock.yaml": lockfile(["@antelopejs/tooling-configs@0.10.13", "oxlint@1.0.0"]) };
-const BUMP = { "package.json": manifest(devDependencies("0.10.14")), "pnpm-lock.yaml": lockfile(["@antelopejs/tooling-configs@0.10.14", "oxlint@1.0.0"]) };
-
-let patches = 0;
-
-/** A checkout of a Renovate head whose commit changes `head` over `BASE`, and the patch of a sync that writes `synced`. */
-function pullRequest(head: Record<string, string>, synced: Record<string, string> = WORKFLOW) {
-  const dir = repository(BASE);
-  git(dir, "checkout", "-qb", "renovate/bump");
-  write(dir, head);
-  git(dir, "add", "-A");
-  git(dir, "commit", "-qm", "chore(deps): bump");
-  write(dir, synced);
-  git(dir, "add", "-A");
-  patches += 1;
-  const patch = join(root, `sync-${patches}.patch`);
-  writeFileSync(patch, `${git(dir, "diff", "--cached", "--binary")}\n`);
-  git(dir, "reset", "-q", "--hard");
-  return { dir, patch };
-}
-
-function apply(head: Record<string, string>, token = "true", synced: Record<string, string> = WORKFLOW) {
-  const { dir, patch } = pullRequest(head, synced);
-  return { dir, result: runStep(renovateSync, APPLY, dir, { APP_TOKEN: token, PATCH: patch, BASE_REF: "main" }) };
-}
-
-/** The log of a push job that refused the workflow change of `head`. */
-const refusal = (head: Record<string, string>): string => {
-  const { result } = apply(head);
-  assert.notEqual(result.status, 0, result.stdout);
-  assert.match(result.stdout, /::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap\./);
-  return result.stdout;
-};
+import { BUMP, apply, devDependencies, lockfile, manifest, refusal } from "./helpers/push.ts";
+import { git } from "./helpers/workflow.ts";
 
 describe("ci-renovate-sync.yml push job", () => {
   test("applies the workflow change of a bump of @antelopejs/tooling-configs alone", () => {
@@ -62,7 +12,7 @@ describe("ci-renovate-sync.yml push job", () => {
   });
 
   test("applies it when other @antelopejs/ packages move to plain versions with it", () => {
-    const head = { ...BUMP, "packages/a/package.json": manifest({ dependencies: { "@antelopejs/interface-core": "^1.2.0" } }) };
+    const head = { ...BUMP, "package.json": manifest({ devDependencies: { "@antelopejs/tooling-configs": "0.10.14", "@antelopejs/interface-core": "^1.2.0", oxlint: "1.0.0" } }) };
 
     assert.equal(apply(head).result.status, 0);
   });
@@ -109,7 +59,7 @@ describe("ci-renovate-sync.yml push job", () => {
   test("refuses a bump whose lockfile resolves a new third-party package", () => {
     const head = { ...BUMP, "pnpm-lock.yaml": lockfile(["@antelopejs/tooling-configs@0.10.14", "oxlint@1.0.0", "evil@1.0.0"]) };
 
-    assert.match(refusal(head), /adds packages outside @antelopejs\/ to the lockfile, and their code runs in the sync: evil@1\.0\.0/);
+    assert.match(refusal(head), /The lockfile changes more than plain registry entries of @antelopejs\/ packages.*packages evil@1\.0\.0 \(pnpm-lock\.yaml\)/);
   });
 
   test("refuses a bump that changes another file, such as .npmrc", () => {

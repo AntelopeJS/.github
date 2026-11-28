@@ -176,8 +176,49 @@ jobs:
           tooling() {
             manifest "$1" package.json | jq -r '[(.dependencies, .devDependencies) | objects | .["@antelopejs/tooling-configs"] | strings] | if length == 1 then .[0] else "" end'
           }
-          locked() {
-            git show "$1:$2" 2>/dev/null | awk '/^[^ ]/ { packages = ($0 == "packages:") } packages && /^  [^ ]/ { key = substr($0, 3); sub(/:( \{\})?$/, "", key); gsub(/["\047]/, "", key); sub(/^\//, "", key); print key }' | sort -u
+          rest() {
+            manifest "$1" "$2" | jq -cS 2>/dev/null 'del(.dependencies, .devDependencies, .peerDependencies, .optionalDependencies, .overrides, .resolutions)
+              | if (.pnpm | type) == "object" then .pnpm |= del(.overrides, .patchedDependencies) else . end' \
+              || git rev-parse -q --verify "$1:$2" || echo none
+          }
+          lockfile() {
+            git show "$1:$2" 2>/dev/null | awk '
+              function bad(why) { print "bad\t" why "\tline " NR; exit }
+              /\t/ || / $/ { bad("tab or trailing space") }
+              /^$/ { next }
+              {
+                match($0, /^ */)
+                indent = RLENGTH
+                if (indent % 2 || indent > last + 2) bad("indentation")
+                last = indent
+                if (indent == 0) {
+                  section = $0
+                  sub(/:.*/, "", section)
+                  if ($0 !~ /^[a-zA-Z]+:( .*)?$/) bad("top-level line")
+                  print section "\ttop:" section "\t" $0
+                  next
+                }
+                if (section == "packages" || section == "snapshots") {
+                  if (indent == 2) {
+                    if ($0 !~ /^  (\047[^\047]+\047|[^ \047"][^ ]*):( \{\})?$/) bad("entry key")
+                    owner = substr($0, 3)
+                    sub(/:( \{\})?$/, "", owner)
+                    gsub(/\047/, "", owner)
+                  }
+                } else if (section == "importers") {
+                  if (indent <= 4) {
+                    owner = "importer"
+                  } else if (indent == 6) {
+                    owner = substr($0, 7)
+                    sub(/:$/, "", owner)
+                    gsub(/\047/, "", owner)
+                  }
+                } else {
+                  owner = "top:" section
+                }
+                if (owner == "") bad("line outside an entry")
+                print section "\t" owner "\t" $0
+              }' | sort
           }
           refusal() {
             if [ "$APP_TOKEN" != true ]; then
@@ -202,20 +243,28 @@ jobs:
                 { head = ($1 == ""); section = head ? $2 : $1; name = head ? $3 : $2; spec = head ? $4 : $3 }
                 section ~ /overrides|resolutions|patched|unparsable/ || name !~ /^@antelopejs\// || (head && spec !~ /^"[~^]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?"$/) { print section " " name " (" file ")" }')
               moved+=$'\n'
+              if [ "$(rest "$base" "$file")" != "$(rest HEAD "$file")" ]; then
+                moved+="fields outside the dependency sections (${file})"$'\n'
+              fi
             done < <(git diff -z --name-only "$base" HEAD -- ':(glob)**/package.json')
             moved=$(grep . <<< "$moved" | sort -u | paste -sd ',' - || true)
             if [ -n "$moved" ]; then
               echo "The pull request also changes dependency specs other than a plain version of an @antelopejs/ package, and their code runs in the sync: ${moved}."
               return
             fi
-            added=""
+            locks=""
             while IFS= read -r -d '' file; do
-              added+=$(comm -13 <(locked "$base" "$file") <(locked HEAD "$file") | grep -v '^@antelopejs/' || true)
-              added+=$'\n'
+              locks+=$({ lockfile "$base" "$file" | grep '^bad' || true; lockfile HEAD "$file" | grep '^bad' || true; comm -3 <(lockfile "$base" "$file") <(lockfile HEAD "$file") | sed 's/^\t//'; } | awk -F '\t' -v file="$file" '
+                $1 == "bad" { print "unreadable " file " (" $2 ", " $3 ")"; next }
+                $2 !~ /^@antelopejs\// { print $1 " " $2 " (" file ")"; next }
+                $3 ~ /tarball|link:|file:|git[+:]|https?:|directory|<<|: [&*]|!!/ { print $1 " " $2 " (" file "): " $3; next }
+                $1 == "packages" && $3 ~ /^    resolution:/ && $3 !~ /^    resolution: \{integrity: sha512-[A-Za-z0-9+\/]+=*\}$/ { print $1 " " $2 " (" file "): " $3; next }
+                $1 == "importers" && $3 ~ /^        / && $3 !~ /^        (specifier: [~^]?[0-9][0-9A-Za-z.+-]*|version: [0-9][^ ]*)$/ { print $1 " " $2 " (" file "): " $3 }')
+              locks+=$'\n'
             done < <(git diff -z --name-only "$base" HEAD -- ':(glob)**/pnpm-lock.yaml')
-            added=$(grep . <<< "$added" | sort -u | paste -sd ' ' - || true)
-            if [ -n "$added" ]; then
-              echo "The pull request adds packages outside @antelopejs/ to the lockfile, and their code runs in the sync: ${added}."
+            locks=$(grep . <<< "$locks" | sort -u | paste -sd ',' - || true)
+            if [ -n "$locks" ]; then
+              echo "The lockfile changes more than plain registry entries of @antelopejs/ packages, or in a form this check does not read, and that code would run in the sync: ${locks}."
               return
             fi
             echo ok

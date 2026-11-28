@@ -956,9 +956,12 @@ so no job waits for another run. A patch that touches `.github/workflows/**` or
 root `package.json` from one plain version or range to another, as parsed JSON,
 and brings no other code into the sync: every other dependency spec it changes,
 in any `package.json`, is a plain version of an `@antelopejs/` package, it
-changes no override, resolution or patch, it adds no package outside
-`@antelopejs/` to a `pnpm-lock.yaml`, and it changes no file other than
-`package.json`, `pnpm-lock.yaml` and workflow files. Otherwise nothing is pushed,
+changes no override, resolution or patch, every `package.json` it changes is
+identical outside its dependency sections, every line it changes in a
+`pnpm-lock.yaml` belongs to an `@antelopejs/` entry resolved from the registry
+by integrity (no tarball, link, file or git source), the lockfile keeps the
+canonical form pnpm writes (any other form is refused), and it changes no file
+other than `package.json`, `pnpm-lock.yaml` and workflow files. Otherwise nothing is pushed,
 the pull request stays One-tap, and the summary names the reason and each file.
 A tooling-configs bump grouped with `oxfmt`, `oxlint` or `@oxlint/plugins` stays
 One-tap, since their code runs in the sync.
