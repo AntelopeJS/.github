@@ -19,6 +19,8 @@ const FAIL = "Fail on the module locks the job wrote";
 const PRUNE = "Delete the locks of the versions the bump replaces";
 const COPY = "Copy the recorded locks into the checkout";
 const COMMIT = "Commit the locks";
+const RUN = "Find whether every other job of the run passed";
+const WARN = "Warn on the module locks module-locks-renovate.yml commits";
 const LOCK_COMMIT = "build(deps): record the module locks of the bumped modules";
 const BRANCH = "antelopejs/module-locks";
 const CHECK = "Check the refresh patch";
@@ -308,6 +310,19 @@ describe("module-locks-committed action", () => {
     assert.match(fail.stdout, /::error::This job wrote module locks that are not committed/);
   });
 
+  test("warns instead of failing on the locks it uploaded for module-locks-renovate.yml to commit", () => {
+    const dir = repository(lock("antelope-lock", "@antelopejs/api@1.0.0"));
+    write(dir, lock("antelope-lock", "@antelopejs/api@1.1.0", "recorded\n"));
+
+    runStep(committed, FIND, dir);
+    const warn = runStep(committed, WARN, dir, { RUNNER_TEMP: join(root, `runner-${runs}`) });
+
+    assert.equal(warn.status, 0, warn.stderr);
+    assert.match(warn.stdout, /::warning::This job wrote the module locks listed above\. module-locks-renovate\.yml commits them/);
+    assert.match(committed, new RegExp(`- name: ${WARN}\\n\\s+if: steps\\.upload\\.outcome == 'success'\\n`));
+    assert.match(committed, new RegExp(`- name: ${FAIL}\\n\\s+if: steps\\.locks\\.outputs\\.recorded == 'true' && steps\\.upload\\.outcome != 'success'\\n`));
+  });
+
   test("ci-node.yml runs it only for a caller that asks, so existing callers keep their checks", () => {
     const input = ciNode.slice(ciNode.indexOf("      module-locks:\n"));
     assert.match(input, /^ {6}module-locks:\n(?: {8}.*\n)*? {8}default: false\n/);
@@ -402,6 +417,29 @@ describe("module-locks-renovate.yml", () => {
     assert.equal(third.outputs.committed, undefined);
     assert.equal(git(dir, "rev-parse", "HEAD"), head);
     assert.match(third.stdout, /::error::The checks recorded module locks again after 2 lock commits on this branch/);
+  });
+
+  test("marks the lock commit Checks-Passed only when every other job of the run passed", () => {
+    const job = (name: string, status: string, conclusion: string | null, runner = "runner-2") => ({ name, status, conclusion, runner_name: runner });
+    const verdict = (...jobs: ReturnType<typeof job>[]) => runStep(renovate, RUN, root, { GH_REPO: "AntelopeJS/example", GITHUB_RUN_ID: "41", RUNNER_NAME: "runner-1", GH_JOBS: JSON.stringify({ jobs }) });
+    const self = job("module-locks / Commit the module locks", "in_progress", null, "runner-1");
+
+    const passed = verdict(job("ci / Node .nvmrc", "completed", "success"), job("ci / Extra shards", "completed", "skipped"), self);
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.equal(passed.outputs.passed, "true");
+
+    for (const other of [job("ci / Node .nvmrc", "completed", "failure"), job("ci / checks", "completed", "cancelled"), job("e2e (1)", "in_progress", null)]) {
+      const failed = verdict(job("ci / Node 24", "completed", "success"), other, self);
+      assert.equal(failed.status, 0, failed.stderr);
+      assert.equal(failed.outputs.passed, undefined, other.name);
+      assert.match(failed.stdout, new RegExp(`^${other.name.replace(/[()]/g, "\\$&")}: ${other.conclusion ?? other.status}$`, "m"));
+    }
+
+    const { dir } = bump({ "README.md": "base\n" }, { "README.md": "bump\n" }, lock("antelope-lock", "@antelopejs/api@1.1.0"));
+    const trailer = "Checks-Passed: https://github.com/AntelopeJS/example/actions/runs/41";
+    const commit = runStep(renovate, COMMIT, dir, { AUTHOR: "41898282+github-actions[bot]@users.noreply.github.com", MESSAGE: LOCK_COMMIT, BASE_REF: "main", PASSED: trailer });
+    assert.equal(commit.status, 0, commit.stderr);
+    assert.equal(git(dir, "log", "-1", "--format=%s%n%(trailers:only)"), `${LOCK_COMMIT}\n${trailer}`);
   });
 
   test("leaves a lock no removed line names, such as the version a range resolved to", () => {

@@ -38,6 +38,7 @@ case "$1 $2" in
   "api repos/"*"/rules/branches/"*) response=\${GH_RULES:-[]} ;;
   "api repos/"*"/branches/"*) response=\${GH_BRANCH:-'{"protected":false}'} ;;
   "api repos/"*"/pulls?"*) response=\${GH_PULLS:-[]} ;;
+  "api --paginate") case "$3" in *"/jobs") response=\${GH_JOBS:-'{"jobs":[]}'} ;; *) exit 0 ;; esac ;;
   *) exit 0 ;;
 esac
 while [ "$#" -gt 0 ] && [ "$1" != --jq ]; do shift; done

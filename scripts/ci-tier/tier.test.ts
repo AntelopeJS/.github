@@ -158,6 +158,61 @@ describe("a merge group the queue dropped", () => {
   });
 });
 
+describe("the module-locks commit of a Renovate pull request", () => {
+  const BOT = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>";
+  const LOCKS = "build(deps): record the module locks of the bumped modules";
+  const PASSED = "Checks-Passed: https://github.com/AntelopeJS/example/actions/runs/41";
+
+  interface LockCommit {
+    author?: string;
+    message?: string[];
+    files?: string[];
+  }
+
+  const lockCommit = (name: string, { author = BOT, message = [LOCKS, PASSED], files = ["antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"] }: LockCommit, head = "renovate/antelopejs-api", headRepository = "AntelopeJS/example") => {
+    const { cwd, base } = checkout(name, ["package.json"]);
+    for (const file of files) {
+      mkdirSync(dirname(join(cwd, file)), { recursive: true });
+      writeFileSync(join(cwd, file), "lockfileVersion: '9.0'\n");
+    }
+    git(cwd, "add", "--all");
+    git(cwd, "commit", "--quiet", `--author=${author}`, ...message.flatMap((paragraph) => ["-m", paragraph]));
+    const github = { ...pullRequest("main", head)(base), "github.event.pull_request.head.sha": git(cwd, "rev-parse", "HEAD"), "github.event.pull_request.head.repo.full_name": headRepository };
+    return { cwd, base, github };
+  };
+  const tierOf = (...args: Parameters<typeof lockCommit>): string => {
+    const { cwd, github } = lockCommit(...args);
+    return leg(github, {}, "all", cwd).tier;
+  };
+
+  test("fetches the parent of the lock commit that a shallow checkout lacks", () => {
+    const upstream = lockCommit("locks-upstream", {});
+    const origin = join(root, "locks-origin.git");
+    git(root, "clone", "--quiet", "--bare", upstream.cwd, origin);
+    const cwd = join(root, "locks-shallow");
+    git(root, "clone", "--quiet", "--depth=1", `file://${origin}`, cwd);
+    assert.equal(leg(upstream.github, {}, "all", cwd).tier, "none");
+  });
+
+  test("runs nothing on the lock commit of a run whose other jobs passed", () => {
+    assert.equal(tierOf("locks-passed", { files: ["antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml", "packages/m/antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml"] }), "none");
+  });
+
+  test("runs the checks on a lock commit without the Checks-Passed trailer", () => {
+    assert.equal(tierOf("locks-unchecked", { message: [LOCKS] }), "full");
+  });
+
+  test("runs the checks on a commit with the trailer that changes more than the locks, or that another author made", () => {
+    assert.equal(tierOf("locks-and-source", { files: ["antelope-lock/@antelopejs/api@1.1.0/pnpm-lock.yaml", "src/index.ts"] }), "full");
+    assert.equal(tierOf("locks-by-hand", { author: "dev <dev@example.com>" }), "full");
+  });
+
+  test("runs the checks on a lock commit outside a Renovate branch of the repository", () => {
+    assert.equal(tierOf("locks-feature", {}, "feat/x"), "full");
+    assert.equal(tierOf("locks-fork", {}, "renovate/antelopejs-api", "someone/example"), "full");
+  });
+});
+
 describe("the fast tier", () => {
   const fastTests = (name: string, changed: string[]): string => {
     const { cwd, base } = checkout(name, changed);

@@ -1,5 +1,5 @@
 name: Module locks committed
-description: Fail when an install or a test run of this job wrote an antelope-lock/ file that is not committed, and on a Renovate pull request upload what it wrote for module-locks-renovate.yml
+description: Fail when an install or a test run of this job wrote an antelope-lock/ file that is not committed; on a Renovate pull request, upload what it wrote for module-locks-renovate.yml to commit, and warn instead
 
 outputs:
   recorded:
@@ -33,6 +33,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Upload the module locks for the Renovate pull request
+      id: upload
       if: >-
         steps.locks.outputs.recorded == 'true'
         && runner.os == 'Linux'
@@ -46,8 +47,15 @@ runs:
         include-hidden-files: true
         retention-days: 1
 
+    - name: Warn on the module locks module-locks-renovate.yml commits
+      if: steps.upload.outcome == 'success'
+      shell: bash
+      run: |
+        cat "$RUNNER_TEMP/module-locks-changes"
+        echo "::warning::This job wrote the module locks listed above. module-locks-renovate.yml commits them to the Renovate branch."
+
     - name: Fail on the module locks the job wrote
-      if: steps.locks.outputs.recorded == 'true'
+      if: steps.locks.outputs.recorded == 'true' && steps.upload.outcome != 'success'
       shell: bash
       run: |
         cat "$RUNNER_TEMP/module-locks-changes"
