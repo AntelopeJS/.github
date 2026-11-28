@@ -113,7 +113,12 @@ A public package publishes through [pkg.pr.new](https://pkg.pr.new), which
 comments the install commands on the pull request and updates that comment on
 each push. The pkg.pr.new GitHub App must be installed on the repository. It
 needs no token scope. The run installs `pkg-pr-new@0.0.94` and calls it with
-`--pnpm`, so that each `workspace:` and `catalog:` spec resolves.
+`--pnpm`, so that each `workspace:` and `catalog:` spec resolves. pkg.pr.new
+takes one publish per workflow run, so in a workspace only the job of the first
+released directory in path order calls it, once, on every directory of the
+workspace that holds a `.release-it.json`. The jobs of the other packages say so
+in a notice and publish nothing. pkg.pr.new then points each `workspace:` spec
+on another package of that call at its pkg.pr.new preview.
 
 A private package publishes to `https://npm.antelopejs.cloud/` under the
 dist-tag `pr-<number>`, such as `pr-12`:
@@ -122,7 +127,7 @@ dist-tag `pr-<number>`, such as `pr-12`:
 pnpm add @antelopejs-private/my-package@pr-12
 ```
 
-A pull request preview never moves `latest` or `next`. It pins no workspace
+A pull request preview never moves `latest` or `next`. A private one pins no workspace
 sibling, because `pnpm pack` writes each `workspace:` spec as the range in the
 `package.json` of the sibling. A preview that needs an unreleased change of a
 sibling does not get it. A pull request from a fork gets no secrets, so the
