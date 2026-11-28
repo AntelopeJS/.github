@@ -931,16 +931,32 @@ jobs:
 
 ### Renovate sync
 
-The reusable `ci-renovate-sync.yml` workflow takes no inputs. On a pull request
+The reusable `ci-renovate-sync.yml` workflow takes no inputs and two optional
+secrets, `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`. On a pull request
 from a `renovate/*` branch of the same repository whose diff changes a
 `package.json` or a `pnpm-lock.yaml`, its `renovate-sync` job installs, runs the
 repository's `sync` script (the write side of the `sync:check` its checks run,
 so the profile is the repository's own; a repository without one is left
 alone), then its `format` script when it has one, so a bump of `oxfmt` lands
-with the files it formats, and commits the output to the branch as
-`github-actions[bot]`, so the bump pull request becomes conformant on its own. The hosted Renovate app runs
-no `postUpgradeTasks`, so this job does that work.
-A push made with `GITHUB_TOKEN` starts no workflow run, so the job then
+with the files it formats, and hands the output as a patch artifact to its
+`push` job, which commits it to the branch as `github-actions[bot]`, so the bump
+pull request becomes conformant on its own. The hosted Renovate app runs
+no `postUpgradeTasks`, so this workflow does that work. The `push` job runs
+nothing from the repository: it checks out the head, applies the patch and
+pushes.
+
+With both secrets, the `push` job mints an installation token of that GitHub
+App, scoped to the calling repository with `contents: write` and
+`workflows: write` only, and pushes with it. The `renovate-sync` job, which
+installs and runs the bumped dependencies, never holds the key or the token. A
+push made with the app token starts the pull request's checks on the new head,
+so no job waits for another run. A patch that touches `.github/workflows/**` or
+`.github/actions/**` is pushed only when the pull request's diff bumps
+`@antelopejs/tooling-configs` in a `package.json`; on any other pull request the
+job fails and names each such file.
+
+Without the secrets, the `push` job pushes with `GITHUB_TOKEN`. A push made with
+`GITHUB_TOKEN` starts no workflow run, so the job then
 dispatches the caller workflow on the branch (`gh workflow run`), which runs
 `checks` on the new head. A check from a `workflow_dispatch` run does not count
 for the pull request's required status checks, so the job waits for that run and
@@ -949,7 +965,7 @@ Actions or from any source, the result of the run's job of that name on the new
 head as a commit status of the same name, which the ruleset counts. A required
 check the run has no single job for fails the job. When the sync output touches `.github/workflows/**`
 or `.github/actions/**`, nothing is pushed and the job fails with that reason in
-its summary: the pull request stays One-tap. When the `format` script changes
+its summary: `GITHUB_TOKEN` cannot push workflow files, so the pull request stays One-tap. When the `format` script changes
 more than whitespace and line breaks (a lint fix, a quote or comma rewrite, or
 a file it adds, deletes or changes the mode of), nothing is pushed and the job fails with the paths
 in its summary, so only a layout-only reformat lands without a human. On any
@@ -960,8 +976,10 @@ job that calls it, so a caller that grants less keeps working and only a bump
 whose sync output must be pushed fails, with the missing permission named in the
 log. Call it from its own job, next to `ci-node.yml` with
 `renovate-sync: false`, so that only that job holds `contents: write`,
-`actions: write` and `statuses: write`, and only on Renovate pull requests. The
-caller must declare the `workflow_dispatch` trigger:
+`actions: write` and `statuses: write`, and only on Renovate pull requests. A
+caller that forwards the app secrets adds `secrets: RELEASE_APP_ID` and
+`RELEASE_APP_PRIVATE_KEY` to that job, as it does for `module-locks-renovate.yml`.
+A caller without them must declare the `workflow_dispatch` trigger:
 
 ```yaml
 name: ci

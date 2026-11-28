@@ -2,6 +2,13 @@ name: Renovate sync
 
 on:
   workflow_call:
+    secrets:
+      RELEASE_APP_ID:
+        description: ID of the GitHub App whose installation token pushes the sync output, workflow files included, so that the push starts the pull request's checks on the new head
+        required: false
+      RELEASE_APP_PRIVATE_KEY:
+        description: Private key of that GitHub App
+        required: false
 
 jobs:
   renovate-sync:
@@ -13,14 +20,14 @@ jobs:
     # Blacksmith's 4 vCPU Ubuntu 24.04 runner, unless the CALLING repository's variable RUNNER_CI names
     # another runner label: one variable switches a repository to another runner.
     runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: 360
+    timeout-minutes: 60
     concurrency:
       group: ci-renovate-sync-${{ github.event.pull_request.number }}
       cancel-in-progress: true
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
     env:
-      GH_REPO: ${{ github.repository }}
       BASE_REF: ${{ github.base_ref }}
-      HEAD_REF: ${{ github.head_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,19 +75,6 @@ jobs:
             echo "$out"
             exit 1
           fi
-          if git status --porcelain --untracked-files=all -- .github/workflows .github/actions | grep -q .; then
-            {
-              echo "### Renovate sync: One-tap"
-              echo
-              echo "\`antelopejs-sync\` or the \`format\` script changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: a pull request touching workflow paths needs a human tap."
-              echo
-              echo "Changed paths:"
-              echo
-              git status --porcelain --untracked-files=all -- .github/workflows .github/actions | sed 's/^/- /'
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
-            exit 1
-          fi
           unsafe=$(git ls-files --others --exclude-standard)
           unsafe+=$'\n'$(git diff --summary | sed -n 's/^ mode change [0-7]* => [0-7]* //p')
           git diff -z --name-only > "$RUNNER_TEMP/formatted"
@@ -102,20 +96,120 @@ jobs:
             echo "::error::The format script changes more than whitespace; nothing pushed."
             exit 1
           fi
-          if git status --porcelain --untracked-files=all | grep -q .; then
+          git add -A
+          if ! git diff --cached --quiet; then
+            git diff --cached --binary > "$RUNNER_TEMP/renovate-sync.patch"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - if: steps.sync.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renovate-sync-patch
+          path: ${{ runner.temp }}/renovate-sync.patch
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  push:
+    name: Push the Renovate sync
+    needs: renovate-sync
+    if: needs.renovate-sync.outputs.changed == 'true'
+    runs-on: ${{ vars.RUNNER_CI || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: 360
+    concurrency:
+      group: ci-renovate-sync-push-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      GH_REPO: ${{ github.repository }}
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_REF: ${{ github.head_ref }}
+      AUTHOR: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Pick the push credentials
+        id: credentials
+        env:
+          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$RELEASE_APP_ID" ] && [ -n "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "app=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$RELEASE_APP_ID" ] || [ -n "$RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "::error::RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY are passed together or not at all."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: renovate-sync-patch
+          path: ${{ runner.temp }}/renovate-sync
+
+      - name: Apply the sync output
+        env:
+          APP_TOKEN: ${{ steps.credentials.outputs.app }}
+          PATCH: ${{ runner.temp }}/renovate-sync/renovate-sync.patch
+        run: |
+          git apply --index -- "$PATCH"
+          workflows=$(git diff --cached --name-only -- .github/workflows .github/actions)
+          if [ -z "$workflows" ]; then
+            exit 0
+          fi
+          if [ "$APP_TOKEN" != true ]; then
+            {
+              echo "### Renovate sync: One-tap"
+              echo
+              echo "\`antelopejs-sync\` or the \`format\` script changes \`.github/workflows/**\` or \`.github/actions/**\`. Nothing was pushed: GITHUB_TOKEN cannot push workflow files, so this needs a human tap, or the job that calls ci-renovate-sync.yml passes RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY."
+              echo
+              echo "Changed paths:"
+              echo
+              while IFS= read -r file; do
+                echo "- ${file}"
+              done <<< "$workflows"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The sync output changes workflow paths; nothing pushed, this pull request stays One-tap."
+            exit 1
+          fi
+          if ! git diff -U0 "origin/${BASE_REF}...HEAD" -- ':(glob)**/package.json' | grep -Eq '^\+[[:space:]]*"@antelopejs/tooling-configs"[[:space:]]*:'; then
+            while IFS= read -r file; do
+              echo "::error::The sync output changes ${file}, and only a bump of @antelopejs/tooling-configs may change workflow paths; nothing pushed."
+            done <<< "$workflows"
+            exit 1
+          fi
+
+      - name: Create the push token
+        id: token
+        if: steps.credentials.outputs.app == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-workflows: write
+
+      - name: Commit the sync output and push it with the app token
+        if: steps.credentials.outputs.app == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="$AUTHOR" GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="$AUTHOR" \
+            git -c core.hooksPath=/dev/null commit --no-verify -q -m "chore(deps): apply the antelopejs-sync and format output"
+          git -c core.hooksPath=/dev/null push --no-verify -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${HEAD_REF}"
+
       - name: Commit the sync output and start checks
         id: push
-        if: steps.sync.outputs.changed == 'true'
+        if: steps.credentials.outputs.app != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit --no-verify -q -m "chore(deps): apply the antelopejs-sync and format output"
+          GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="$AUTHOR" GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="$AUTHOR" \
+            git -c core.hooksPath=/dev/null commit --no-verify -q -m "chore(deps): apply the antelopejs-sync and format output"
           if ! git push --no-verify -q "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" "HEAD:refs/heads/${HEAD_REF}"; then
             echo "::error::The sync commit could not be pushed. The job that calls ci-renovate-sync.yml must grant contents: write."
             exit 1
@@ -130,7 +224,7 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Report the dispatched checks on the sync commit
-        if: steps.sync.outputs.changed == 'true'
+        if: steps.credentials.outputs.app != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.push.outputs.sha }}

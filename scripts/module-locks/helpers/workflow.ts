@@ -67,6 +67,8 @@ export interface StepResult {
   stdout: string;
   stderr: string;
   outputs: Record<string, string>;
+  /** The step's RUNNER_TEMP folder. */
+  temp: string;
 }
 
 export let runs = 0;
@@ -102,7 +104,7 @@ export function runStep(text: string, step: string, cwd: string, env: Record<str
       .filter((line) => line.includes("="))
       .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
   );
-  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs };
+  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr, outputs, temp };
 }
 
 export function git(cwd: string, ...args: string[]): string {

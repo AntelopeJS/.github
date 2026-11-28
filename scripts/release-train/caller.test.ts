@@ -189,7 +189,7 @@ test("no workflow declares or reads RELEASE_GITHUB_TOKEN, and each workflow that
   const workflows = listDirectory(directory).filter((name) => name.endsWith(".yml"));
   assert.deepEqual(workflows.filter((name) => read(`../../.github/workflows/${name}`).includes("RELEASE_GITHUB_TOKEN")), []);
   const minting = workflows.filter((name) => /uses: actions\/create-github-app-token@[0-9a-f]{40} /.test(read(`../../.github/workflows/${name}`)));
-  assert.deepEqual(minting, ["module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml", "renovate-sweep.yml", "template-demo-sync.yml", "verdict-conformance.yml"]);
+  assert.deepEqual(minting, ["ci-renovate-sync.yml", "module-locks-refresh.yml", "module-locks-renovate.yml", "next-sync.yml", "release-npm.yml", "renovate-sweep.yml", "template-demo-sync.yml", "verdict-conformance.yml"]);
 });
 
 test("each release app token asks only the permissions its job uses", () => {
