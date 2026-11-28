@@ -97,7 +97,13 @@ count only when no other job failed. For each failure the report gives:
   passed the queue when one of its `merge_group` runs succeeded, because the
   queue merges the commit it tested.
 - whether it reproduces. Either a re-run of the nightly fails the job again or
-  the next nightly fails it again.
+  the next nightly that ran the job fails it again.
+
+The next nightly and the baseline both skip a nightly that did not run the job.
+`ci-node.yml` runs the Windows legs (` on Windows`) and `Stress` only in the
+Sunday nightly (UTC). A nightly that failed lists its jobs, so the report sees
+which ones it ran. A nightly that succeeded lists none, so the report counts it
+as running every job, except a weekly one when it did not start on a Sunday.
 
 These give one verdict per failure:
 
@@ -107,12 +113,12 @@ These give one verdict per failure:
 | `unqueued` | a reproduced `test` failure with a commit since the baseline that has no passing queue run, such as a push that bypassed the queue or a commit from before the rollout |
 | `no-new-commit` | a reproduced `test` failure on the commit the baseline passed, such as a dependency or a service that changed |
 | `no-baseline` | a reproduced `test` failure with no nightly in the dataset that passed the job before |
-| `flake` | a `test` failure that the next nightly and any re-run did not repeat |
-| `pending` | a `test` failure that nothing repeated yet, before the next nightly |
+| `flake` | a `test` failure that the next nightly that ran the job and any re-run did not repeat |
+| `pending` | a `test` failure that nothing repeated yet, before the next nightly that runs the job |
 | `infra` | an `infra` failure |
 
 A job that keeps failing the same way, `infra` or `test`, since the same baseline
-counts once, with the verdict of its first failure, which its next nightly settles. The counts are per
+counts once, with the verdict of its first failure, which the next nightly that runs the job settles. The counts are per
 repository and organization-wide over the window. The daily run recomputes
 them from the API, so the 30-day total needs no saved state. The report also
 details the failures of each repository's latest nightly when it failed.
