@@ -127,7 +127,7 @@ jobs:
         env:
           AUTHOR: 41898282+github-actions[bot]@users.noreply.github.com
           MESSAGE: "build(deps): record the module locks of the bumped modules"
-          PASSED: ${{ steps.run.outputs.passed == 'true' && format('Checks-Passed: {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) || '' }}
+          PASSED: "${{ steps.run.outputs.passed == 'true' && format('Checks-Passed: {0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) || '' }}"
         run: |
           git add -A -- ':(glob)**/antelope-lock/**'
           if git diff --cached --quiet; then
