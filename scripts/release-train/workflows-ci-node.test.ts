@@ -55,20 +55,21 @@ describe("ci-node.yml verdict", () => {
   });
 });
 
+const pickStep = "Pick the Windows legs and Stress from the event, the day and the repository visibility";
+const fakes = (weekday: number) => {
+  const bin = join(root, `eligibility-bin-${weekday}`);
+  mkdirSync(bin, { recursive: true });
+  const log = join(bin, "gh.log");
+  writeFileSync(join(bin, "gh"), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n[ -n "$FAKE_VISIBILITY" ] || exit 1\necho "$FAKE_VISIBILITY"\n');
+  writeFileSync(join(bin, "date"), `#!/usr/bin/env bash\n[ "$*" = "-u +%u" ] || exit 1\necho ${weekday}\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  chmodSync(join(bin, "date"), 0o755);
+  return { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log, GITHUB_REPOSITORY: "AntelopeJS/x" }, log };
+};
+const monday = 1;
+const sunday = 7;
+
 describe("ci-node.yml", () => {
-  const pickStep = "Pick the Windows legs and Stress from the event, the day and the repository visibility";
-  const fakes = (weekday: number) => {
-    const bin = join(root, `eligibility-bin-${weekday}`);
-    mkdirSync(bin, { recursive: true });
-    const log = join(bin, "gh.log");
-    writeFileSync(join(bin, "gh"), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$GH_LOG"\n[ -n "$FAKE_VISIBILITY" ] || exit 1\necho "$FAKE_VISIBILITY"\n');
-    writeFileSync(join(bin, "date"), `#!/usr/bin/env bash\n[ "$*" = "-u +%u" ] || exit 1\necho ${weekday}\n`);
-    chmodSync(join(bin, "gh"), 0o755);
-    chmodSync(join(bin, "date"), 0o755);
-    return { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log, GITHUB_REPOSITORY: "AntelopeJS/x" }, log };
-  };
-  const monday = 1;
-  const sunday = 7;
 
   type Caller = { windows: boolean; "windows-merge-queue": boolean; "windows-pull-requests": boolean; nightly: boolean };
   interface Case {
@@ -124,29 +125,37 @@ describe("ci-node.yml", () => {
     }
   });
 
-  test("the eligibility job reads the visibility with one API call only when Windows may run, and fails when the call fails", () => {
-    const run = (weekday: number, event: string, visibility: string) => {
+  test("the eligibility job takes the visibility from the payload, reads it with one API call when the payload has none, and fails on a failed read only when Windows may run", () => {
+    const run = (weekday: number, event: string, visibility: string, payload = "") => {
       const { env, log } = fakes(weekday);
       writeFileSync(log, "");
-      return { ...runStep(ciNode, pickStep, root, { ...env, FAKE_VISIBILITY: visibility, EVENT: event, WINDOWS: "true" }), calls: readText(log) };
+      return { ...runStep(ciNode, pickStep, root, { ...env, FAKE_VISIBILITY: visibility, EVENT: event, WINDOWS: "true", PAYLOAD_VISIBILITY: payload }), calls: readText(log) };
     };
+    const read = "api repos/AntelopeJS/x --jq .visibility\n";
     for (const visibility of ["public", "private"]) {
       const result = run(sunday, "schedule", visibility);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.outputs, `windows=${visibility === "public"}\nstress=true\n`);
-      assert.equal(result.calls, "api repos/AntelopeJS/x --jq .visibility\n");
+      assert.equal(result.outputs, `visibility=${visibility}\nwindows=${visibility === "public"}\nstress=true\n`);
+      assert.equal(result.calls, read);
     }
     const weeknight = run(monday, "schedule", "public");
-    assert.equal(weeknight.outputs, "windows=false\nstress=false\n");
-    assert.equal(weeknight.calls, "", "a weeknight runs no Windows leg, so it reads nothing");
+    assert.equal(weeknight.outputs, "visibility=public\nwindows=false\nstress=false\n", "a weeknight runs no Windows leg, but its jobs still pick their runner from the visibility");
+    assert.equal(weeknight.calls, read, "a schedule payload carries no repository");
+    const queued = run(monday, "merge_group", "", "public");
+    assert.equal(queued.outputs, "visibility=public\nwindows=true\nstress=true\n");
+    assert.equal(queued.calls, "", "a payload that carries the visibility needs no API call");
     const failed = run(sunday, "schedule", "");
-    assert.notEqual(failed.status, 0);
+    assert.notEqual(failed.status, 0, "a failed read must not drop the Windows legs");
     assert.equal(failed.outputs, "");
+    const failedWeeknight = run(monday, "schedule", "");
+    assert.equal(failedWeeknight.status, 0, failedWeeknight.stderr);
+    assert.equal(failedWeeknight.outputs, "visibility=\nwindows=false\nstress=false\n", "a failed read with no Windows leg at stake leaves the jobs on Blacksmith");
   });
 
   test("a failed eligibility job fails the run instead of dropping the Windows legs", () => {
     assert.match(jobText("node"), /^ {4}needs: \[eligibility, shards\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.eligibility\.result != 'failure' && needs\.shards\.result != 'failure' \}\}$/m);
     assert.match(jobText("gate"), /^ {4}needs: \[eligibility, shards, node, stress, formal\]$/m);
+    assert.match(jobText("formal"), /^ {4}needs: \[eligibility\]\n {4}if: \$\{\{ !cancelled\(\) && needs\.eligibility\.result != 'failure' && inputs\.formal-checks != '' && inputs\.formal-checks != '\[\]' \}\}$/m, "Formal waits for the visibility a schedule payload lacks");
   });
 
   test("a newer run of the same pull request cancels the older run whole, and any cancelled run's checks end cancelled instead of failing", () => {
@@ -295,7 +304,7 @@ describe("ci-node.yml formal checks", () => {
   };
 
   test("a caller that passes no formal-checks gets no Formal job, and each entry is one Formal leg", () => {
-    const gate = /^ {4}if: (.*)$/m.exec(formal)?.[1] ?? "";
+    const gate = (/^ {4}if: (.*)$/m.exec(formal)?.[1] ?? "").replace(/!cancelled\(\)/g, "true").replace(/needs\.eligibility\.result/g, "'skipped'");
     assert.equal(evaluate(gate, { inputs: { "formal-checks": "" } }), false, "the frozen callers pass nothing and run as before");
     assert.equal(evaluate(gate, { inputs: { "formal-checks": "[]" } }), false, "an empty matrix would fail the run");
     const inputs = { "formal-checks": '[{"skill": "formal-a"}, {"skill": "formal-b", "paths": ["src/b.ts"], "run": "node b.mjs"}]' };
