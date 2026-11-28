@@ -204,7 +204,7 @@ test("each release app token asks only the permissions its job uses", () => {
   assert.deepEqual(asked("module-locks-renovate.yml"), ["permission-contents: write"]);
   assert.deepEqual(asked("module-locks-refresh.yml"), ["permission-contents: write", "permission-pull-requests: write", "permission-workflows: write"]);
   assert.deepEqual(asked("template-demo-sync.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
-  assert.deepEqual(asked("renovate-sweep.yml"), ["permission-contents: write", "permission-pull-requests: write"]);
+  assert.deepEqual(asked("renovate-sweep.yml"), ["permission-checks: read", "permission-contents: write", "permission-pull-requests: write"]);
   assert.deepEqual(asked("verdict-conformance.yml"), ["permission-contents: read"]);
   assert.deepEqual(asked("ci-renovate-sync.yml"), ["permission-contents: write"]);
 });

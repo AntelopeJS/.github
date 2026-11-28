@@ -33,6 +33,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permission-checks: read
           permission-contents: write
           permission-pull-requests: write
 
