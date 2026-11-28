@@ -10,7 +10,7 @@ move; --dry-run prints them without making them.
 `;
 
 const SEARCH = `query($search: String!, $cursor: String) {
-  search(query: $search, type: ISSUE, first: 50, after: $cursor) {
+  search(query: $search, type: ISSUE, first: 20, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -27,24 +27,51 @@ const SEARCH = `query($search: String!, $cursor: String) {
   }
 }`;
 
-const gh = (args: string[], input?: string): string => execFileSync("gh", args, { encoding: "utf8", input });
+/** Room for any page of Renovate bodies, each up to 65536 characters, where Node's default of 1 MiB cut a page of 50. */
+const MAX_ANSWER = 64 * 1024 * 1024;
+const ATTEMPTS = 3;
+
+const gh = (args: string[], input?: string): string => execFileSync("gh", args, { encoding: "utf8", input, maxBuffer: MAX_ANSWER });
+
+/** The JSON of an answer of `gh`, or `undefined` when it is not JSON. */
+function parseAnswer(text: string): Json | undefined {
+  try {
+    return parseJson(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The first line the texts hold, cut to 200 characters, since a cut JSON answer is one line of a megabyte. */
+const firstLine = (...texts: string[]): string =>
+  (texts.flatMap((text) => text.split("\n")).find((line) => line.trim() !== "") ?? "nothing").slice(0, 200);
+
+function warnErrors(answer: Json): void {
+  if (!isObject(answer) || !isList(answer.errors)) return;
+  for (const entry of answer.errors) {
+    const path = isObject(entry) && isList(entry.path) ? entry.path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") : "?";
+    const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
+    process.stdout.write(`::warning::${path}: ${message}\n`);
+  }
+}
 
 /**
- * The answer of a GraphQL query. A field the token may not read comes back null with an error, and `gh` then exits
- * nonzero; each such error is printed as a warning, and the pull request it hides is left alone.
+ * The answer of a GraphQL query, asked up to three times while GitHub answers something that is not JSON. A field the
+ * token may not read comes back null with an error, and `gh` then exits nonzero; each such error is printed as a
+ * warning, and the pull request it hides is left alone.
  */
 function graphql(args: string[]): Json {
-  const result = spawnSync("gh", ["api", "graphql", ...args], { encoding: "utf8" });
-  if (!result.stdout.startsWith("{")) throw new Error(`gh api graphql failed: ${result.stderr}`);
-  const answer = parseJson(result.stdout);
-  if (isObject(answer) && isList(answer.errors)) {
-    for (const entry of answer.errors) {
-      const path = isObject(entry) && isList(entry.path) ? entry.path.map((part) => (isText(part) || isNumber(part) ? String(part) : "?")).join(".") : "?";
-      const message = isObject(entry) && isText(entry.message) ? entry.message : "unknown error";
-      process.stdout.write(`::warning::${path}: ${message}\n`);
+  let last = "nothing";
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    const result = spawnSync("gh", ["api", "graphql", ...args], { encoding: "utf8", maxBuffer: MAX_ANSWER });
+    const answer = result.error === undefined ? parseAnswer(result.stdout) : undefined;
+    if (answer !== undefined) {
+      warnErrors(answer);
+      return answer;
     }
+    last = firstLine(result.error?.message ?? "", result.stdout, result.stderr);
   }
-  return answer;
+  throw new Error(`gh api graphql answered no JSON ${ATTEMPTS} times; the last answer: ${last}`);
 }
 
 function searchPulls(org: string): RenovatePull[] {
@@ -63,7 +90,9 @@ function searchPulls(org: string): RenovatePull[] {
 }
 
 function isBehind(pull: RenovatePull): boolean {
-  const comparison = parseJson(gh(["api", `repos/${pull.repo}/compare/${encodeURIComponent(pull.baseRef)}...${pull.headSha}`]));
+  const answer = gh(["api", `repos/${pull.repo}/compare/${encodeURIComponent(pull.baseRef)}...${pull.headSha}`]);
+  const comparison = parseAnswer(answer);
+  if (comparison === undefined) throw new Error(`gh api compare answered no JSON: ${firstLine(answer)}`);
   return isObject(comparison) && isNumber(comparison.behind_by) && comparison.behind_by > 0;
 }
 
@@ -85,8 +114,15 @@ if (org === undefined || org === "--help" || (flag !== undefined && flag !== "--
 }
 const dryRun = flag === "--dry-run";
 
+let pulls: RenovatePull[];
+try {
+  pulls = searchPulls(org);
+} catch (error) {
+  process.stdout.write(`::error::${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n`);
+  process.exit(1);
+}
 let failed = 0;
-for (const pull of searchPulls(org)) {
+for (const pull of pulls) {
   const link = `${pull.repo}#${pull.number}`;
   try {
     const move = moveOf(pull, () => isBehind(pull));
