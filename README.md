@@ -798,17 +798,21 @@ Every job picks its runner from the calling repository's visibility, which a
 reusable workflow reads from the caller's event as `github.event.repository.visibility`:
 GitHub's `ubuntu-latest` for a public repository, and Blacksmith's 4 vCPU Ubuntu
 24.04 runner, `blacksmith-4vcpu-ubuntu-2404`, for a private or internal one.
-An event that carries no repository, a `schedule`, lands on Blacksmith. The
-caller's `RUNNER_CI` variable, when set, wins over both. Every job carries the
-same `runs-on`:
+A `schedule` payload carries no repository, so in `ci-node.yml` the
+`Windows and Stress eligibility` job reads the visibility through the API on a
+schedule, and the jobs that wait for it (`node`, `stress`, `formal` and the
+gate) read its `visibility` output after the payload's. A job that finds no
+visibility lands on Blacksmith. The caller's `RUNNER_CI` variable, when set,
+wins over both. Every job carries the same `runs-on`, with
+`(github.event.repository.visibility || needs.eligibility.outputs.visibility)`
+in place of the payload in the jobs that wait for eligibility:
 
 ```yaml
 runs-on: ${{ vars.RUNNER_CI || (github.event.repository.visibility == 'public' && 'ubuntu-latest' || 'blacksmith-4vcpu-ubuntu-2404') }}
 ```
 
-The Windows legs run only for a public repository, on `windows-latest`, or on
-`blacksmith-4vcpu-windows-2025` in a `schedule` run, unless `RUNNER_CI_WINDOWS`
-names another label. The npm release workflows keep a public repository's
+The Windows legs run only for a public repository, on `windows-latest`, unless
+`RUNNER_CI_WINDOWS` names another label. The npm release workflows keep a public repository's
 release on `ubuntu-latest` whatever `RUNNER_CI` says, because npm trusted
 publishing and provenance refuse self-hosted runners, Blacksmith's included.
 `workflows-runners.test.ts` fails on any `runs-on` that differs from these.
