@@ -396,18 +396,51 @@ describe("release-npm.yml", () => {
 
     const bin = join(root, "pkg-pr-new", "node_modules", ".bin");
     mkdirSync(bin, { recursive: true });
-    writeFileSync(join(bin, "pkg-pr-new"), '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$@" > "$PKG_PR_NEW_LOG"\ncat package.json >> "$PKG_PR_NEW_LOG"\n');
+    writeFileSync(join(bin, "pkg-pr-new"), '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$@" > "$PKG_PR_NEW_LOG"\n');
     chmodSync(join(bin, "pkg-pr-new"), 0o755);
     const manifest = { name: "@antelopejs/x", version: "0.4.2", dependencies: { "@antelopejs/interface-x": "workspace:^", "@antelopejs/b": "catalog:" } };
-    const directory = packageDirectory(`release-pkg-pr-new`, manifest);
+    const { directory } = repository(`release-pkg-pr-new`, { "package.json": `${JSON.stringify(manifest)}\n` });
     const log = join(root, "pkg-pr-new-publish.log");
     const version = "0.0.0-pr.12.3.gabc1234";
     const published = runStep(text, "Publish to pkg.pr.new", directory, { VERSION: version, PKG_PR_NEW_LOG: log });
     assert.equal(published.status, 0, published.stderr);
-    const [cwd = "", ...rest] = readText(log).split("\n");
-    const args = rest.slice(0, 4);
+    const [cwd = "", ...args] = readText(log).trimEnd().split("\n");
     assert.equal(realpathSync(cwd), realpathSync(directory));
     assert.deepEqual(args, ["publish", "--pnpm", "--comment=update", "."]);
-    assert.deepEqual(JSON.parse(rest.slice(4).join("\n")), { ...manifest, version });
+    assert.deepEqual(parseObject(readText(join(directory, "package.json"))), { ...manifest, version });
+  });
+
+  test("a public pull request preview of a workspace publishes every released package of it to pkg.pr.new in one call, from the job of the first released directory, since pkg.pr.new takes one publish per workflow run", () => {
+    const bin = join(root, "pkg-pr-new", "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "pkg-pr-new"), '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$@" > "$PKG_PR_NEW_LOG"\n');
+    chmodSync(join(bin, "pkg-pr-new"), 0o755);
+    const manifest = (name: string, dependencies: Record<string, string> = {}) => `${JSON.stringify({ name, version: "0.1.0", dependencies })}\n`;
+    const { directory } = repository(`release-pkg-pr-new-workspace`, {
+      "package.json": JSON.stringify({ name: "workspace", private: true }),
+      "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
+      "packages/dms/package.json": manifest("@antelopejs/dms", { "@antelopejs/interface-dms": "workspace:^" }),
+      "packages/dms/.release-it.json": "{}\n",
+      "packages/dms/playground/package.json": manifest("playground"),
+      "packages/interface-dms/package.json": manifest("@antelopejs/interface-dms"),
+      "packages/interface-dms/.release-it.json": "{}\n",
+      "packages/interface-dms-builder/package.json": manifest("@antelopejs/interface-dms-builder"),
+      "packages/interface-dms-builder/.release-it.json": "{}\n",
+    });
+    const version = "0.0.0-pr.12.3.gabc1234";
+    const publish = (member: string) => {
+      const log = join(root, `pkg-pr-new-${member.replaceAll("/", "-")}.log`);
+      const result = runStep(text, "Publish to pkg.pr.new", join(directory, member), { VERSION: version, PKG_PR_NEW_LOG: log, WORKSPACE_DIRECTORY: "." });
+      assert.equal(result.status, 0, result.stderr);
+      return { ...result, call: existsSync(log) ? readText(log).trimEnd().split("\n") : null };
+    };
+    const sibling = publish("packages/interface-dms");
+    assert.equal(sibling.call, null);
+    assert.match(sibling.stdout, /^::notice::The job of packages\/dms publishes the pkg\.pr\.new previews of every released package of this workspace/m);
+    const first = publish("packages/dms");
+    assert.deepEqual(first.call?.slice(1), ["publish", "--pnpm", "--comment=update", ".", "../interface-dms", "../interface-dms-builder"]);
+    assert.equal(realpathSync(first.call?.[0] ?? ""), realpathSync(join(directory, "packages", "dms")));
+    const versions = ["dms", "dms/playground", "interface-dms", "interface-dms-builder"].map((name) => parseObject(readText(join(directory, "packages", name, "package.json")))["version"]);
+    assert.deepEqual(versions, [version, "0.1.0", version, version]);
   });
 });

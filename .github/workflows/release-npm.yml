@@ -840,14 +840,40 @@ jobs:
         working-directory: ${{ inputs.package-directory }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          WORKSPACE_DIRECTORY: ${{ steps.workspace.outputs.install-directory }}
         run: |
           set -euo pipefail
           node <<'NODE'
+          const { execFileSync } = require('node:child_process')
           const fs = require('node:fs')
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-          fs.writeFileSync('package.json', `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
+          const path = require('node:path')
+          const own = fs.realpathSync('.')
+          const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+          const workspace = path.resolve(top, process.env.WORKSPACE_DIRECTORY)
+          const released = execFileSync('git', ['ls-files', '-z', '--full-name', '--', ':(glob)**/.release-it.json'], { cwd: workspace, encoding: 'utf8' })
+            .split('\0')
+            .filter(Boolean)
+            .map((file) => fs.realpathSync(path.join(top, path.dirname(file))))
+            .filter((directory) => fs.existsSync(path.join(directory, 'package.json')))
+            .sort()
+          const directories = released.includes(own) ? released : [own]
+          const list = `${process.env.RUNNER_TEMP}/pkg-pr-new-directories`
+          fs.writeFileSync(list, '')
+          if (directories[0] !== own) {
+            console.log(`::notice::The job of ${path.relative(top, directories[0])} publishes the pkg.pr.new previews of every released package of this workspace, since pkg.pr.new takes one publish per workflow run.`)
+          } else {
+            for (const directory of directories) {
+              const file = path.join(directory, 'package.json')
+              const pkg = JSON.parse(fs.readFileSync(file, 'utf8'))
+              fs.writeFileSync(file, `${JSON.stringify({ ...pkg, version: process.env.VERSION }, null, 2)}\n`)
+            }
+            fs.writeFileSync(list, directories.map((directory) => path.relative(own, directory) || '.').join('\n'))
+          }
           NODE
-          "$RUNNER_TEMP/pkg-pr-new/node_modules/.bin/pkg-pr-new" publish --pnpm --comment=update .
+          if [ -s "$RUNNER_TEMP/pkg-pr-new-directories" ]; then
+            mapfile -t directories < "$RUNNER_TEMP/pkg-pr-new-directories"
+            "$RUNNER_TEMP/pkg-pr-new/node_modules/.bin/pkg-pr-new" publish --pnpm --comment=update "${directories[@]}"
+          fi
 
       - name: Publish stable release
         if: steps.mode.outputs.mode == 'stable'
