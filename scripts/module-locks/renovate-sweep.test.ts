@@ -27,8 +27,11 @@ interface Node {
 }
 
 const RENOVATE = "29139614+renovate[bot]@users.noreply.github.com";
-const HEAD_AT = "2026-11-27T15:42:14Z";
-const QUEUE_REMOVAL = { at: "2026-11-27T15:42:34Z", by: "github-merge-queue" };
+const HEAD_AT = "2026-11-20T15:42:14Z";
+const QUEUE_REMOVAL = { at: "2026-11-20T15:42:34Z", by: "github-merge-queue" };
+/** The sweep's clock in the tests of `moveOf`, a week after the head was built. */
+const NOW = Date.parse("2026-11-27T15:42:14Z");
+const HOUR = 60 * 60 * 1000;
 
 /** A search node shaped as GitHub's GraphQL API answered for AntelopeJS/brevo-private#49 on 2026-11-27. */
 function node(scene: Node = {}): Json {
@@ -75,47 +78,63 @@ const current = () => false;
 
 describe("renovate-sweep", () => {
   test("re-arms auto-merge on a green pull request the merge queue removed", () => {
-    assert.equal(moveOf(pull(), current), "rearm");
+    assert.equal(moveOf(pull(), current, NOW), "rearm");
   });
 
   test("leaves a green pull request alone unless the queue removed it and nothing armed it since", () => {
-    assert.equal(moveOf(pull({ autoMerge: true, last: "AutoMergeEnabledEvent" }), current), "none");
-    assert.equal(moveOf(pull({ last: "AutoMergeDisabledEvent" }), current), "none", "someone turned auto-merge off");
-    assert.equal(moveOf(pull({ last: null }), current), "none", "auto-merge was never armed");
-    assert.equal(moveOf(pull({ inQueue: true, last: "AddedToMergeQueueEvent" }), current), "none");
+    assert.equal(moveOf(pull({ autoMerge: true, last: "AutoMergeEnabledEvent" }), current, NOW), "none");
+    assert.equal(moveOf(pull({ last: "AutoMergeDisabledEvent" }), current, NOW), "none", "someone turned auto-merge off");
+    assert.equal(moveOf(pull({ last: null }), current, NOW), "none", "auto-merge was never armed");
+    assert.equal(moveOf(pull({ inQueue: true, last: "AddedToMergeQueueEvent" }), current, NOW), "none");
   });
 
   test("re-arms a head once: a head the queue removed again stays as it is, and so does one a person dequeued", () => {
-    const earlier = { at: "2026-11-27T11:37:34Z", by: "github-merge-queue" };
-    assert.equal(moveOf(pull({ removals: [earlier, QUEUE_REMOVAL] }), current), "rearm", "the earlier removal was of an older head");
-    assert.equal(moveOf(pull({ removals: [QUEUE_REMOVAL, { at: "2026-11-27T16:40:00Z", by: "github-merge-queue" }] }), current), "none");
-    assert.equal(moveOf(pull({ removals: [{ at: QUEUE_REMOVAL.at, by: "antony" }] }), current), "none");
+    const earlier = { at: "2026-11-20T11:37:34Z", by: "github-merge-queue" };
+    assert.equal(moveOf(pull({ removals: [earlier, QUEUE_REMOVAL] }), current, NOW), "rearm", "the earlier removal was of an older head");
+    assert.equal(moveOf(pull({ removals: [QUEUE_REMOVAL, { at: "2026-11-20T16:40:00Z", by: "github-merge-queue" }] }), current, NOW), "none");
+    assert.equal(moveOf(pull({ removals: [{ at: QUEUE_REMOVAL.at, by: "antony" }] }), current, NOW), "none");
   });
 
   test("never arms auto-merge where it would not land through a merge queue or on a held repository", () => {
-    assert.equal(moveOf(pull({ mergeQueue: false }), current), "none");
-    assert.equal(moveOf(pull({ repo: "AntelopeJS/cloud" }), current), "none");
-    assert.equal(moveOf(pull({ mergeable: "CONFLICTING" }), current), "none");
-    assert.equal(moveOf(pull({ draft: true }), current), "none");
+    assert.equal(moveOf(pull({ mergeQueue: false }), current, NOW), "none");
+    assert.equal(moveOf(pull({ repo: "AntelopeJS/cloud" }), current, NOW), "none");
+    assert.equal(moveOf(pull({ mergeable: "CONFLICTING" }), current, NOW), "none");
+    assert.equal(moveOf(pull({ draft: true }), current, NOW), "none");
   });
 
   test("asks Renovate to rebase a red pull request once its base moved past its head", () => {
-    assert.equal(moveOf(pull({ rollup: "FAILURE", autoMerge: true, last: "AutoMergeEnabledEvent" }), behind), "rebase");
-    assert.equal(moveOf(pull({ rollup: "ERROR", last: "RemovedFromMergeQueueEvent" }), behind), "rebase");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", autoMerge: true, last: "AutoMergeEnabledEvent" }), behind, NOW), "rebase");
+    assert.equal(moveOf(pull({ rollup: "ERROR", last: "RemovedFromMergeQueueEvent" }), behind, NOW), "rebase");
   });
 
   test("asks at most once per base commit: not while the head holds the base, nor while the request is pending", () => {
-    assert.equal(moveOf(pull({ rollup: "FAILURE" }), current), "none");
+    assert.equal(moveOf(pull({ rollup: "FAILURE" }), current, NOW), "none");
     const asked = pull({ rollup: "FAILURE", body: tickRebase(BODY) });
     assert.equal(asked.rebaseBox, "ticked");
-    assert.equal(moveOf(asked, behind), "none");
+    assert.equal(moveOf(asked, behind, NOW), "none");
+  });
+
+  test("never asks Renovate to rebase a major update, which stays red until someone migrates it", () => {
+    const major = BODY.replace("Update rimraf.", "| Package | Type | Update | Change |\n|---|---|---|---|\n| [rimraf](https://redirect.github.com/isaacs/rimraf) | devDependencies | major | `^6.1.3` → `^7.0.0` |");
+    assert.equal(pull({ body: major }).major, true);
+    assert.equal(moveOf(pull({ rollup: "FAILURE", body: major }), behind, NOW), "none");
+    const minor = major.replace("| major |", "| minor |");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", body: minor }), behind, NOW), "rebase");
+    const notes = `${minor}\n### Release Notes\n\n| Change | Kind |\n|---|---|\n| drop Node 18 | major |\n`;
+    assert.equal(pull({ body: notes }).major, false, "a release note table below the updates table names no update");
+  });
+
+  test("asks Renovate to rebase a red pull request at most once a day, since each rebase builds a new head", () => {
+    const built = Date.parse(HEAD_AT);
+    assert.equal(moveOf(pull({ rollup: "FAILURE" }), behind, built + 23 * HOUR), "none");
+    assert.equal(moveOf(pull({ rollup: "FAILURE" }), behind, built + 24 * HOUR), "rebase");
   });
 
   test("never asks for a rebase that would drop someone's commit on the Renovate branch", () => {
-    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "dev@example.com" }), behind), "none");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "dev@example.com" }), behind, NOW), "none");
     const noted = `${BODY}\n🔕 Renovate will not automatically rebase this PR, because it does not recognize the last commit author.\n`;
-    assert.equal(moveOf(pull({ rollup: "FAILURE", body: noted }), behind), "none");
-    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "41898282+github-actions[bot]@users.noreply.github.com" }), behind), "rebase");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", body: noted }), behind, NOW), "none");
+    assert.equal(moveOf(pull({ rollup: "FAILURE", author: "41898282+github-actions[bot]@users.noreply.github.com" }), behind, NOW), "rebase");
   });
 
   test("reads the base only for a red pull request with an unticked rebase checkbox", () => {
@@ -124,10 +143,10 @@ describe("renovate-sweep", () => {
       reads++;
       return true;
     };
-    moveOf(pull(), counted);
-    moveOf(pull({ rollup: "PENDING" }), counted);
-    moveOf(pull({ rollup: null }), counted);
-    moveOf(pull({ rollup: "FAILURE", body: "no checkbox" }), counted);
+    moveOf(pull(), counted, NOW);
+    moveOf(pull({ rollup: "PENDING" }), counted, NOW);
+    moveOf(pull({ rollup: null }), counted, NOW);
+    moveOf(pull({ rollup: "FAILURE", body: "no checkbox" }), counted, NOW);
     assert.equal(reads, 0);
   });
 

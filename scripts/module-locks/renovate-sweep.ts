@@ -17,6 +17,12 @@ const BOT_AUTHORS: ReadonlySet<string> = new Set([
 /** What Renovate writes in the body once someone else pushed to its branch. */
 const FOREIGN_COMMIT_NOTES = ["does not recognize the last commit author", "custom changes will be lost"];
 
+/** The sweep asks Renovate to rebase a pull request at most this often: Renovate builds a new head for each rebase. */
+const REBASE_INTERVAL = 24 * 60 * 60 * 1000;
+
+/** A row of the updates table Renovate opens its body with, for a major update. */
+const MAJOR_ROW = /^\|.*\| major \|/m;
+
 const UNTICKED_REBASE = "- [ ] <!-- rebase-check -->";
 const TICKED_REBASE = "- [x] <!-- rebase-check -->";
 
@@ -30,6 +36,10 @@ export interface RenovatePull {
   headRef: string;
   baseRef: string;
   headSha: string;
+  /** When its head was committed, in milliseconds since the epoch, or `null` when GitHub did not say. */
+  headBuiltAt: number | null;
+  /** Renovate's updates table lists a major update, which stays red until someone migrates it. */
+  major: boolean;
   /** The base is the repository's default branch, and that branch has a merge queue. */
   queuedBase: boolean;
   draft: boolean;
@@ -129,6 +139,8 @@ export function parsePull(raw: Json): RenovatePull | null {
     headRef: raw.headRefName,
     baseRef: raw.baseRefName,
     headSha: head.sha,
+    headBuiltAt: head.committedAt === null ? null : Date.parse(head.committedAt),
+    major: MAJOR_ROW.test(body.split("\n---\n")[0] ?? ""),
     queuedBase: repository.defaultBranch === raw.baseRefName && repository.mergeQueue,
     draft: isBoolean(raw.isDraft) && raw.isDraft,
     checks: head.checks,
@@ -142,20 +154,23 @@ export function parsePull(raw: Json): RenovatePull | null {
 }
 
 /**
- * The move for a pull request. `behind` tells whether its head lacks commits of its base; the sweep calls it only
- * for a red pull request of bot commits whose rebase checkbox is unticked.
+ * The move for a pull request at `now`, in milliseconds since the epoch. `behind` tells whether its head lacks
+ * commits of its base; the sweep calls it only for a red pull request of bot commits, not a major, whose rebase
+ * checkbox is unticked and whose head is a day old.
  *
  * A green pull request the queue removed gets auto-merge back, once per head. A red one whose base moved since its
- * head was built gets Renovate's rebase checkbox ticked, so Renovate rebases it once on the newer base and its checks
- * run again. Once rebased it is no longer behind, so it gets no second request before the base moves again.
+ * head was built gets Renovate's rebase checkbox ticked, so Renovate rebases it on the newer base and its checks run
+ * again. The rebase builds a new head, so the next request waits a day. A major gets no rebase: its checks stay red
+ * until someone migrates it, so a rebase only spends a CI run.
  */
-export function moveOf(pull: RenovatePull, behind: () => boolean): Move {
+export function moveOf(pull: RenovatePull, behind: () => boolean, now: number): Move {
   if (pull.draft || pull.inQueue || HELD_REPOSITORIES.has(pull.repo)) return "none";
   if (pull.checks === "green") {
     const rearm = pull.queuedBase && pull.retryAfterRemoval && !pull.autoMergeArmed && !pull.conflicting;
     return rearm ? "rearm" : "none";
   }
-  if (pull.checks === "red" && pull.botOnly && pull.rebaseBox === "unticked" && behind()) return "rebase";
+  const dayOld = pull.headBuiltAt !== null && now - pull.headBuiltAt >= REBASE_INTERVAL;
+  if (pull.checks === "red" && !pull.major && pull.botOnly && pull.rebaseBox === "unticked" && dayOld && behind()) return "rebase";
   return "none";
 }
 

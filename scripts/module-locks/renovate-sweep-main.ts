@@ -5,8 +5,8 @@ import { HELD_REPOSITORIES, moveOf, parsePull, tickRebase, type RenovatePull } f
 const usage = `usage: node scripts/module-locks/renovate-sweep-main.ts <organisation> [--dry-run]
 
 Re-arms auto-merge on each green Renovate pull request of the organisation that the merge queue removed, and ticks
-Renovate's rebase checkbox on each red one whose base moved since its head was built. Prints one Markdown line per
-move; --dry-run prints them without making them.
+Renovate's rebase checkbox on each red one, not a major, whose base moved since its head was built a day or more ago.
+Prints one Markdown line per move; --dry-run prints them without making them.
 `;
 
 const SEARCH = `query($search: String!, $cursor: String) {
@@ -148,7 +148,7 @@ let failed = search.errors.length > 0 ? 1 : 0;
 for (const pull of search.pulls) {
   const link = `${pull.repo}#${pull.number}`;
   try {
-    const move = moveOf(pull, () => isBehind(pull));
+    const move = moveOf(pull, () => isBehind(pull), Date.now());
     if (move === "rearm") {
       if (!dryRun) rearm(pull);
       process.stdout.write(`- ${link}: re-arm auto-merge (green, removed from the merge queue)\n`);
